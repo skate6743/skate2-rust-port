@@ -1353,6 +1353,11 @@ impl CareerSession {
         self.system.is_asset_load_complete(challenge)
     }
 
+    /// `cChallengeAssetManager::IsLoadingChallengeHulls`.
+    pub(super) fn loading_challenge_hulls(&self) -> bool {
+        crate::challenge::assets::is_loading_challenge_hulls(self.system.world())
+    }
+
     /// `StateOnlineGame::ChallengeSkate`'s `StartMainChallenge` once every player has loaded,
     /// with the round's players' trigger history starting empty.
     pub(super) fn start_online_main_challenge(&mut self, challenge: u64) {
@@ -1416,11 +1421,11 @@ impl CareerSession {
         }
     }
 
-    /// `cLocationManager::GetSpawnLocation` of the location (`GetHashValue32` of its name) for the
-    /// position.
-    pub(super) fn spawn_location(&self, location: &str, position: i32) -> Result<Option<[f32; 16]>, SelectedLiveError> {
+    /// `cLocationManager::GetSpawnLocation` of the location (`GetHashValue32` of its name) for an
+    /// online player, a player past the sixth at the sixth's.
+    pub(super) fn online_spawn_location(&self, location: &str, player: i32) -> Result<Option<[f32; 16]>, SelectedLiveError> {
         let locations = self.locations.lock().map_err(|_| error("location manager lock poisoned"))?;
-        Ok(locations.spawn_location(hash_value32(location), position))
+        Ok(locations.online_spawn_location(hash_value32(location), player))
     }
 
     /// `cMsgOnlineSyncComplete` for the online challenge, delivered by the challenge's next update.
@@ -2540,6 +2545,56 @@ impl<T, C> SelectedLiveSession<T, C> {
         queue_hull_requests(terrain.as_mut(), hulls)
     }
 
+    /// The challenge system goes with its game. Every skater stops scoring by what it set: the
+    /// scoring it shared outlives it here, and takes `ChallengeScoring::game_unload`.
+    pub(super) fn drop_career(&mut self) -> Result<(), SelectedLiveError> {
+        self.career = None;
+        self.inner.challenge_scoring.lock().map_err(|_| error("challenge scoring lock poisoned"))?.game_unload();
+        Ok(())
+    }
+
+    /// `HUDManager2` outlives the challenge system natively: once the system's game unloaded and
+    /// its activities' groups went (`cChallengeHudTracker::ShutdownActivity` `0x82dac598`), the
+    /// manager's next `Update` (`0x82cee4f0`) rebinds and hides every component they bound. The
+    /// port's components go with the system, so that update runs before it goes, and the
+    /// presentation takes its screen states afterwards ([`Self::take_ended_career_hud`]).
+    pub(super) fn end_career_hud(&mut self) {
+        let Some(career) = self.career.as_mut() else { return };
+        career.system.update_hud();
+        self.collect_career_hud();
+        self.ended_career_hud = self.take_career_hud().map(|last| CareerHud {
+            objective_screen: last.objective_screen,
+            tutorial_screen: last.tutorial_screen,
+            signup_screen: last.signup_screen,
+            leaderboard_screen: last.leaderboard_screen,
+            abd_screen: last.abd_screen,
+            timer_screen: last.timer_screen,
+            big_black_timer_screen: last.big_black_timer_screen,
+            countdown_screen: last.countdown_screen,
+            voting_screen: last.voting_screen,
+            throwdown_screen: last.throwdown_screen,
+            dpo_screen: last.dpo_screen,
+            distance_screen: last.distance_screen,
+            mission_title: last.mission_title,
+            subtitles: last.subtitles,
+            ..CareerHud::default()
+        });
+    }
+
+    /// The screen states of the last HUD update of a challenge system that went outside a game
+    /// unload, once ([`Self::end_career_hud`]); nothing else of its HUD is left.
+    pub fn take_ended_career_hud(&mut self) -> Option<CareerHud> {
+        self.ended_career_hud.take()
+    }
+
+    /// `AudioSystem::QuitChallenge` (`0x824ff478`), the audio system's `cMsgAbandonChallenge`
+    /// handler, for the career's challenge.
+    pub(super) fn quit_career_challenge_music(&self) {
+        if let Some(audio) = self.career.as_ref().and_then(|career| career.audio.as_ref()) {
+            audio.quit_challenge();
+        }
+    }
+
     /// `Sk8ChallengeSystem::GameUnload`'s `cChallengeDynamicHullManager::GameUnload`
     /// (`0x82da6470`) as the career or free-skate game goes: its loaded hulls' unloads go to the
     /// loader, whose later updates finish them (`GameModule::GameLoad` `0x8273be50` waits for
@@ -3020,10 +3075,12 @@ impl<T, C> SelectedLiveSession<T, C> {
                 Output::ShowDialog { yes_no: false, .. } => career.system.post(Event::HudContinue),
                 Output::CentralMessage(message) => career.hud.central_messages.push(message),
                 // cTeleportManager::TeleportPlayer 0x828a90f8: the location's spawn point for the
-                // player's position (GetSpawnLocation).
+                // player's position (GetSpawnLocation); online, a position past the sixth without
+                // a spawn point of its own takes the sixth's.
                 Output::TeleportPlayer { player, location, pos_id, set_session_marker } => {
                     let locations = career.locations.lock().map_err(|_| error("location manager lock poisoned"))?;
-                    let transform = locations.spawn_location(hash_value32(&location), pos_id);
+                    let hash = hash_value32(&location);
+                    let transform = if online_local.is_some() { locations.online_spawn_location(hash, pos_id) } else { locations.spawn_location(hash, pos_id) };
                     if transform.is_none() {
                         eprintln!("career: teleport to unknown location {location} ({pos_id}), held {:?}", locations.counts());
                     }

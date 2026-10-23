@@ -98,6 +98,22 @@ impl ActorInputPhysics for PhysicalInput {
                 .to_ne_bytes(),
         ))
     }
+    fn effective_anim_z(
+        &mut self,
+    ) -> Result<crate::skeleton_root_transforms::SkeletonRootVector, Self::Error> {
+        let output = self
+            .0
+            .as_ref()
+            .map_err(|error| ActorInputPhysicsError::Owner(Arc::clone(error)))?
+            .owner()
+            .phys_out()
+            .lock()
+            .map_err(|_| ActorInputPhysicsError::Lock)?;
+        Ok(output
+            .try_skeleton_output()
+            .map_err(ActorInputPhysicsError::Output)?
+            .effective_anim_z)
+    }
     fn is_wiping_out(&mut self) -> Result<bool, Self::Error> {
         let output = self
             .0

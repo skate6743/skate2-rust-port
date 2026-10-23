@@ -414,6 +414,7 @@ impl<R: Clone, N: SkeletonCollisionNumeric, M: PadRemap<R>> SelectedDeviceInputR
                 request.selection.device_index(),
                 request.game_info,
                 request.has_focus,
+                None,
                 pause,
                 proxy,
             )

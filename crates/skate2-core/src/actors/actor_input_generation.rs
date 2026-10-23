@@ -5,6 +5,7 @@ use super::{
 };
 use crate::action_graph_input_listener::fill::{
     ActionInputFillAttributes, ActionInputFillCvars, ActionInputFillError, ActionInputJuice,
+    ActionInputPhysOut,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -80,6 +81,10 @@ impl crate::physical_player_physics_state::PhysicalStateActorQuery for &ActorCon
 pub(crate) trait ActorInputPhysics {
     type Error;
     fn physics_state(&mut self) -> Result<u32, Self::Error>;
+    /// `PhysOut_Skeleton::mEffectiveAnimZ`, read by the 1.02 Fill.
+    fn effective_anim_z(
+        &mut self,
+    ) -> Result<crate::skeleton_root_transforms::SkeletonRootVector, Self::Error>;
     fn is_wiping_out(&mut self) -> Result<bool, Self::Error>;
 }
 
@@ -169,19 +174,14 @@ impl ActorConstruction {
                 *intents = ai_intents;
             }
         } else if !pinned || pinned_gestures {
-            let physics_state = physics.physics_state().map_err(E::Physics)?;
+            let phys_out = ActionInputPhysOut {
+                physics_state: physics.physics_state().map_err(E::Physics)?,
+                effective_anim_z: physics.effective_anim_z().map_err(E::Physics)?,
+            };
             listener
                 .lock()
                 .map_err(|_| E::Actor(ActorConstructionError::Poisoned))?
-                .try_fill_selected(
-                    dt,
-                    physics_state,
-                    attributes,
-                    cvars,
-                    numeric,
-                    intents,
-                    juice,
-                )
+                .try_fill_selected(dt, phys_out, attributes, cvars, numeric, intents, juice)
                 .map_err(E::Fill)?;
             if pinned {
                 // Retail online play: a skater the challenge pins (a countdown, waiting for

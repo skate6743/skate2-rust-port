@@ -126,6 +126,12 @@ impl Controller {
         self.view.is_some()
     }
 
+    /// `OnLeave` (`0x82662088`) as `PopAllStates` pops the state: the screen closes.
+    pub fn close(&mut self) {
+        self.view = None;
+        self.ready = false;
+    }
+
     #[must_use]
     pub const fn snapshot(&self) -> Option<&View> {
         self.view.as_ref()

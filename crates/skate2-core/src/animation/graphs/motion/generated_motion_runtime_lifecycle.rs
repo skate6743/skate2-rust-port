@@ -1630,32 +1630,38 @@ impl GeneratedMotionController<ActorIdentity> {
                 0, 1, 2, 3, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 90, 91,
                 92, 177, 178, 722, 723, 724, 1413, 1928, 1929, 1930, 2176, 2342, 2343, 2420, 2421,
             ],
-            // StepForward309 / StepBackward310 share828f06a8: OffBoard's
-            // fourteen slots, SteppingBoardNoBoard, CreateAttribute, PlayAnimation.
+            // The eight Idle steps share 1.02's 827523c0: OffBoard's fourteen
+            // slots, CreateAttribute, PlayAnimation (1.02 drops SteppingBoardNoBoard).
             // Idle105 and its intervening parents add no behaviour slots.
-            (309, 0x828f_06a8) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 756, 757, 758],
-            (310, 0x828f_06a8) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 759, 760, 761],
+            (309, 0x8275_23c0) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 2469, 2470],
+            (310, 0x8275_23c0) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 2471, 2472],
+            (311, 0x8275_23c0) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 2473, 2474],
+            (312, 0x8275_23c0) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 2475, 2476],
+            (313, 0x8275_23c0) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 2477, 2478],
+            (314, 0x8275_23c0) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 2479, 2480],
+            (315, 0x8275_23c0) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 2481, 2482],
+            (316, 0x8275_23c0) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 2483, 2484],
             // IDA828f0770 /828f4e38: inherited update then all packed leaf slots.
-            (313, 0x828f_0770) => &[
+            (1354, 0x828f_0770) => &[
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 216, 217, 218, 219, 764, 765,
             ],
-            (316, 0x828f_0770) => &[
+            (1357, 0x828f_0770) => &[
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 216, 217, 218, 219, 773, 774,
             ],
             // StateUpdate_StandingJump_106 828ef6b8 (OffBoard_1, CreateAttribute,
             // three AttachIntent), then each leaf's own slots:
-            // Takeoff314 828f07d0: PlayAnimation and two CreateAttribute.
-            (314, 0x828f_07d0) => &[
+            // Takeoff1355 828f07d0: PlayAnimation and two CreateAttribute.
+            (1355, 0x828f_07d0) => &[
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 216, 217, 218, 219, 766, 767, 768,
             ],
-            // Descent315 828f0848: PlayAnimation, CreateAttribute, LandingCOG's
+            // Descent1356 828f0848: PlayAnimation, CreateAttribute, LandingCOG's
             // BLR Update 825187c0, StandingJumpDescent 82ca6aa0.
-            (315, 0x828f_0848) => &[
+            (1356, 0x828f_0848) => &[
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 216, 217, 218, 219, 769, 770, 771,
                 772,
             ],
-            // JumpingIntoMount317 828f08d0: AttachIntent, then PlayAnimation.
-            (317, 0x828f_08d0) => &[
+            // JumpingIntoMount1358 828f08d0: AttachIntent, then PlayAnimation.
+            (1358, 0x828f_08d0) => &[
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 216, 217, 218, 219, 775, 776,
             ],
             // StateUpdate_Default_95 828ef2d8 (also Default96): folded
@@ -2242,8 +2248,8 @@ impl GeneratedMotionController<ActorIdentity> {
             (112, 0x828e_f7c8) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 236, 237, 238],
             (113, 0x828e_f7c8) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 239, 240, 241],
             (114, 0x828e_f7c8) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 242, 243, 244],
-            // IntoBSGrabOut318 828f0930: PlayAnimation.
-            (318, 0x828f_0930) => &[
+            // IntoBSGrabOut1359 828f0930: PlayAnimation.
+            (1359, 0x828f_0930) => &[
                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 216, 217, 218, 219, 777,
             ],
             (1331, 0x828f_4e38) => &[
@@ -3140,11 +3146,11 @@ impl GeneratedMotionController<ActorIdentity> {
                 0, 1, 2, 3, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 85, 86,
                 87, 88, 89, 174, 690, 691, 692, 693,
             ],
-            // Locomotion Idle ToStepForward311/ToStepBackward312 828f0720
+            // Locomotion Idle ToStepForward317/ToStepBackward318 828f0720
             // (StateUpdate_ToStepBackward_312): expanded native slot classes verified; folded
-            // AIProcess::OnEnd slots are the BLR Updates.
-            (311, 0x828f_0720) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 762],
-            (312, 0x828f_0720) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 763],
+            // AIProcess::OnEnd slots are the BLR Updates. 1.02 removed both; unreachable here.
+            (317, 0x828f_0720) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 762],
+            (318, 0x828f_0720) => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 763],
             // Kickflip_MikeCarroll/MarkGonzales TrickCyc1-3 828f0c50 (StateUpdate_TrickCyc3_507):
             // expanded native slot classes verified; folded AIProcess::OnEnd slots are the BLR
             // Updates.

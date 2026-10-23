@@ -173,6 +173,14 @@ pub fn is_all_unload_complete(world: &World) -> bool {
     !world.assets.additional.iter().any(|a| a.state == LoadState::UnloadNotStarted) && world.assets.loads.is_empty()
 }
 
+/// `IsLoadingChallengeHulls` (`0x82e0f470`): a load short of its hulls, or an additional hull
+/// still loading.
+#[must_use]
+pub fn is_loading_challenge_hulls(world: &World) -> bool {
+    world.assets.loads.values().any(|l| l.state < LoadState::AllChallengeHullsLoaded)
+        || world.assets.additional.iter().any(|a| a.state == LoadState::LoadNotStarted)
+}
+
 /// `AreChallengeHullsLoaded` (`0x82e0fa60`): no load, or its hulls are in.
 #[must_use]
 pub fn are_hulls_loaded(world: &World, activity: usize) -> bool {

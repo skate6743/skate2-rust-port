@@ -29,6 +29,13 @@ impl crate::actor_construction::input_generation::ActorInputPhysics for Diagnost
     fn physics_state(&mut self) -> Result<u32, Self::Error> {
         Ok(0)
     }
+    fn effective_anim_z(
+        &mut self,
+    ) -> Result<crate::skeleton_root_transforms::SkeletonRootVector, Self::Error> {
+        Ok(crate::skeleton_root_transforms::SkeletonRootVector::known(
+            [0.0, 0.0, 1.0, 0.0],
+        ))
+    }
     fn is_wiping_out(&mut self) -> Result<bool, Self::Error> {
         Err("no pending wipeout query expected")
     }

@@ -4,7 +4,7 @@ use super::{
     Attribute, BehaviourDeclaration, ConditionDeclaration, HookDeclaration, Section,
     StateDeclaration, TransitionDeclaration,
 };
-pub(super) static ATTRIBUTES: [Attribute; 2816] = [
+pub(super) static ATTRIBUTES: [Attribute; 2860] = [
     Attribute {
         key: "attr",
         value: "GrabWorld",
@@ -9867,11 +9867,11 @@ pub(super) static ATTRIBUTES: [Attribute; 2816] = [
     },
     Attribute {
         key: "lessEqual",
-        value: "0.2",
+        value: "0.05",
     },
     Attribute {
         key: "greaterEqual",
-        value: "-0.2",
+        value: "-0.05",
     },
     Attribute {
         key: "intent",
@@ -9879,7 +9879,7 @@ pub(super) static ATTRIBUTES: [Attribute; 2816] = [
     },
     Attribute {
         key: "greater",
-        value: "0.2",
+        value: "0.05",
     },
     Attribute {
         key: "intent",
@@ -9891,7 +9891,7 @@ pub(super) static ATTRIBUTES: [Attribute; 2816] = [
     },
     Attribute {
         key: "less",
-        value: "-0.2",
+        value: "-0.05",
     },
     Attribute {
         key: "intent",
@@ -11269,8 +11269,184 @@ pub(super) static ATTRIBUTES: [Attribute; 2816] = [
         key: "policy",
         value: "Priority",
     },
+    Attribute {
+        key: "anim",
+        value: "OFB_STEP_BRD_0",
+    },
+    Attribute {
+        key: "playBackSpeed",
+        value: "1.5",
+    },
+    Attribute {
+        key: "time",
+        value: "0.1",
+    },
+    Attribute {
+        key: "transType",
+        value: "blend",
+    },
+    Attribute {
+        key: "anim",
+        value: "OFB_STEP_BRD_45",
+    },
+    Attribute {
+        key: "playBackSpeed",
+        value: "1.5",
+    },
+    Attribute {
+        key: "time",
+        value: "0.1",
+    },
+    Attribute {
+        key: "transType",
+        value: "blend",
+    },
+    Attribute {
+        key: "anim",
+        value: "OFB_STEP_BRD_90",
+    },
+    Attribute {
+        key: "playBackSpeed",
+        value: "1.5",
+    },
+    Attribute {
+        key: "time",
+        value: "0.1",
+    },
+    Attribute {
+        key: "transType",
+        value: "blend",
+    },
+    Attribute {
+        key: "anim",
+        value: "OFB_STEP_BRD_135",
+    },
+    Attribute {
+        key: "playBackSpeed",
+        value: "1.5",
+    },
+    Attribute {
+        key: "time",
+        value: "0.1",
+    },
+    Attribute {
+        key: "transType",
+        value: "blend",
+    },
+    Attribute {
+        key: "anim",
+        value: "OFB_STEP_BRD_180",
+    },
+    Attribute {
+        key: "playBackSpeed",
+        value: "1.5",
+    },
+    Attribute {
+        key: "time",
+        value: "0.1",
+    },
+    Attribute {
+        key: "transType",
+        value: "blend",
+    },
+    Attribute {
+        key: "anim",
+        value: "OFB_STEP_BRD_225",
+    },
+    Attribute {
+        key: "playBackSpeed",
+        value: "1.5",
+    },
+    Attribute {
+        key: "time",
+        value: "0.1",
+    },
+    Attribute {
+        key: "transType",
+        value: "blend",
+    },
+    Attribute {
+        key: "anim",
+        value: "OFB_STEP_BRD_270",
+    },
+    Attribute {
+        key: "playBackSpeed",
+        value: "1.5",
+    },
+    Attribute {
+        key: "time",
+        value: "0.1",
+    },
+    Attribute {
+        key: "transType",
+        value: "blend",
+    },
+    Attribute {
+        key: "anim",
+        value: "OFB_STEP_BRD_315",
+    },
+    Attribute {
+        key: "playBackSpeed",
+        value: "1.5",
+    },
+    Attribute {
+        key: "time",
+        value: "0.1",
+    },
+    Attribute {
+        key: "transType",
+        value: "blend",
+    },
+    Attribute {
+        key: "intent",
+        value: "StepForwardRight",
+    },
+    Attribute {
+        key: "intent",
+        value: "StepForwardLeft",
+    },
+    Attribute {
+        key: "state",
+        value: "ToStepForwardRight",
+    },
+    Attribute {
+        key: "intent",
+        value: "StepRight",
+    },
+    Attribute {
+        key: "intent",
+        value: "StepLeft",
+    },
+    Attribute {
+        key: "state",
+        value: "ToStepRight",
+    },
+    Attribute {
+        key: "intent",
+        value: "StepBackRight",
+    },
+    Attribute {
+        key: "intent",
+        value: "StepBackLeft",
+    },
+    Attribute {
+        key: "state",
+        value: "ToStepBackRight",
+    },
+    Attribute {
+        key: "state",
+        value: "ToStepBackLeft",
+    },
+    Attribute {
+        key: "state",
+        value: "ToStepLeft",
+    },
+    Attribute {
+        key: "state",
+        value: "ToStepForwardLeft",
+    },
 ];
-pub(super) const INDICES: [u16; 1737] = [
+pub(super) const INDICES: [u16; 1844] = [
     0, 1, 2, 3, 4, 5, 6, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 16, 324, 325, 326, 1721, 1723,
     297, 298, 299, 300, 301, 302, 303, 310, 311, 312, 313, 314, 315, 316, 317, 318, 327, 664, 665,
     666, 667, 1046, 1047, 1048, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462, 1463, 1464, 1465,
@@ -11368,9 +11544,16 @@ pub(super) const INDICES: [u16; 1737] = [
     1699, 1700, 1701, 1706, 1707, 1350, 1351, 1352, 1353, 1354, 1355, 1356, 1357, 1358, 1359, 1360,
     1361, 1399, 1400, 1401, 1402, 1403, 1404, 1405, 1406, 1407, 1408, 1409, 1410, 1530, 1533, 1537,
     1540, 1566, 1567, 1568, 1569, 1586, 1587, 1588, 1589, 1608, 1609, 1610, 1611, 1627, 1629, 1633,
-    1634, 1635, 1636, 1637, 1639, 1640, 1638, 1641,
+    1634, 1635, 1636, 1637, 1639, 1640, 1638, 1641, 231, 1724, 1725, 1726, 232, 1727, 1728, 1729,
+    233, 234, 235, 236, 1730, 1731, 1732, 1733, 1734, 1735, 1736, 1737, 1738, 1739, 1740, 1741,
+    1742, 1743, 1744, 1745, 1746, 1747, 1748, 1749, 1750, 1751, 1752, 1753, 1754, 1755, 1756, 1757,
+    1758, 1759, 1760, 1761, 1762, 1763, 1764, 1765, 1766, 1767, 1768, 1769, 1770, 1771, 1772, 1773,
+    1774, 1775, 1776, 239, 1777, 1778, 1779, 1780, 1781, 1782, 1783, 1784, 1785, 1786, 1787, 1788,
+    1789, 1790, 1791, 1792, 1793, 1794, 1795, 1796, 1797, 1798, 1799, 1800, 1801, 1802, 1803, 1804,
+    1805, 1806, 1807, 1808, 1809, 1810, 1811, 1812, 1813, 1814, 1815, 1816, 1817, 1818, 1819, 1820,
+    1821, 1822, 1823,
 ];
-pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
+pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2485] = [
     BehaviourDeclaration {
         name: "CharacterGesture",
         parent: 0,
@@ -18213,7 +18396,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "CreateAttribute",
-        parent: 311,
+        parent: 317,
         attributes: Section {
             count: 1,
             index: 18,
@@ -18222,7 +18405,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "CreateAttribute",
-        parent: 312,
+        parent: 318,
         attributes: Section {
             count: 1,
             index: 18,
@@ -18231,7 +18414,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "PlayAnimation",
-        parent: 313,
+        parent: 1354,
         attributes: Section {
             count: 4,
             index: 125,
@@ -18240,7 +18423,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "CreateAttribute",
-        parent: 313,
+        parent: 1354,
         attributes: Section {
             count: 1,
             index: 18,
@@ -18249,7 +18432,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "PlayAnimation",
-        parent: 314,
+        parent: 1355,
         attributes: Section {
             count: 3,
             index: 129,
@@ -18258,7 +18441,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "CreateAttribute",
-        parent: 314,
+        parent: 1355,
         attributes: Section {
             count: 1,
             index: 132,
@@ -18267,7 +18450,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "CreateAttribute",
-        parent: 314,
+        parent: 1355,
         attributes: Section {
             count: 1,
             index: 133,
@@ -18276,7 +18459,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "PlayAnimation",
-        parent: 315,
+        parent: 1356,
         attributes: Section {
             count: 3,
             index: 134,
@@ -18285,7 +18468,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "CreateAttribute",
-        parent: 315,
+        parent: 1356,
         attributes: Section {
             count: 1,
             index: 133,
@@ -18294,7 +18477,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "StandingJumpLandingCOG",
-        parent: 315,
+        parent: 1356,
         attributes: Section {
             count: 0,
             index: 65535,
@@ -18303,7 +18486,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "StandingJumpDescent",
-        parent: 315,
+        parent: 1356,
         attributes: Section {
             count: 0,
             index: 65535,
@@ -18312,7 +18495,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "PlayAnimation",
-        parent: 316,
+        parent: 1357,
         attributes: Section {
             count: 3,
             index: 137,
@@ -18321,7 +18504,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "CreateAttribute",
-        parent: 316,
+        parent: 1357,
         attributes: Section {
             count: 1,
             index: 18,
@@ -18330,7 +18513,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "AttachIntent",
-        parent: 317,
+        parent: 1358,
         attributes: Section {
             count: 2,
             index: 140,
@@ -18339,7 +18522,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "PlayAnimation",
-        parent: 317,
+        parent: 1358,
         attributes: Section {
             count: 3,
             index: 142,
@@ -18348,7 +18531,7 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
     },
     BehaviourDeclaration {
         name: "PlayAnimation",
-        parent: 318,
+        parent: 1359,
         attributes: Section {
             count: 3,
             index: 145,
@@ -33700,8 +33883,152 @@ pub(super) static BEHAVIOURS: [BehaviourDeclaration; 2469] = [
         },
         parameters: Section { count: 0, index: 0 },
     },
+    BehaviourDeclaration {
+        name: "CreateAttribute",
+        parent: 309,
+        attributes: Section {
+            count: 1,
+            index: 18,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "PlayAnimation",
+        parent: 309,
+        attributes: Section {
+            count: 4,
+            index: 2816,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "CreateAttribute",
+        parent: 310,
+        attributes: Section {
+            count: 1,
+            index: 18,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "PlayAnimation",
+        parent: 310,
+        attributes: Section {
+            count: 4,
+            index: 2820,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "CreateAttribute",
+        parent: 311,
+        attributes: Section {
+            count: 1,
+            index: 18,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "PlayAnimation",
+        parent: 311,
+        attributes: Section {
+            count: 4,
+            index: 2824,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "CreateAttribute",
+        parent: 312,
+        attributes: Section {
+            count: 1,
+            index: 18,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "PlayAnimation",
+        parent: 312,
+        attributes: Section {
+            count: 4,
+            index: 2828,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "CreateAttribute",
+        parent: 313,
+        attributes: Section {
+            count: 1,
+            index: 18,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "PlayAnimation",
+        parent: 313,
+        attributes: Section {
+            count: 4,
+            index: 2832,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "CreateAttribute",
+        parent: 314,
+        attributes: Section {
+            count: 1,
+            index: 18,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "PlayAnimation",
+        parent: 314,
+        attributes: Section {
+            count: 4,
+            index: 2836,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "CreateAttribute",
+        parent: 315,
+        attributes: Section {
+            count: 1,
+            index: 18,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "PlayAnimation",
+        parent: 315,
+        attributes: Section {
+            count: 4,
+            index: 2840,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "CreateAttribute",
+        parent: 316,
+        attributes: Section {
+            count: 1,
+            index: 18,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
+    BehaviourDeclaration {
+        name: "PlayAnimation",
+        parent: 316,
+        attributes: Section {
+            count: 4,
+            index: 2844,
+        },
+        parameters: Section { count: 0, index: 0 },
+    },
 ];
-pub(super) const CONDITIONS: [ConditionDeclaration; 406] = [
+pub(super) const CONDITIONS: [ConditionDeclaration; 418] = [
     ConditionDeclaration {
         name: "PhysFilteredState",
         attributes: Section {
@@ -36544,6 +36871,90 @@ pub(super) const CONDITIONS: [ConditionDeclaration; 406] = [
             index: 65535,
         },
     },
+    ConditionDeclaration {
+        name: "HasIntent",
+        attributes: Section {
+            count: 1,
+            index: 2848,
+        },
+    },
+    ConditionDeclaration {
+        name: "HasIntent",
+        attributes: Section {
+            count: 1,
+            index: 2849,
+        },
+    },
+    ConditionDeclaration {
+        name: "LastState",
+        attributes: Section {
+            count: 1,
+            index: 2850,
+        },
+    },
+    ConditionDeclaration {
+        name: "HasIntent",
+        attributes: Section {
+            count: 1,
+            index: 2851,
+        },
+    },
+    ConditionDeclaration {
+        name: "HasIntent",
+        attributes: Section {
+            count: 1,
+            index: 2852,
+        },
+    },
+    ConditionDeclaration {
+        name: "LastState",
+        attributes: Section {
+            count: 1,
+            index: 2853,
+        },
+    },
+    ConditionDeclaration {
+        name: "HasIntent",
+        attributes: Section {
+            count: 1,
+            index: 2854,
+        },
+    },
+    ConditionDeclaration {
+        name: "HasIntent",
+        attributes: Section {
+            count: 1,
+            index: 2855,
+        },
+    },
+    ConditionDeclaration {
+        name: "LastState",
+        attributes: Section {
+            count: 1,
+            index: 2856,
+        },
+    },
+    ConditionDeclaration {
+        name: "LastState",
+        attributes: Section {
+            count: 1,
+            index: 2857,
+        },
+    },
+    ConditionDeclaration {
+        name: "LastState",
+        attributes: Section {
+            count: 1,
+            index: 2858,
+        },
+    },
+    ConditionDeclaration {
+        name: "LastState",
+        attributes: Section {
+            count: 1,
+            index: 2859,
+        },
+    },
 ];
 pub(super) const HOOKS: [HookDeclaration; 18] = [
     HookDeclaration {
@@ -36747,7 +37158,7 @@ pub(super) const PARAMETERS: [Section; 18] = [
         index: 2810,
     },
 ];
-pub(super) static STATES: [StateDeclaration; 1354] = [
+pub(super) static STATES: [StateDeclaration; 1360] = [
     StateDeclaration {
         name: "Motion",
         interrupt_type: 1,
@@ -38973,7 +39384,7 @@ pub(super) static STATES: [StateDeclaration; 1354] = [
         parent: 33,
         expression: 368,
         children: Section {
-            count: 5,
+            count: 9,
             index: 308,
         },
         behaviours: Section {
@@ -38996,7 +39407,7 @@ pub(super) static STATES: [StateDeclaration; 1354] = [
         expression: 25,
         children: Section {
             count: 6,
-            index: 313,
+            index: 1354,
         },
         behaviours: Section {
             count: 4,
@@ -43117,8 +43528,8 @@ pub(super) static STATES: [StateDeclaration; 1354] = [
             index: 755,
         },
         transitions: Section {
-            count: 5,
-            index: 334,
+            count: 11,
+            index: 1737,
         },
         update_address: 0x828f_0720,
         trailing: 0,
@@ -43135,14 +43546,80 @@ pub(super) static STATES: [StateDeclaration; 1354] = [
             index: 65535,
         },
         behaviours: Section {
-            count: 3,
-            index: 756,
+            count: 2,
+            index: 2469,
         },
         transitions: Section {
-            count: 3,
-            index: 339,
+            count: 12,
+            index: 1748,
         },
-        update_address: 0x828f_06a8,
+        update_address: 0x8275_23c0,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "StepForwardRight",
+        interrupt_type: 0,
+        active: true,
+        interrupt_target: 65535,
+        parent: 105,
+        expression: 447,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 2,
+            index: 2471,
+        },
+        transitions: Section {
+            count: 12,
+            index: 1760,
+        },
+        update_address: 0x8275_23c0,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "StepRight",
+        interrupt_type: 0,
+        active: true,
+        interrupt_target: 65535,
+        parent: 105,
+        expression: 448,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 2,
+            index: 2473,
+        },
+        transitions: Section {
+            count: 12,
+            index: 1772,
+        },
+        update_address: 0x8275_23c0,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "StepBackRight",
+        interrupt_type: 0,
+        active: true,
+        interrupt_target: 65535,
+        parent: 105,
+        expression: 449,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 2,
+            index: 2475,
+        },
+        transitions: Section {
+            count: 12,
+            index: 1784,
+        },
+        update_address: 0x8275_23c0,
         trailing: 0,
     },
     StateDeclaration {
@@ -43157,14 +43634,80 @@ pub(super) static STATES: [StateDeclaration; 1354] = [
             index: 65535,
         },
         behaviours: Section {
-            count: 3,
-            index: 759,
+            count: 2,
+            index: 2477,
         },
         transitions: Section {
-            count: 3,
-            index: 342,
+            count: 12,
+            index: 1796,
         },
-        update_address: 0x828f_06a8,
+        update_address: 0x8275_23c0,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "StepBackLeft",
+        interrupt_type: 0,
+        active: true,
+        interrupt_target: 65535,
+        parent: 105,
+        expression: 450,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 2,
+            index: 2479,
+        },
+        transitions: Section {
+            count: 12,
+            index: 1808,
+        },
+        update_address: 0x8275_23c0,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "StepLeft",
+        interrupt_type: 0,
+        active: true,
+        interrupt_target: 65535,
+        parent: 105,
+        expression: 451,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 2,
+            index: 2481,
+        },
+        transitions: Section {
+            count: 12,
+            index: 1820,
+        },
+        update_address: 0x8275_23c0,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "StepForwardLeft",
+        interrupt_type: 0,
+        active: true,
+        interrupt_target: 65535,
+        parent: 105,
+        expression: 452,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 2,
+            index: 2483,
+        },
+        transitions: Section {
+            count: 12,
+            index: 1832,
+        },
+        update_address: 0x8275_23c0,
         trailing: 0,
     },
     StateDeclaration {
@@ -43209,138 +43752,6 @@ pub(super) static STATES: [StateDeclaration; 1354] = [
             index: 349,
         },
         update_address: 0x828f_0720,
-        trailing: 0,
-    },
-    StateDeclaration {
-        name: "Antic",
-        interrupt_type: 0,
-        active: true,
-        interrupt_target: 65535,
-        parent: 106,
-        expression: 65535,
-        children: Section {
-            count: 0,
-            index: 65535,
-        },
-        behaviours: Section {
-            count: 2,
-            index: 764,
-        },
-        transitions: Section {
-            count: 1,
-            index: 353,
-        },
-        update_address: 0x828f_0770,
-        trailing: 0,
-    },
-    StateDeclaration {
-        name: "Takeoff",
-        interrupt_type: 0,
-        active: false,
-        interrupt_target: 65535,
-        parent: 106,
-        expression: 65535,
-        children: Section {
-            count: 0,
-            index: 65535,
-        },
-        behaviours: Section {
-            count: 3,
-            index: 766,
-        },
-        transitions: Section {
-            count: 3,
-            index: 354,
-        },
-        update_address: 0x828f_07d0,
-        trailing: 0,
-    },
-    StateDeclaration {
-        name: "Descent",
-        interrupt_type: 0,
-        active: false,
-        interrupt_target: 65535,
-        parent: 106,
-        expression: 65535,
-        children: Section {
-            count: 0,
-            index: 65535,
-        },
-        behaviours: Section {
-            count: 4,
-            index: 769,
-        },
-        transitions: Section {
-            count: 2,
-            index: 357,
-        },
-        update_address: 0x828f_0848,
-        trailing: 0,
-    },
-    StateDeclaration {
-        name: "Land",
-        interrupt_type: 0,
-        active: false,
-        interrupt_target: 65535,
-        parent: 106,
-        expression: 28,
-        children: Section {
-            count: 0,
-            index: 65535,
-        },
-        behaviours: Section {
-            count: 2,
-            index: 773,
-        },
-        transitions: Section {
-            count: 3,
-            index: 359,
-        },
-        update_address: 0x828f_0770,
-        trailing: 0,
-    },
-    StateDeclaration {
-        name: "JumpingIntoMount",
-        interrupt_type: 0,
-        active: true,
-        interrupt_target: 65535,
-        parent: 106,
-        expression: 29,
-        children: Section {
-            count: 0,
-            index: 65535,
-        },
-        behaviours: Section {
-            count: 2,
-            index: 775,
-        },
-        transitions: Section {
-            count: 2,
-            index: 362,
-        },
-        update_address: 0x828f_08d0,
-        trailing: 0,
-    },
-    StateDeclaration {
-        name: "IntoBSGrabOut",
-        interrupt_type: 0,
-        active: false,
-        interrupt_target: 65535,
-        parent: 106,
-        expression: 30,
-        children: Section {
-            count: 0,
-            index: 65535,
-        },
-        behaviours: Section {
-            count: 1,
-            index: 777,
-        },
-        transitions: Section {
-            count: 1,
-            index: 364,
-        },
-        update_address: 0x828f_0930,
         trailing: 0,
     },
     StateDeclaration {
@@ -65051,8 +65462,140 @@ pub(super) static STATES: [StateDeclaration; 1354] = [
         update_address: 0x828f_51c0,
         trailing: 0,
     },
+    StateDeclaration {
+        name: "Antic",
+        interrupt_type: 0,
+        active: true,
+        interrupt_target: 65535,
+        parent: 106,
+        expression: 65535,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 2,
+            index: 764,
+        },
+        transitions: Section {
+            count: 1,
+            index: 353,
+        },
+        update_address: 0x828f_0770,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "Takeoff",
+        interrupt_type: 0,
+        active: false,
+        interrupt_target: 65535,
+        parent: 106,
+        expression: 65535,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 3,
+            index: 766,
+        },
+        transitions: Section {
+            count: 3,
+            index: 354,
+        },
+        update_address: 0x828f_07d0,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "Descent",
+        interrupt_type: 0,
+        active: false,
+        interrupt_target: 65535,
+        parent: 106,
+        expression: 65535,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 4,
+            index: 769,
+        },
+        transitions: Section {
+            count: 2,
+            index: 357,
+        },
+        update_address: 0x828f_0848,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "Land",
+        interrupt_type: 0,
+        active: false,
+        interrupt_target: 65535,
+        parent: 106,
+        expression: 28,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 2,
+            index: 773,
+        },
+        transitions: Section {
+            count: 3,
+            index: 359,
+        },
+        update_address: 0x828f_0770,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "JumpingIntoMount",
+        interrupt_type: 0,
+        active: true,
+        interrupt_target: 65535,
+        parent: 106,
+        expression: 29,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 2,
+            index: 775,
+        },
+        transitions: Section {
+            count: 2,
+            index: 362,
+        },
+        update_address: 0x828f_08d0,
+        trailing: 0,
+    },
+    StateDeclaration {
+        name: "IntoBSGrabOut",
+        interrupt_type: 0,
+        active: false,
+        interrupt_target: 65535,
+        parent: 106,
+        expression: 30,
+        children: Section {
+            count: 0,
+            index: 65535,
+        },
+        behaviours: Section {
+            count: 1,
+            index: 777,
+        },
+        transitions: Section {
+            count: 1,
+            index: 364,
+        },
+        update_address: 0x828f_0930,
+        trailing: 0,
+    },
 ];
-pub(super) static TRANSITIONS: [TransitionDeclaration; 1724] = [
+pub(super) static TRANSITIONS: [TransitionDeclaration; 1824] = [
     TransitionDeclaration {
         name: "",
         priority: 3,
@@ -66680,7 +67223,7 @@ pub(super) static TRANSITIONS: [TransitionDeclaration; 1724] = [
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 310,
+        target: 313,
         expression: 65535,
         hooks: Section { count: 0, index: 0 },
     },
@@ -66715,14 +67258,14 @@ pub(super) static TRANSITIONS: [TransitionDeclaration; 1724] = [
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 311,
+        target: 317,
         expression: 65535,
         hooks: Section { count: 0, index: 0 },
     },
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 312,
+        target: 318,
         expression: 65535,
         hooks: Section { count: 0, index: 0 },
     },
@@ -66736,14 +67279,14 @@ pub(super) static TRANSITIONS: [TransitionDeclaration; 1724] = [
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 311,
+        target: 317,
         expression: 65535,
         hooks: Section { count: 0, index: 0 },
     },
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 312,
+        target: 318,
         expression: 65535,
         hooks: Section { count: 0, index: 0 },
     },
@@ -66799,21 +67342,21 @@ pub(super) static TRANSITIONS: [TransitionDeclaration; 1724] = [
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 310,
+        target: 313,
         expression: 23,
         hooks: Section { count: 0, index: 0 },
     },
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 314,
+        target: 1355,
         expression: 2,
         hooks: Section { count: 0, index: 0 },
     },
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 315,
+        target: 1356,
         expression: 26,
         hooks: Section { count: 0, index: 0 },
     },
@@ -66827,21 +67370,21 @@ pub(super) static TRANSITIONS: [TransitionDeclaration; 1724] = [
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 317,
+        target: 1358,
         expression: 2,
         hooks: Section { count: 0, index: 0 },
     },
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 316,
+        target: 1357,
         expression: 65535,
         hooks: Section { count: 0, index: 0 },
     },
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 317,
+        target: 1358,
         expression: 27,
         hooks: Section { count: 0, index: 0 },
     },
@@ -66869,7 +67412,7 @@ pub(super) static TRANSITIONS: [TransitionDeclaration; 1724] = [
     TransitionDeclaration {
         name: "",
         priority: 0,
-        target: 318,
+        target: 1359,
         expression: 2,
         hooks: Section { count: 0, index: 0 },
     },
@@ -77176,6 +77719,706 @@ pub(super) static TRANSITIONS: [TransitionDeclaration; 1724] = [
         priority: 0,
         target: 0,
         expression: 367,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 310,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 311,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 312,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 314,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 315,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 316,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 107,
+        expression: 22,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 34,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 104,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 309,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 310,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 311,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 312,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 313,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 314,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 315,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 316,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 308,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 107,
+        expression: 22,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 34,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 104,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 309,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 310,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 311,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 312,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 313,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 314,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 315,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 316,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 308,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 107,
+        expression: 22,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 34,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 104,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 309,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 310,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 311,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 312,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 313,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 314,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 315,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 316,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 308,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 107,
+        expression: 22,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 34,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 104,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 309,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 310,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 311,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 312,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 313,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 314,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 315,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 316,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 107,
+        expression: 22,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 34,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 104,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 309,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 310,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 311,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 312,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 313,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 314,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 315,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 316,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 308,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 107,
+        expression: 22,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 34,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 104,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 309,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 310,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 311,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 312,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 313,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 314,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 315,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 316,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 308,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 107,
+        expression: 22,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 34,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 104,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 309,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 310,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 311,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 312,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 313,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 314,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 315,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 316,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 308,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 107,
+        expression: 22,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 34,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 104,
+        expression: 65535,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 309,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 310,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 311,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 312,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 313,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 314,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 315,
+        expression: 23,
+        hooks: Section { count: 0, index: 0 },
+    },
+    TransitionDeclaration {
+        name: "",
+        priority: 0,
+        target: 316,
+        expression: 23,
         hooks: Section { count: 0, index: 0 },
     },
 ];

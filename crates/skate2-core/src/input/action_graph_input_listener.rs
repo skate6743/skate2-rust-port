@@ -80,6 +80,7 @@ pub(crate) struct ActionGraphInputListener<K> {
     events: Vec<ActionInputListenerEvent>,
     candidate: Option<Arc<InputPattern>>,
     held: bool,
+    off_board_stick: fill::OffBoardStickLatch,
     derived: Option<DerivedControllerInput>,
     pub(crate) registration:
         Option<crate::game_input_player::recognizer::event_route::GameInputListenerRegistration>,
@@ -110,6 +111,7 @@ impl<K> ActionGraphInputListener<K> {
             events: Vec::new(),
             candidate: None,
             held: false,
+            off_board_stick: fill::OffBoardStickLatch::default(),
             derived: None,
             registration: None,
         })
@@ -183,6 +185,7 @@ impl<K> ActionGraphInputListener<K> {
         self.events
             .try_reserve(20)
             .map_err(|_| ActionInputListenerError::Allocation)?;
+        self.off_board_stick = fill::OffBoardStickLatch::default();
         self.candidate = None;
         self.held = false;
         Ok(())

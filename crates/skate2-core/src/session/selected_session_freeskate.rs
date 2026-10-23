@@ -126,7 +126,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.freeskate.settings = game.settings;
         self.set_game_mode(GM_PROFILE_FREE_SKATE, Some(game.settings))?;
         self.start_single_player_players()?;
-        self.career = None;
+        self.drop_career()?;
         self.freeroam_replay.reset();
         self.freeroam_replay_frame=0;
         self.replay_visual_focuses=None;
@@ -170,7 +170,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let start = table.find(name).ok_or_else(|| error(format!("party play start {name} absent")))?.transform;
         self.set_game_mode(GM_PARTY_PLAY, None)?;
         self.create_party_players(&game)?;
-        self.career = None;
+        self.drop_career()?;
         self.pause_menu.set_hub(crate::ui::pause_menu::StartHub::PartyPlay);
         self.freeskate.pending_character = Some(game.players.first().and_then(|player| player.character.marquee));
         self.apply_pending_character()?;
@@ -221,7 +221,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.unload_career_living_world()?;
         self.unload_career_dynamic_hulls()?;
         self.unload_career_activities()?;
-        self.career = None;
+        self.drop_career()?;
         self.freeskate.hulls = None;
         self.freeskate.pending_character = None;
         self.freeskate.spawn_attributes_pending = false;

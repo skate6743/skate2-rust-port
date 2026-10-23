@@ -84,10 +84,10 @@ pub(super) fn expression(
         expr::N_HARDFLIP_210 | expr::TRUCKS_OR_DECK_IN_CONTACT_OR_NOT_AIR => Ok(true), //829221c8: native Sustain switch default
         expr::N_VARIAL_HEELFLIP_209 | expr::PUSH_FROM_FAKIE_1178_TO_IDLE_1025 => Ok(true), //829221c8: independently checked Sustain switch default
         expr::WILL_EXPIRE_IN_0
-        | expr::TAKEOFF_314_TO_DESCENT_315
-        | expr::DESCENT_315_TO_JUMPING_INTO_MOUNT_317
+        | expr::TAKEOFF_1355_TO_DESCENT_1356
+        | expr::DESCENT_1356_TO_JUMPING_INTO_MOUNT_1358
         | expr::PHYS_FILTERED_STATE_OFFBOARD
-        | expr::JUMPING_INTO_MOUNT_317
+        | expr::JUMPING_INTO_MOUNT_1358
         | expr::INTO_BS_GRAB_OUT
         | expr::MOUNT_34_TO_ON_BOARD_3
         | expr::STRIDE_TO_RUN_AROUND
@@ -97,7 +97,7 @@ pub(super) fn expression(
         | expr::FINISH_117
         | expr::ACCIDENTAL_DISMOUNT_17_TO_WIPE_OUT_4 => Ok(true), //829221c8: each case resolved to the native default
         expr::RIGHT_1294_TO_FROM_FAKIE_1339 => Ok(true), //829221c8: Right1294 -> FromFakie1339 guard, native default
-        expr::TO_STEP_FORWARD_311 | expr::TO_STEP_BACKWARD_312 => Ok(true), //829221c8: off-board idle step guards, native default
+        expr::TO_STEP_FORWARD_317 | expr::TO_STEP_BACKWARD_318 => Ok(true), //829221c8: off-board idle step guards, native default
         // Both entries independently resolve to829221c8 (li r3,1), no reads.
         // GrindOutAssist must not recheck Pre446's IsGrinding conditions in air.
         expr::LEFT_1295_TO_FROM_FAKIE_1341 | expr::GRIND_OUT_ASSIST => Ok(true),
@@ -116,7 +116,7 @@ pub(super) fn expression(
                 || condition(cond::IS_LOCOMOTION_QUIT_NOT_ALLOWED)?
                 || (condition(cond::HAS_INTENT_OBL_STEER_MAGNITUDE_GREATER_0_3)?
                     && condition(cond::HAS_INTENT_OB_STEER_MAGNITUDE_HELD)?)))),
-        expr::STANDING_308_TO_RUN_AROUND_107
+        expr::IDLE_TO_RUN_AROUND
         | expr::OFF_BOARD_WILL_EXPIRE_IN_0_1
         | expr::STANDING_JUMP_106
         | expr::LOCO_NEW_319_TO_TO_LANDING_ON_BOARD_FROM_LEFT_26
@@ -162,8 +162,14 @@ pub(super) fn expression(
         | expr::MOVING
         | expr::STATIONARY
         | expr::TO_DBL_GRAB_OUT
-        | expr::STEP_BACKWARD_310 => Ok(true), //829221c8: native default
+        | expr::STEP_BACKWARD_313 => Ok(true), //829221c8: native default
         expr::STEP_FORWARD_309 | expr::NOT_HAS_INTENT_COFFIN => Ok(true), //829221c8: native default
+        expr::STEP_FORWARD_RIGHT_310
+        | expr::STEP_RIGHT_311
+        | expr::STEP_BACK_RIGHT_312
+        | expr::STEP_BACK_LEFT_314
+        | expr::STEP_LEFT_315
+        | expr::STEP_FORWARD_LEFT_316 => Ok(true), //1.02 8276ea48: native default
         expr::TURNING_LEFT_754
         | expr::RUNNING_INTO_MOUNT_FROM_RIGHT_108
         | expr::RUNNING_INTO_MOUNT_FROM_LEFT_110

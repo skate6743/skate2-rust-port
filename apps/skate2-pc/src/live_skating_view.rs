@@ -110,6 +110,9 @@ impl LiveSkatingView {
     pub(crate) fn exit_to_front_end(&mut self) -> RenderResult<()> {
         self.marker_ui.as_mut().ok_or("frontend UI absent")?.exit_to_front_end()
     }
+    pub(crate) fn end_career(&mut self, last: &skate2_core::CareerHud) -> RenderResult<()> {
+        self.marker_ui.as_mut().ok_or("frontend UI absent")?.end_career(last)
+    }
     pub(crate) fn take_online_match_intro(&mut self) -> bool {
         self.marker_ui.as_mut().is_some_and(crate::marker_ui::MarkerUi::take_online_match_intro)
     }

@@ -387,6 +387,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             }
         }
         self.update_network_pause()?;
+        self.update_online_round()?;
         self.update_online_lobby_hud();
         self.update_online_results();
         self.online_diagnostic_chat();
@@ -578,7 +579,8 @@ impl<T, C> SelectedLiveSession<T, C> {
             self.online.network_resumed = resumed;
         }
         // StateOnlineGame::SetupInitalGameInfo sets sGameInfo.isNetworkGame (0x8275dba8) and
-        // GameModule::BackToSP clears it (0x8273dac8): no slow motion in an online game.
+        // GameModule::BackToSP clears it (0x8273dac8): no slow motion in an online game, and the
+        // network game's solver passes.
         let online = self.online.game.as_ref().is_some_and(|game| game.entered);
         if let Some(owner) = self.inner.world.as_ref() {
             let world = owner.world.lock().map_err(|_| error("world lock poisoned"))?;
@@ -759,8 +761,9 @@ impl<T, C> SelectedLiveSession<T, C> {
 
     /// Where a player of the game starts (`Net::GetStreamerPosition` 0x82784318 for
     /// `CalcRealStreamerPosition`'s player index): the challenge's `Location`'s spawn location of
-    /// that index (`cLocationManager::GetSpawnLocation`), or the location itself
-    /// (`challenge_global_data.Location` in `BAM_Sim.loc`) where the global locators lack it.
+    /// that index (`cLocationManager::GetSpawnLocation`, a slot past the sixth at the sixth's),
+    /// or the location itself (`challenge_global_data.Location` in `BAM_Sim.loc`) where the
+    /// global locators lack it.
     fn online_location(&mut self, attributes: &GameAttributes, player: u8) -> Result<[f32; 16], SelectedLiveError> {
         let (location, fallback) = self.online_challenge_location(attributes)?;
         if self.online.locations.is_none() {
@@ -768,7 +771,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             self.online.locations = Some(Arc::new(super::career::locations::LocationManager::with_global_locations(&mounts).map_err(error)?));
         }
         let hash = crate::challenge::keys::hash_value32(&location);
-        let spawn = self.online.locations.as_ref().and_then(|locations| locations.spawn_location(hash, i32::from(player)));
+        let spawn = self.online.locations.as_ref().and_then(|locations| locations.online_spawn_location(hash, i32::from(player)));
         Ok(spawn.unwrap_or(fallback))
     }
 
@@ -868,17 +871,22 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// profile's created skater, travelling to the game's location behind the fade.
     /// A game joined from the single player hub, once the fade covers: the game in play unloads
     /// (`StateGameUnload`, as for the main menu) and the online game starts as from the front end.
+    /// Its `GameModule::GameLoad` 0x8273c8f0 runs `AISkaterManager::LoadGame` for the network
+    /// game, in which no ambient skater updates, as the front end's leave does on that path.
     pub(super) fn online_enter_from_play(&mut self) -> Result<(), SelectedLiveError> {
         let Some(start) = self.online.start.take() else { return Ok(()) };
         trace(format_args!("leaving the game in play for the online game"));
         self.unload_game()?;
+        if let Some(ai) = self.inner.ai.as_ref() {
+            ai.manager().load_game(true);
+        }
         self.start_online_game(start)
     }
 
     pub(super) fn start_online_game(&mut self, start: [f32; 16]) -> Result<(), SelectedLiveError> {
         self.set_game_mode(GM_ONLINE_FREE_SKATE, None)?;
         self.start_single_player_players()?;
-        self.career = None;
+        self.drop_career()?;
         self.online.dmos.begin_game();
         self.freeroam_replay.reset();
         self.freeroam_replay_frame = 0;

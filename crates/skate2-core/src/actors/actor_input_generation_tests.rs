@@ -39,6 +39,11 @@ impl ActorInputPhysics for Physics {
     fn physics_state(&mut self) -> Result<u32, Self::Error> {
         panic!("force-brake suppresses Fill PhysOut query")
     }
+    fn effective_anim_z(
+        &mut self,
+    ) -> Result<crate::skeleton_root_transforms::SkeletonRootVector, Self::Error> {
+        panic!("force-brake suppresses Fill PhysOut query")
+    }
     fn is_wiping_out(&mut self) -> Result<bool, Self::Error> {
         self.calls += 1;
         self.result

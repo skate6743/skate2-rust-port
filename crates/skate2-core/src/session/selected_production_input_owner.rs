@@ -341,7 +341,7 @@ impl<C> SelectedProductionInputOwner<C> {
         if !self.try_player_ui_prefix::<P>(can_simulate, has_focus)? {
             return Ok(false);
         }
-        self.try_player_ui_sample_and_sync::<P>(loader, has_focus, game_info)
+        self.try_player_ui_sample_and_sync::<P>(loader, has_focus, None, game_info)
     }
 
     /// `Sk8AppMan::PreUpdate`8272c4d8 `InputManager::LastInput(kINPUT_SIM)`:
@@ -379,11 +379,15 @@ impl<C> SelectedProductionInputOwner<C> {
     }
 
     /// The rest of `PlayerUI::Update` (sampling and proxy commands), then
-    /// `GameModule::DoGameUpdate`'s `GenerateSyncCommand`.
+    /// `GameModule::DoGameUpdate`'s `GenerateSyncCommand`. `offboard` holds the
+    /// frames of the 1.02 off-board stick while its skater is off its board.
     pub(crate) fn try_player_ui_sample_and_sync<P: PadPlatform>(
         &mut self,
         loader: &PlayerLoaderSlot,
         has_focus: bool,
+        offboard: Option<
+            &crate::input_pad::device_manager::selected_runtime::player_sample::OffBoardStickFrames,
+        >,
         game_info: &PhysicalGameInfo,
     ) -> Result<bool, ProductionInputFrameError<P::Error>> {
         let mut pause = Arc::clone(&self.pause);
@@ -394,6 +398,7 @@ impl<C> SelectedProductionInputOwner<C> {
                 self.controller,
                 game_info,
                 has_focus,
+                offboard,
                 &mut pause,
                 &mut self.queue,
             )

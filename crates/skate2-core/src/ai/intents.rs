@@ -7,8 +7,9 @@ use super::{attributes::AiSkaterAttributes, tricks::TrickTable};
 use crate::actor_graph_construction::ActorGraphIntents;
 use crate::actor_graph_construction::ActorGraphIntentError;
 
-/// `Skater::gSkaterIntentNames` 0x83020618, indexed by `SkaterIntentTuple::mSkaterIntent`.
-pub(crate) const SKATER_INTENT_NAMES: [&str; 98] = [
+/// `Skater::gSkaterIntentNames` 0x83020618, indexed by `SkaterIntentTuple::mSkaterIntent`, with the
+/// eight `OB_Walk*` names Title Update 2 (1.02) appends.
+pub(crate) const SKATER_INTENT_NAMES: [&str; 106] = [
     "INVALID", "MarkGonzales", "DannyWay", "QuickOllie", "ForceBrake", "WipeOutRecover", "WipeOutRequest",
     "GestureDown", "GestureLeft", "GestureRight", "GestureUp", "RightPush", "LeftPush", "NewPush", "Pushing",
     "BodySpin", "LeftGroundGrab", "RightGroundGrab", "NewLeftGroundGrab", "NewRightGroundGrab", "LeftAirGrab",
@@ -23,7 +24,8 @@ pub(crate) const SKATER_INTENT_NAMES: [&str; 98] = [
     "FingerFlipShuv", "FingerFlipVar", "Ollie", "ToggleOffBoardState", "NewToggleOffBoardState", "AI_ForceOffBoard",
     "OB_Steer", "OB_Mag", "OBL_Mag", "OBL_Steer", "OB_MagHeld", "OB_Jump", "OB_Sprint", "OB_MOMag", "OB_MOSteer",
     "OB_ObjectMvZ", "OB_ObjectMvX", "OB_ObjectMvRot", "OB_LookAtX", "OB_LookAtY", "OB_HoldBoard", "OB_DropBoard",
-    "OB_ThrowBoard", "OB_RetrieveBoard",
+    "OB_ThrowBoard", "OB_RetrieveBoard", "OB_WalkForward", "OB_WalkForwardRight", "OB_WalkRight",
+    "OB_WalkBackwardRight", "OB_WalkBackward", "OB_WalkBackwardLeft", "OB_WalkLeft", "OB_WalkForwardLeft",
 ];
 
 /// `Skater::*Intent` names the AI writes directly.

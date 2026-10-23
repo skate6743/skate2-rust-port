@@ -1,4 +1,6 @@
-//! Continuous `ActionGraphInputListener::Fill`, 0x825fb5b4..825fd3c0.
+//! Continuous `ActionGraphInputListener::Fill`, 0x825fb5b4..825fd3c0, with the
+//! off-board stick of Title Update 2 (1.02 `Fill` 824e54e8, 824e6314..68f4) in
+//! place of the original Vault steer and magnitude curves.
 //! Runtime Vault fetches and cvar sampling remain ordered operations. Numerical
 //! estimates retain the established host boundary; this is not a Xenon trace.
 #![expect(
@@ -16,9 +18,15 @@ use super::{
 };
 use crate::{
     attribute_runtime::{AttributeRuntimeError, AttributeRuntimeInstance, AttributeRuntimeVault},
+    camera_frame::composition_math::look_basis,
     physics::PointGraph,
-    reckoning_numeric::{ReckoningNumeric, length_from_squared_and_estimate},
+    physics_state_ids::{PHYSICS_STATE_OFFBOARD, PHYSICS_STATE_OFFBOARD_LOCOMOTION},
+    reckoning_numeric::{
+        ReckoningNumeric, ReckoningVector, cross_typed, length_from_squared_and_estimate, vmx_flush,
+    },
     skeleton_query_rotation::try_atan,
+    skeleton_root_transforms::SkeletonRootVector,
+    skeleton_two_bone::try_inverse_basis_from_cofactors,
 };
 use std::sync::Arc;
 
@@ -29,13 +37,15 @@ mod tests;
 const PI: f32 = f32::from_bits(0x4049_0fdb);
 const HALF_PI: f32 = f32::from_bits(0x3fc9_0fdb);
 const INV_PI: f32 = f32::from_bits(0x3ea2_f983);
-const STEER_LEFT: u64 = 0xcd28_e026_c7a4_5f98;
-const STEER_RIGHT: u64 = 0xebca_2e67_f2c3_ac51;
-const LOCOMOTION_STEER_LEFT: u64 = 0xcac4_0ccb_7d0e_2c8c;
-const LOCOMOTION_STEER_RIGHT: u64 = 0x8bab_9bef_5c8d_aa02;
-const MAGNITUDE: u64 = 0x2d55_eb3b_4b38_e247;
-const MAGNITUDE_HELD: u64 = 0x3099_c9cc_4360_a049;
-const LOCOMOTION_MAGNITUDE: u64 = 0x9b94_1c68_3f39_0916;
+const STICK_RELEASED: f32 = f32::from_bits(0x38d1_b717);
+const STEER_SCALE: f32 = f32::from_bits(0x3fe0_0000);
+const RIGHT_STICK_STEER: f32 = f32::from_bits(0x3e99_999a);
+const WALK_START: f32 = f32::from_bits(0x3e99_999a);
+const WALK_RANGE: f32 = f32::from_bits(0x3fb6_db6e);
+const WALK_MAGNITUDE: f32 = f32::from_bits(0x3e4c_cccd);
+const LATCH_STEER: f32 = f32::from_bits(0x3e4c_cccd);
+const RUN_START: f32 = f32::from_bits(0x3f33_3333);
+const RUN_RANGE: f32 = f32::from_bits(0x4055_5555);
 const OBJECT_ROTATE: u64 = 0x9adf_c2e2_2293_8c1e;
 const OBJECT_X: u64 = 0x1a1a_7ac3_7a72_df87;
 const OBJECT_Z: u64 = 0x05ba_8b52_c23b_3481;
@@ -76,11 +86,30 @@ impl ActionInputFillAttributes {
         // Missing pointer uses exactly 0x50/0x90 zero DefaultDataArea.
         Ok(curve.evaluate(value))
     }
-    fn held_threshold(&self) -> Result<f32, AttributeRuntimeError> {
-        self.instance
-            .try_scalar_word(MAGNITUDE_HELD, 0)
-            .map(|word| f32::from_bits(word.unwrap_or(0)))
+}
+
+/// 1.02 listener fields: +0x80, the stick's world direction when a turn
+/// latched, and +0x91, the latch. Constructor 824e51a8..51b4.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OffBoardStickLatch {
+    pub(crate) direction: [f32; 4],
+    pub(crate) latched: bool,
+}
+impl Default for OffBoardStickLatch {
+    fn default() -> Self {
+        Self {
+            direction: [0.0, 0.0, 1.0, 0.0],
+            latched: false,
+        }
     }
+}
+
+/// The physical output Fill reads: `PhysOut_State` state and the 1.02 read of
+/// `PhysOut_Skeleton::mEffectiveAnimZ`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ActionInputPhysOut {
+    pub(crate) physics_state: u32,
+    pub(crate) effective_anim_z: SkeletonRootVector,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,17 +182,24 @@ impl<K> ActionGraphInputListener<K> {
     >(
         &mut self,
         dt: f32,
-        physics_state: u32,
+        phys_out: ActionInputPhysOut,
         attributes: Option<&ActionInputFillAttributes>,
         cvars: &mut C,
         numeric: &mut N,
         sink: &mut S,
         juice: &mut J,
     ) -> Result<(), ActionInputFillError<N::Error, C::Error, S::Error, J::Error>> {
-        self.try_update_derived(dt, physics_state, attributes.map(|a| &a.derived), numeric)
-            .map_err(ActionInputFillError::Derived)?;
+        self.try_update_derived(
+            dt,
+            phys_out.physics_state,
+            attributes.map(|a| &a.derived),
+            numeric,
+        )
+        .map_err(ActionInputFillError::Derived)?;
         try_continuous(
-            self.derived().expect("updated retained Derived"),
+            self.derived.as_ref().expect("updated retained Derived"),
+            &mut self.off_board_stick,
+            phys_out,
             attributes,
             cvars,
             numeric,
@@ -225,6 +261,59 @@ fn length<N: ReckoningNumeric>(squared: f32, numeric: &mut N) -> Result<f32, N::
     Ok(length_from_squared_and_estimate(squared, seed))
 }
 
+/// 1.02 `PickOffBoardWalkDirection` 824e53b8: eighths of a turn around the
+/// stick angle measured from straight back. Each bound is a raw bge, so an
+/// unordered angle takes the first sector after Backward.
+fn walk_direction(angle: f32) -> &'static str {
+    const SECTORS: [(u32, &str); 6] = [
+        (0x3f96_cbe4, "OB_WalkBackwardLeft"),
+        (0x3ffb_53d2, "OB_WalkLeft"),
+        (0x402f_ede0, "OB_WalkForwardLeft"),
+        (0x4062_31d6, "OB_WalkForward"),
+        (0x408a_3ae7, "OB_WalkForwardRight"),
+        (0x40a3_5ce2, "OB_WalkRight"),
+    ];
+    if angle < f32::from_bits(0x3ec9_0fdb) || angle >= f32::from_bits(0x40bc_7edd) {
+        return "OB_WalkBackward";
+    }
+    for (bound, walk) in SECTORS {
+        if !(angle >= f32::from_bits(bound)) {
+            return walk;
+        }
+    }
+    "OB_WalkBackwardRight"
+}
+
+/// 824e63d0..6488: the latched world direction in the current facing frame,
+/// through the frame's adjugate inverse, not its transpose. 1.02 `sub_826F7668`
+/// (826f7780..7840) takes the off-board stick into the skater's frame alike.
+pub(crate) fn try_local_direction<N: ReckoningNumeric>(
+    frame: [SkeletonRootVector; 3],
+    world: [f32; 4],
+    numeric: &mut N,
+) -> Result<[f32; 4], N::Error> {
+    let [x, y, z] = frame;
+    let cofactors = [cross_typed(y, z), cross_typed(z, x), cross_typed(x, y)];
+    let basis =
+        try_inverse_basis_from_cofactors(x, cofactors, numeric)?.map(ReckoningVector::operand);
+    Ok(std::array::from_fn(|lane| {
+        let first = basis[0][lane] * world[0];
+        let second = basis[1][lane].mul_add(world[1], first);
+        basis[2][lane].mul_add(world[2], second)
+    }))
+}
+
+/// 824e6864..6884: the stick in world space when a turn latches. 1.02
+/// `sub_826F7668` (826f7718..772c) takes the stick through the camera's rows alike.
+pub(crate) fn world_direction(frame: [SkeletonRootVector; 3], stick: [f32; 4]) -> [f32; 4] {
+    let frame = frame.map(ReckoningVector::operand);
+    std::array::from_fn(|lane| {
+        let first = frame[0][lane] * stick[0];
+        let second = frame[1][lane].mul_add(stick[1], first);
+        frame[2][lane].mul_add(stick[2], second)
+    })
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one ordered native producer before first insertion"
@@ -235,6 +324,8 @@ fn length<N: ReckoningNumeric>(squared: f32, numeric: &mut N) -> Result<f32, N::
 )]
 fn try_continuous<N: ReckoningNumeric, C: ActionInputFillCvars, S: ActionInputIntentSink>(
     derived: &DerivedControllerInput,
+    latch: &mut OffBoardStickLatch,
+    phys_out: ActionInputPhysOut,
     attributes: Option<&ActionInputFillAttributes>,
     cvars: &mut C,
     numeric: &mut N,
@@ -266,8 +357,6 @@ fn try_continuous<N: ReckoningNumeric, C: ActionInputFillCvars, S: ActionInputIn
     } else {
         0.0
     };
-    let right_abs = right_angle.abs();
-    let right_sign = if right_angle > 0.0 { 1.0 } else { -1.0 };
     let left_active = lx != 0.0 || ly != 0.0;
     let left_angle = if left_active {
         stick_angle(lx, ly, numeric).map_err(Numeric)?
@@ -280,7 +369,6 @@ fn try_continuous<N: ReckoningNumeric, C: ActionInputFillCvars, S: ActionInputIn
         0.0
     };
     let left_abs = left_angle.abs();
-    let left_sign = if left_angle > 0.0 { 1.0 } else { -1.0 };
     let gesture_allowed = !r.left_bumper && !r.right_bumper;
     let gesture_up = gesture_allowed && rising(p.dpad_up, r.dpad_up);
     let gesture_down = gesture_allowed && rising(p.dpad_down, r.dpad_down);
@@ -431,47 +519,87 @@ fn try_continuous<N: ReckoningNumeric, C: ActionInputFillCvars, S: ActionInputIn
         false
     };
     let toggle = !r.left_bumper && r.face_y;
-    let left_curve = (-(left_abs * INV_PI)).mul_add(2.0, 1.0);
-    let right_curve = (-(right_abs * INV_PI)).mul_add(2.0, 1.0);
-    let attributes = attributes.ok_or(MissingGlobalAttributes)?;
-    let left_steer = (attributes
-        .curve::<8>(STEER_LEFT, left_curve)
-        .map_err(Attribute)?
-        * left_sign)
-        * left_mag;
-    let right_steer = attributes
-        .curve::<8>(STEER_RIGHT, right_curve)
-        .map_err(Attribute)?
-        * right_sign;
-    let steer = clamp_signed(right_steer.mul_add(right_mag, left_steer));
-    let left_steer = (attributes
-        .curve::<16>(LOCOMOTION_STEER_LEFT, left_curve)
-        .map_err(Attribute)?
-        * left_sign)
-        * left_mag;
-    let right_steer = attributes
-        .curve::<16>(LOCOMOTION_STEER_RIGHT, right_curve)
-        .map_err(Attribute)?
-        * right_sign;
-    let locomotion_steer = clamp_signed(right_steer.mul_add(right_mag, left_steer));
-    let late_left_mag = length(lx.mul_add(lx, ly * ly), numeric).map_err(Numeric)?;
     let b_held = derived.face_held[1] > 0.0;
-    let magnitude = attributes
-        .curve::<8>(MAGNITUDE, left_curve)
-        .map_err(Attribute)?
-        * late_left_mag;
-    let threshold = attributes.held_threshold().map_err(Attribute)?;
-    let mag_held = derived.magnitude_held[0] > threshold || derived.magnitude_held[1] > threshold;
-    let locomotion_magnitude = attributes
-        .curve::<16>(LOCOMOTION_MAGNITUDE, left_curve)
-        .map_err(Attribute)?
-        * late_left_mag;
     cvars.capture_boolean(UseSprintButtonInput).map_err(Cvar)?;
     let jump = new_x || (new_a && !cvars.boolean(UseSprintButtonInput).map_err(Cvar)?);
     let sprint =
         !b_held && cvars.boolean(UseSprintButtonInput).map_err(Cvar)? && derived.face_held[0] > 0.0;
+    // 1.02 824e6314..68f4: the stick steers by its side component, a latched
+    // turn keeps the stick's world direction until faced, and B held off-board
+    // walks in one of eight directions. Off its board the stick already arrives
+    // camera-relative in the skater's frame (PlayerUI's sub_826F7668).
+    let stick = [lx, 0.0, ly, 0.0];
+    let frame = look_basis(phys_out.effective_anim_z, numeric).map_err(Numeric)?;
+    let squared = numeric.dot3(stick, stick).map_err(Numeric)?;
+    let facing = if STICK_RELEASED > squared && latch.latched {
+        try_local_direction(frame, latch.direction, numeric).map_err(Numeric)?
+    } else {
+        stick
+    };
+    let side = if 0.0 > vmx_flush(facing[2]) {
+        if -facing[0] <= 0.0 { -1.0 } else { 1.0 }
+    } else {
+        -facing[0]
+    };
+    let side = side * STEER_SCALE;
+    let side = if latch.latched {
+        side
+    } else {
+        let lane = vmx_flush(side);
+        let sign = if lane > 0.0 {
+            1.0
+        } else if lane >= 0.0 {
+            0.0
+        } else {
+            -1.0
+        };
+        vmx_flush(sign * lane) * side
+    };
+    let mut steer = clamp_signed(rx.mul_add(RIGHT_STICK_STEER, side));
+    let locomotion_steer = rx.mul_add(2.0, side);
+    let walk_scale = if WALK_START > vmx_flush(facing[2]) {
+        0.0
+    } else {
+        (facing[2] - WALK_START) * WALK_RANGE
+    };
+    let late_left_mag = length(lx.mul_add(lx, ly * ly), numeric).map_err(Numeric)?;
+    let mut magnitude = late_left_mag * walk_scale;
+    let mut locomotion_magnitude = late_left_mag;
+    let off_board = phys_out.physics_state == PHYSICS_STATE_OFFBOARD.cast_unsigned();
+    if r.face_b && off_board {
+        if !(late_left_mag <= WALK_MAGNITUDE) {
+            let angle = stick_angle(-lx, -ly, numeric).map_err(Numeric)? + PI;
+            sink.insert(walk_direction(angle), 1.0).map_err(Insert)?;
+        }
+        *latch = OffBoardStickLatch::default();
+        steer = 0.0;
+    }
+    if !off_board {
+        latch.latched = false;
+    }
+    let latched = latch.latched;
+    if latched {
+        magnitude = 1.0;
+    }
+    if !(steer.abs() >= LATCH_STEER) {
+        latch.latched = false;
+    } else if !latched {
+        *latch = OffBoardStickLatch {
+            direction: world_direction(frame, stick),
+            latched: true,
+        };
+    }
+    let mag_held = magnitude > 0.0;
+    if !sprint && phys_out.physics_state != PHYSICS_STATE_OFFBOARD_LOCOMOTION.cast_unsigned() {
+        locomotion_magnitude = if ly <= RUN_START {
+            0.0
+        } else {
+            ((ly - RUN_START) * late_left_mag) * RUN_RANGE
+        };
+    }
     let (mut object_rotate, mut object_x, mut object_z) = (0.0, 0.0, 0.0);
     if left_active {
+        let attributes = attributes.ok_or(MissingGlobalAttributes)?;
         let angle = stick_angle(lx, ly, numeric).map_err(Numeric)?;
         let turns = angle * f32::from_bits(0x3e22_f983);
         let fraction = turns - turns.floor();
@@ -494,7 +622,8 @@ fn try_continuous<N: ReckoningNumeric, C: ActionInputFillCvars, S: ActionInputIn
             * ly;
     }
     let object_rotation = clamp_signed(object_rotate + rx);
-    // 825fcb10..d3c0: no intent is written until ALL preceding reads finish.
+    // 825fcb10..d3c0 (1.02 824e6b74..73ec): apart from the walk direction, no
+    // intent is written until ALL preceding reads finish.
     let values = [
         (recover, "WipeOutRecover", 1.0),
         (wipeout, "WipeOutRequest", 1.0),

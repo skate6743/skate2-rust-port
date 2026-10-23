@@ -1234,6 +1234,20 @@ impl MarkerUi {
         self.apply_turn_huds(career)
     }
 
+    /// The challenge system went outside a game unload: its HUD's last screen states, and
+    /// nothing of the challenge stays. `FrontEndState_NIS`'s screens and subtitle go with its NIS,
+    /// and the HUD no longer reads the challenge's last update.
+    pub(crate) fn end_career(&mut self, last: &skate2_core::CareerHud) -> RenderResult<()> {
+        self.apply_career_hud_screens(last, !self.pause_state.visible)?;
+        let screens: Vec<i32> = self.nis_screens.keys().copied().collect();
+        for id in screens {
+            self.apply_nis_screen(ScreenCommand::Destroy { id }, &last.mission_title, &last.pro_info)?;
+        }
+        self.subtitle.update(&self.assets, None, last.subtitles)?;
+        self.career = None;
+        Ok(())
+    }
+
     /// The turn HUD components' screen states, each with the data its movie reads then.
     fn apply_turn_huds(&mut self, career: &skate2_core::CareerHud) -> RenderResult<()> {
         for (state,view) in &career.big_black_timer_screen{self.big_black_timer.set_state(&self.assets,*state,view)?;}
@@ -1453,6 +1467,20 @@ impl MarkerUi {
             row.title=if let Some(title)=selected.as_ref().filter(|_|row.description_candidates.contains(&row.title)){title.clone()}else{localize(&row.title)?};
             row.subtitle=localize(&row.subtitle)?;
             row.description=if let Some(description)=selected {description}else{localize(&row.description)?};
+        }
+        // UpdateSponsorLogo's LoadRX2Texture of the selected part's brand logo (screens.big);
+        // FETextureData's load of a logo the archive lacks shows nothing.
+        if let Some(row)=localized.rows.get_mut(view.selected) {
+            row.sponsor_logo=match row.sponsor_logo.take() {
+                Some(path)=>match self.assets.ensure_rx2_image(&path) {
+                    Ok((key,loaded))=>{
+                        if loaded {self.textures.extend(renderer.upload_ui_textures(self.assets.textures.get(&key).into_iter())?);}
+                        Some(key)
+                    }
+                    Err(_)=>None,
+                },
+                None=>None,
+            };
         }
         self.editor.update(&self.assets,&localized)?;
         self.receipt.update(&self.assets,view.receipt.as_ref())?;

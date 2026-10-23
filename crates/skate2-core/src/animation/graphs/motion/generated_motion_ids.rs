@@ -95,21 +95,21 @@ pub(crate) mod condition {
     pub(crate) const HAS_INTENT_OB_STEER_MAGNITUDE_HELD: u16 = 41;
     /// `IsLocomotionQuitNotAllowed`.
     pub(crate) const IS_LOCOMOTION_QUIT_NOT_ALLOWED: u16 = 42;
-    /// `HasIntent(intent = OB_Steer, lessEqual = 0.2)`.
-    pub(crate) const HAS_INTENT_OB_STEER_LESS_EQUAL_0_2: u16 = 43;
-    /// `HasIntent(greaterEqual = -0.2, intent = OB_Steer)`.
-    pub(crate) const HAS_INTENT_OB_STEER_GREATER_EQUAL_NEG_0_2: u16 = 44;
+    /// `HasIntent(intent = OB_Steer, lessEqual = 0.05)`.
+    pub(crate) const HAS_INTENT_OB_STEER_LESS_EQUAL_0_05: u16 = 43;
+    /// `HasIntent(greaterEqual = -0.05, intent = OB_Steer)`.
+    pub(crate) const HAS_INTENT_OB_STEER_GREATER_EQUAL_NEG_0_05: u16 = 44;
     /// `HasIntent(intent = OB_Steer)`.
     pub(crate) const HAS_INTENT_OB_STEER: u16 = 45;
     /// `HasIntent(intent = OB_SteerMagnitudeHeld)`, declared again: the test of
     /// `HAS_INTENT_OB_STEER_MAGNITUDE_HELD` under its own index.
     pub(crate) const HAS_INTENT_OB_STEER_MAGNITUDE_HELD_2ND: u16 = 46;
-    /// `HasIntent(greater = 0.2, intent = OB_Steer)`.
-    pub(crate) const HAS_INTENT_OB_STEER_GREATER_0_2: u16 = 47;
+    /// `HasIntent(greater = 0.05, intent = OB_Steer)`.
+    pub(crate) const HAS_INTENT_OB_STEER_GREATER_0_05: u16 = 47;
     /// `IsMirrored`.
     pub(crate) const IS_MIRRORED: u16 = 48;
-    /// `HasIntent(intent = OB_Steer, less = -0.2)`.
-    pub(crate) const HAS_INTENT_OB_STEER_LESS_NEG_0_2: u16 = 49;
+    /// `HasIntent(intent = OB_Steer, less = -0.05)`.
+    pub(crate) const HAS_INTENT_OB_STEER_LESS_NEG_0_05: u16 = 49;
     /// `HasIntent(intent = StepForward)`.
     pub(crate) const HAS_INTENT_STEP_FORWARD: u16 = 50;
     /// `LastState(state = ToStepForward)`.
@@ -878,6 +878,30 @@ pub(crate) mod condition {
     pub(crate) const IS_DONE_WIPING_OUT: u16 = 404;
     /// `IsInDebugAnimationsMode`.
     pub(crate) const IS_IN_DEBUG_ANIMATIONS_MODE: u16 = 405;
+    /// `HasIntent(intent = StepForwardRight)`.
+    pub(crate) const HAS_INTENT_STEP_FORWARD_RIGHT: u16 = 406;
+    /// `HasIntent(intent = StepForwardLeft)`.
+    pub(crate) const HAS_INTENT_STEP_FORWARD_LEFT: u16 = 407;
+    /// `LastState(state = ToStepForwardRight)`.
+    pub(crate) const LAST_STATE_TO_STEP_FORWARD_RIGHT: u16 = 408;
+    /// `HasIntent(intent = StepRight)`.
+    pub(crate) const HAS_INTENT_STEP_RIGHT: u16 = 409;
+    /// `HasIntent(intent = StepLeft)`.
+    pub(crate) const HAS_INTENT_STEP_LEFT: u16 = 410;
+    /// `LastState(state = ToStepRight)`.
+    pub(crate) const LAST_STATE_TO_STEP_RIGHT: u16 = 411;
+    /// `HasIntent(intent = StepBackRight)`.
+    pub(crate) const HAS_INTENT_STEP_BACK_RIGHT: u16 = 412;
+    /// `HasIntent(intent = StepBackLeft)`.
+    pub(crate) const HAS_INTENT_STEP_BACK_LEFT: u16 = 413;
+    /// `LastState(state = ToStepBackRight)`.
+    pub(crate) const LAST_STATE_TO_STEP_BACK_RIGHT: u16 = 414;
+    /// `LastState(state = ToStepBackLeft)`.
+    pub(crate) const LAST_STATE_TO_STEP_BACK_LEFT: u16 = 415;
+    /// `LastState(state = ToStepLeft)`.
+    pub(crate) const LAST_STATE_TO_STEP_LEFT: u16 = 416;
+    /// `LastState(state = ToStepForwardLeft)`.
+    pub(crate) const LAST_STATE_TO_STEP_FORWARD_LEFT: u16 = 417;
 }
 
 /// Expressions: which states and transitions evaluate each expression index.
@@ -886,8 +910,9 @@ pub(crate) mod expression {
     pub(crate) const OB_GROUND_8: u16 = 0;
     /// State `SpawnDismount31`.
     pub(crate) const SPAWN_DISMOUNT_31: u16 = 1;
-    /// Shared by 9: `SpawnDismount31` -> `Locomotion33`, `Antic313` -> `Takeoff314`, `Takeoff314`
-    /// -> `JumpingIntoMount317`, `JumpingIntoMount317` -> `IntoBSGrabOut318` and 5 more.
+    /// Shared by 9: `SpawnDismount31` -> `Locomotion33`, `Antic1354` -> `Takeoff1355`,
+    /// `Takeoff1355` -> `JumpingIntoMount1358`, `JumpingIntoMount1358` -> `IntoBSGrabOut1359` and 5
+    /// more.
     pub(crate) const WILL_EXPIRE_IN_0: u16 = 2;
     /// Shared by 2: state `DismountFromFakie100`, state `PushFromFakie1178`.
     pub(crate) const IS_RIDING_FAKIE: u16 = 3;
@@ -895,7 +920,7 @@ pub(crate) mod expression {
     /// `RunDismount102`, `Right1276` -> `FromFakie1339`, `Left1277` -> `FromFakie1341`.
     pub(crate) const WILL_EXPIRE_IN_0_25_NOT_WAIT: u16 = 4;
     /// Shared by 51: `IdleDismount101` -> `Locomotion33`, `MVOBJ_Into307` -> `MVOBJ_Still306`,
-    /// `Land316` -> `Standing308`, `Land316` -> `RunAround107` and 47 more.
+    /// `Land1357` -> `Standing308`, `Land1357` -> `RunAround107` and 47 more.
     pub(crate) const WILL_EXPIRE_IN_0_1: u16 = 5;
     /// Shared by 3: `RunDismountWaitForLanding103` -> `RunAround107`, `KickoutToAir14` ->
     /// `Locomotion33`, `TrickDismount15` -> `Locomotion33`.
@@ -938,25 +963,27 @@ pub(crate) mod expression {
     pub(crate) const MVOBJ_TO_PULL_LEFT: u16 = 20;
     /// Shared by 2: state `MVOBJ_Still306`, state `MVOBJ_Into307`.
     pub(crate) const MVOBJ_NOT_MOVING: u16 = 21;
-    /// `Standing308` -> `RunAround107`.
-    pub(crate) const STANDING_308_TO_RUN_AROUND_107: u16 = 22;
-    /// Shared by 12: `StepForward309` -> `Standing308`, `StepBackward310` -> `Standing308`,
-    /// `ToStepForward311` -> `StepForward309`, `ToStepBackward312` -> `StepBackward310` and 8 more.
+    /// Shared by 9: `Standing308` -> `RunAround107`, `StepForward309` -> `RunAround107`,
+    /// `StepForwardRight310` -> `RunAround107`, `StepRight311` -> `RunAround107` and 5 more.
+    pub(crate) const IDLE_TO_RUN_AROUND: u16 = 22;
+    /// Shared by 82: `StepForward309` -> `Standing308`, `StepBackward313` -> `Standing308`,
+    /// `ToStepForward317` -> `StepForward309`, `ToStepBackward318` -> `StepBackward313` and 78
+    /// more.
     pub(crate) const OFF_BOARD_WILL_EXPIRE_IN_0_1: u16 = 23;
-    /// Shared by 2: `ToStepForward311` -> `Mount34`, `ToStepBackward312` -> `Mount34`.
+    /// Shared by 2: `ToStepForward317` -> `Mount34`, `ToStepBackward318` -> `Mount34`.
     pub(crate) const TO_MOUNT: u16 = 24;
     /// State `StandingJump106`.
     pub(crate) const STANDING_JUMP_106: u16 = 25;
-    /// `Takeoff314` -> `Descent315`.
-    pub(crate) const TAKEOFF_314_TO_DESCENT_315: u16 = 26;
-    /// `Descent315` -> `JumpingIntoMount317`.
-    pub(crate) const DESCENT_315_TO_JUMPING_INTO_MOUNT_317: u16 = 27;
-    /// Shared by 3: state `Land316`, `JumpingIntoMountLeft9` -> `WipeOut4`,
+    /// `Takeoff1355` -> `Descent1356`.
+    pub(crate) const TAKEOFF_1355_TO_DESCENT_1356: u16 = 26;
+    /// `Descent1356` -> `JumpingIntoMount1358`.
+    pub(crate) const DESCENT_1356_TO_JUMPING_INTO_MOUNT_1358: u16 = 27;
+    /// Shared by 3: state `Land1357`, `JumpingIntoMountLeft9` -> `WipeOut4`,
     /// `JumpingIntoMountRight10` -> `WipeOut4`.
     pub(crate) const PHYS_FILTERED_STATE_OFFBOARD: u16 = 28;
-    /// State `JumpingIntoMount317`.
-    pub(crate) const JUMPING_INTO_MOUNT_317: u16 = 29;
-    /// Shared by 2: state `IntoBSGrabOut11`, state `IntoBSGrabOut318`.
+    /// State `JumpingIntoMount1358`.
+    pub(crate) const JUMPING_INTO_MOUNT_1358: u16 = 29;
+    /// Shared by 2: state `IntoBSGrabOut11`, state `IntoBSGrabOut1359`.
     pub(crate) const INTO_BS_GRAB_OUT: u16 = 30;
     /// `LocoNew319` -> `ToLandingOnBoardFromLeft26`.
     pub(crate) const LOCO_NEW_319_TO_TO_LANDING_ON_BOARD_FROM_LEFT_26: u16 = 31;
@@ -1483,12 +1510,12 @@ pub(crate) mod expression {
     pub(crate) const MOVING_OBJECT_104_TO_MOUNT_34: u16 = 278;
     /// State `Still752`.
     pub(crate) const STILL_752: u16 = 279;
-    /// State `ToStepForward311`.
-    pub(crate) const TO_STEP_FORWARD_311: u16 = 280;
-    /// Shared by 2: `ToStepForward311` -> `RunAround107`, `ToStepBackward312` -> `RunAround107`.
+    /// State `ToStepForward317`.
+    pub(crate) const TO_STEP_FORWARD_317: u16 = 280;
+    /// Shared by 2: `ToStepForward317` -> `RunAround107`, `ToStepBackward318` -> `RunAround107`.
     pub(crate) const STEP_TO_RUN_AROUND: u16 = 281;
-    /// State `ToStepBackward312`.
-    pub(crate) const TO_STEP_BACKWARD_312: u16 = 282;
+    /// State `ToStepBackward318`.
+    pub(crate) const TO_STEP_BACKWARD_318: u16 = 282;
     /// State `Dismount36`.
     pub(crate) const DISMOUNT_36: u16 = 283;
     /// State `Finish117`.
@@ -1679,8 +1706,8 @@ pub(crate) mod expression {
     pub(crate) const TURNING_LEFT_754: u16 = 370;
     /// State `StepForward309`.
     pub(crate) const STEP_FORWARD_309: u16 = 371;
-    /// State `StepBackward310`.
-    pub(crate) const STEP_BACKWARD_310: u16 = 372;
+    /// State `StepBackward313`.
+    pub(crate) const STEP_BACKWARD_313: u16 = 372;
     /// `LocoNew319` -> `Mount34`.
     pub(crate) const LOCO_NEW_319_TO_MOUNT_34: u16 = 373;
     /// State `RunningIntoMountFromRight108`.
@@ -1837,6 +1864,18 @@ pub(crate) mod expression {
     /// Shared by 32: state `GrindOutAssist514`, state `GrindOutAssist523`, state
     /// `GrindOutAssist526`, state `GrindOutAssist529` and 28 more.
     pub(crate) const GRIND_OUT_ASSIST: u16 = 446;
+    /// State `StepForwardRight310`.
+    pub(crate) const STEP_FORWARD_RIGHT_310: u16 = 447;
+    /// State `StepRight311`.
+    pub(crate) const STEP_RIGHT_311: u16 = 448;
+    /// State `StepBackRight312`.
+    pub(crate) const STEP_BACK_RIGHT_312: u16 = 449;
+    /// State `StepBackLeft314`.
+    pub(crate) const STEP_BACK_LEFT_314: u16 = 450;
+    /// State `StepLeft315`.
+    pub(crate) const STEP_LEFT_315: u16 = 451;
+    /// State `StepForwardLeft316`.
+    pub(crate) const STEP_FORWARD_LEFT_316: u16 = 452;
 }
 
 /// States by name and index, with their path below the root state.
@@ -2461,24 +2500,24 @@ pub(crate) mod state {
     pub(crate) const STANDING_308: u16 = 308;
     /// `OffBoard/OBGround/Locomotion/Idle/StepForward`.
     pub(crate) const STEP_FORWARD_309: u16 = 309;
+    /// `OffBoard/OBGround/Locomotion/Idle/StepForwardRight`.
+    pub(crate) const STEP_FORWARD_RIGHT_310: u16 = 310;
+    /// `OffBoard/OBGround/Locomotion/Idle/StepRight`.
+    pub(crate) const STEP_RIGHT_311: u16 = 311;
+    /// `OffBoard/OBGround/Locomotion/Idle/StepBackRight`.
+    pub(crate) const STEP_BACK_RIGHT_312: u16 = 312;
     /// `OffBoard/OBGround/Locomotion/Idle/StepBackward`.
-    pub(crate) const STEP_BACKWARD_310: u16 = 310;
+    pub(crate) const STEP_BACKWARD_313: u16 = 313;
+    /// `OffBoard/OBGround/Locomotion/Idle/StepBackLeft`.
+    pub(crate) const STEP_BACK_LEFT_314: u16 = 314;
+    /// `OffBoard/OBGround/Locomotion/Idle/StepLeft`.
+    pub(crate) const STEP_LEFT_315: u16 = 315;
+    /// `OffBoard/OBGround/Locomotion/Idle/StepForwardLeft`.
+    pub(crate) const STEP_FORWARD_LEFT_316: u16 = 316;
     /// `OffBoard/OBGround/Locomotion/Idle/ToStepForward`.
-    pub(crate) const TO_STEP_FORWARD_311: u16 = 311;
+    pub(crate) const TO_STEP_FORWARD_317: u16 = 317;
     /// `OffBoard/OBGround/Locomotion/Idle/ToStepBackward`.
-    pub(crate) const TO_STEP_BACKWARD_312: u16 = 312;
-    /// `OffBoard/OBGround/Locomotion/StandingJump/Antic`.
-    pub(crate) const ANTIC_313: u16 = 313;
-    /// `OffBoard/OBGround/Locomotion/StandingJump/Takeoff`.
-    pub(crate) const TAKEOFF_314: u16 = 314;
-    /// `OffBoard/OBGround/Locomotion/StandingJump/Descent`.
-    pub(crate) const DESCENT_315: u16 = 315;
-    /// `OffBoard/OBGround/Locomotion/StandingJump/Land`.
-    pub(crate) const LAND_316: u16 = 316;
-    /// `OffBoard/OBGround/Locomotion/StandingJump/JumpingIntoMount`.
-    pub(crate) const JUMPING_INTO_MOUNT_317: u16 = 317;
-    /// `OffBoard/OBGround/Locomotion/StandingJump/IntoBSGrabOut`.
-    pub(crate) const INTO_BS_GRAB_OUT_318: u16 = 318;
+    pub(crate) const TO_STEP_BACKWARD_318: u16 = 318;
     /// `OffBoard/OBGround/Locomotion/RunAround/LocoNew`.
     pub(crate) const LOCO_NEW_319: u16 = 319;
     /// `OnBoard/Grinding/BS_5_O/BS_5_O_FSGRAB/Into`.
@@ -4549,4 +4588,16 @@ pub(crate) mod state {
     pub(crate) const MOVING_1352: u16 = 1352;
     /// `OnBoard/OnGround/RidingIdle/Riding/Turning/Manual/NoseManual/Holding/Brake/Stationary`.
     pub(crate) const STATIONARY_1353: u16 = 1353;
+    /// `OffBoard/OBGround/Locomotion/StandingJump/Antic`.
+    pub(crate) const ANTIC_1354: u16 = 1354;
+    /// `OffBoard/OBGround/Locomotion/StandingJump/Takeoff`.
+    pub(crate) const TAKEOFF_1355: u16 = 1355;
+    /// `OffBoard/OBGround/Locomotion/StandingJump/Descent`.
+    pub(crate) const DESCENT_1356: u16 = 1356;
+    /// `OffBoard/OBGround/Locomotion/StandingJump/Land`.
+    pub(crate) const LAND_1357: u16 = 1357;
+    /// `OffBoard/OBGround/Locomotion/StandingJump/JumpingIntoMount`.
+    pub(crate) const JUMPING_INTO_MOUNT_1358: u16 = 1358;
+    /// `OffBoard/OBGround/Locomotion/StandingJump/IntoBSGrabOut`.
+    pub(crate) const INTO_BS_GRAB_OUT_1359: u16 = 1359;
 }

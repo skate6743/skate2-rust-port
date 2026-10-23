@@ -8,8 +8,8 @@ Reads the graph's declaration data and writes its ids module beside it:
   expression  every expression a state or transition evaluates, named by its users
   state       every state, named by its name and index
 
-An expression with one user takes that user's name: TAKEOFF_314 for a state's guard,
-TAKEOFF_314_TO_DESCENT_315 for a transition. A shared expression takes what all its users
+An expression with one user takes that user's name: TAKEOFF_1355 for a state's guard,
+TAKEOFF_1355_TO_DESCENT_1356 for a transition. A shared expression takes what all its users
 have in common (every FromGrind state, every Into -> EarlyOut transition), and the names in
 SHARED below cover the expressions whose users have nothing in common. --check compares
 instead of writing and fails when the file is stale; --missing lists the shared expressions
@@ -116,6 +116,7 @@ SHARED = {
         19: "MVOBJ_TO_PULL_RIGHT",
         20: "MVOBJ_TO_PULL_LEFT",
         21: "MVOBJ_NOT_MOVING",
+        22: "IDLE_TO_RUN_AROUND",
         23: "OFF_BOARD_WILL_EXPIRE_IN_0_1",
         28: "PHYS_FILTERED_STATE_OFFBOARD",
         34: "STRIDE_TO_RUN_AROUND",

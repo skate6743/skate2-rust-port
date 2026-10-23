@@ -669,7 +669,8 @@ impl<K, W> ActorAnimationConstruction<K, W> {
                         if !(desired - speed < maximum) {
                             desired = maximum + speed;
                         }
-                    } else if desired < f32::from_bits(0xbdcccccd) {
+                    } else if desired <= 0.0 {
+                        // 1.02 82a9a0ec: from zero down, where 1.00 needed below -0.1.
                         desired =
                             speed - cvars.try_loco_update_max_decel_stop().map_err(E::Cvar)?;
                     } else {

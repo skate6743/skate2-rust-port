@@ -27,14 +27,14 @@ Each ids module has three parts, and every constant has a doc comment:
   `NEG_`. A declaration that repeats an earlier one keeps its own index, which the
   evaluators read separately, and ends in `_2ND`.
 - `expression`: every expression a state or transition evaluates, named by its
-  users. A state's guard takes the state's label (`TAKEOFF_314` for `Takeoff314`), a
-  transition's takes source and target (`TAKEOFF_314_TO_DESCENT_315`). An expression
+  users. A state's guard takes the state's label (`TAKEOFF_1355` for `Takeoff1355`), a
+  transition's takes source and target (`TAKEOFF_1355_TO_DESCENT_1356`). An expression
   several users share takes what they have in common (`FROM_GRIND` guards every
   `FromGrind` state, `TO_SUPERMAN` both `ToSuperman` states) or a name from the
   generator's `SHARED` table that says what it tests (`WILL_EXPIRE_IN_0_05_NOT_WAIT`
   is shared by 276 transitions). The doc comment lists the users.
 - `state`: every state as name plus index, the label `tools/graph_query.py` prints
-  (`TAKEOFF_314`), with the state's path below the root in the doc comment. A name
+  (`TAKEOFF_1355`), with the state's path below the root in the doc comment. A name
   that starts with a digit gets a `STATE_` prefix (`STATE_360_FLIP_199`).
 
 Evaluators import the modules under short aliases:
@@ -43,7 +43,7 @@ Evaluators import the modules under short aliases:
 use crate::generated_motion_load::ids::{condition as cond, expression as expr};
 
 Ok(match index {
-    expr::TAKEOFF_314_TO_DESCENT_315 => c(cond::WILL_EXPIRE_IN_0_017)?,
+    expr::TAKEOFF_1355_TO_DESCENT_1356 => c(cond::WILL_EXPIRE_IN_0_017)?,
     expr::LANDING_ON_BOARD_28 => {
         c(cond::CAN_LAND_ON_BOARD)? && c(cond::OB_TIME_TO_LAND_GREATER_0_05)?
     }
@@ -54,7 +54,7 @@ Action code that keys on states imports `ids::state as state_id`, because
 `state` is already a common local name there:
 `self.current_state == state_id::ACCIDENTAL_DISMOUNT_31`.
 
-A path pattern such as `expr::TAKEOFF_314` cannot become a catch-all binding: a
+A path pattern such as `expr::TAKEOFF_1355` cannot become a catch-all binding: a
 missing or misspelled name fails to compile.
 
 ### Regenerating
@@ -74,7 +74,10 @@ shared expression has no name; `--missing` lists those, and their names go into
 `tools/compare_graph_expressions.py` reads the names back to indices, so the proof
 of the Motion and Action evaluators against the native `EvaluateExpression` switch
 paths (extracted with `tools/ida_graph_switch_paths.py`) runs on the named code:
-all 894 Motion and 214 Action decision cases match.
+all 894 Motion and 214 Action decision cases match. The Motion graph carries the
+off-board Idle of Title Update 2 (1.02); against that build's switch, mapped to the
+port's indices, 896 of 898 cases match, and the other two are `DebugAnimations`
+(272), which the retail build compiles to false.
 
 ## Physics states
 

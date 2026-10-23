@@ -1147,7 +1147,7 @@ pub(super) const ATTRIBUTES: [Attribute; 457] = [
     },
     Attribute {
         key: "AGIntent",
-        value: "StepForward",
+        value: "OB_WalkForward",
     },
     Attribute {
         key: "MGIntent",
@@ -1155,7 +1155,7 @@ pub(super) const ATTRIBUTES: [Attribute; 457] = [
     },
     Attribute {
         key: "AGIntent",
-        value: "StepForwardRight",
+        value: "OB_WalkForwardRight",
     },
     Attribute {
         key: "MGIntent",
@@ -1163,7 +1163,7 @@ pub(super) const ATTRIBUTES: [Attribute; 457] = [
     },
     Attribute {
         key: "AGIntent",
-        value: "StepRight",
+        value: "OB_WalkRight",
     },
     Attribute {
         key: "MGIntent",
@@ -1171,7 +1171,7 @@ pub(super) const ATTRIBUTES: [Attribute; 457] = [
     },
     Attribute {
         key: "AGIntent",
-        value: "StepBackRight",
+        value: "OB_WalkBackwardRight",
     },
     Attribute {
         key: "MGIntent",
@@ -1179,7 +1179,7 @@ pub(super) const ATTRIBUTES: [Attribute; 457] = [
     },
     Attribute {
         key: "AGIntent",
-        value: "StepBackward",
+        value: "OB_WalkBackward",
     },
     Attribute {
         key: "MGIntent",
@@ -1187,7 +1187,7 @@ pub(super) const ATTRIBUTES: [Attribute; 457] = [
     },
     Attribute {
         key: "AGIntent",
-        value: "StepBackLeft",
+        value: "OB_WalkBackwardLeft",
     },
     Attribute {
         key: "MGIntent",
@@ -1195,7 +1195,7 @@ pub(super) const ATTRIBUTES: [Attribute; 457] = [
     },
     Attribute {
         key: "AGIntent",
-        value: "StepLeft",
+        value: "OB_WalkLeft",
     },
     Attribute {
         key: "MGIntent",
@@ -1203,7 +1203,7 @@ pub(super) const ATTRIBUTES: [Attribute; 457] = [
     },
     Attribute {
         key: "AGIntent",
-        value: "StepForwardLeft",
+        value: "OB_WalkForwardLeft",
     },
     Attribute {
         key: "MGIntent",

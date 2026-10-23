@@ -308,14 +308,25 @@ impl<K, W> ActorAnimationConstruction<K, W> {
                     let absolute = input_turn.abs();
                     let lower = if -absolute >= 0.0 { 0.0 } else { absolute };
                     let bounded = if 1.0 - lower >= 0.0 { lower } else { 1.0 };
-                    let sign = if input_turn > 0.0 { -1.0 } else { 1.0 };
+                    let sign = if input_turn <= 0.0 { 1.0 } else { -1.0 };
+                    // 1.02 82a9b224..b374: three quarters past 0.85 desired speed, and 80
+                    // times the step lands through (target - turn) * 0.04 on the turn
+                    // cleared above, where 1.00 took 1.5 times it.
+                    let suffix = self.before_face.as_ref().expect("retained");
+                    let speed = if suffix.desired_speed <= f32::from_bits(0x3f59999a) {
+                        1.0
+                    } else {
+                        0.75
+                    };
                     let curve = tuning
                         .graph(0xe8c68cdbc3a35230, 0x10, 0x50, bounded)
                         .map_err(E::Tuning)?;
                     let radians = curve * f32::from_bits(0x3c8efa35);
                     let signed = radians * sign;
                     let timed = signed * dt;
-                    self.before_face.as_mut().expect("retained").turn = timed * 1.5;
+                    let target = (timed * 80.0) * speed;
+                    let suffix = self.before_face.as_mut().expect("retained");
+                    suffix.turn = (target - suffix.turn) * f32::from_bits(0x3d23d70a);
                 } else if self
                     .before_sprint
                     .as_ref()

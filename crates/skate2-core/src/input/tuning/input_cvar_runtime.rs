@@ -9842,12 +9842,13 @@ impl InputCvarReferences {
 }
 
 impl InputCvarReferences {
-    /// `Island.Step_UpdatePrePhysics1` selects by exact retained flags, not submit mask.
+    /// `Island.Step_UpdatePrePhysics1`: `kMaxSinglePlayerIterations` for a single player island,
+    /// else `kMaxOnlineIterations`.
     pub(crate) fn try_island_max_iterations(
         &self,
-        island_flags: u32,
+        single_player: bool,
     ) -> Result<i32, InputCvarError> {
-        self.try_current_integer(if island_flags == 3 { 299 } else { 300 })
+        self.try_current_integer(if single_player { 299 } else { 300 })
     }
 }
 

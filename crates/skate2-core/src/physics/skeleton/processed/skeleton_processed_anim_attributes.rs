@@ -468,7 +468,8 @@ const SCALAR_ATTRIBUTES: &[(&str, Scalar, bool)] = &[
     ("world_grab_z", Scalar::WorldGrabZ, false),
     ("WipeoutControlX", Scalar::WipeoutX, false),
     ("WipeoutControlY", Scalar::WipeoutY, false),
-    ("OB_JumpX", Scalar::JumpX, false),
+    // 1.02 8299525c negates it: the PlayerUI stick reaches it in the skater's frame.
+    ("OB_JumpX", Scalar::JumpX, true),
     ("OB_JumpZ", Scalar::JumpZ, false),
 ];
 

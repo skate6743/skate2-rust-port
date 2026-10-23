@@ -146,7 +146,18 @@ game's state:
   sync points → `Complete` → `AllPlayersComplete` → `Results` → `FinalResults` and
   `GameTimer(DisplayResults)` (the board shows four seconds) → `ExitPostChallenge` → the host's next challenge
   (`ResetAttributes`) → lobby skate. Barriers time out so a dropped player cannot hang the rest.
-  A challenge every participant left goes straight back to lobby skate, with no board.
+  A challenge every participant left goes straight back to lobby skate, with no board. The board
+  holds the participants still in the challenge, each line at its place among them in the
+  round's order; one who left has no line.
+  A console loads its round every frame, as `ChallengeLoadState` does, with or without a pause menu
+  or Options open; only a travel to the lobby's location comes first. The load pauses the
+  simulation (`kPAUSE_STATE_ONLINE`) and puts the loading screen up (`WaitForStreamer`: the
+  front-end background snapped black, no pause menu or online hub opening) at the player's spawn
+  point; `ChallengeLoaded` goes once the challenge's assets are in and the area there has stayed
+  loaded for 16 updates. `GameReset(Challenge)` then closes every front-end screen as
+  `PopAllStates` does (the pause menu, Options and its music player, Skate Profile, the online
+  hub), each with its `OnLeave` (Options saves nothing), and unpauses the simulation; the loading
+  screen comes down once the area has stayed loaded for 16 more updates.
 - **Leave Challenge** (PC port addition): `LeaveChallenge` takes a participant out of the
   challenge as a leave of the game would (its barriers, completion and result no longer wait
   for it, and the board leaves it out), but it stays a member: `ChallengeLeave` tells every
@@ -342,7 +353,14 @@ found by its `challenges.Name`:
   `StateOnlineGame::SetupInitalGameInfo` (0x8275dba8) and `GameModule::BackToSP` (0x8273dac8)
   set and clear it: no slow motion online. `Simulation::OnRequestSetSimRate` (0x8289e350) keeps
   1/60 s, and the camera's big-air `SlowMotionController` (0x82ca8e20, 0x82ca8f48) posts nothing
-  ([evidence](../evidence/online-smoothness-2026-10-19.md)).
+  ([evidence](../evidence/online-smoothness-2026-10-19.md)). The rate's online game also picks the
+  solver's passes. The original's network-game physics islands (`Simulation` and `Visual`, as
+  `sGhostSystemEnabled` makes them at `World::Initialize` 0x827b0f3c) run exactly
+  `kMaxOnlineIterations` (25) passes a tick, where single player's `Both` island runs
+  `kMaxSinglePlayerIterations` (50) (`Island::Step_UpdatePrePhysics1` 0x827b36e8;
+  `HorusPipelineIslandUsingIndirectJacobians` 0x82ae2858 has no early exit). The port's online
+  games keep the `Both` island and take the online count; the online islands' collision culling
+  and fixed per-player islands are not ported.
 
 ## The netcode
 
@@ -448,13 +466,15 @@ beat" each player sees comes out of the shared run rather than a packet of its o
 **Contest rounds.** Best Trick and Jam start each round at a sync point
 (`Online.OnlineChallengeRoundSyncPoint`): every console stops its challenge there, at a tick of
 its own (each plays its own player's highlight first), pauses (`kPAUSE_STATE_ONLINE`,
-`Net::PauseGame`) and sends a standing facts frame with the `syncing` note, then
-`SyncPoint{round}`; the consoles still on their way run it standing still
-([facts.md](facts.md#sync-points)). Once the server has the sync point from every player, it
-releases them all, and every console goes on from the same tick (the round's next run of
-ticks). Each console then teleports its skater to its own spawn point of the round's start
-location (off the board, as the original's `cMsgTeleport` says), and its next challenge tick
-delivers `cMsgOnlineSyncComplete`, the same tick everywhere.
+`Net::PauseGame`), sends a standing facts frame with the `syncing` note and puts the loading
+screen up at its spawn point (`WaitForStreamer`), then sends `SyncPoint{round}` once the area
+there has stayed loaded for 16 updates and no challenge hull is loading; the consoles still on
+their way run it standing still ([facts.md](facts.md#sync-points)). Once the server has the
+sync point from every player, it releases them all, and every console goes on from the same tick
+(the round's next run of ticks). Each console then teleports its skater to its own spawn point
+of the round's start location (off the board, as the original's `cMsgTeleport` says), and its
+next challenge tick delivers `cMsgOnlineSyncComplete`, the same tick everywhere. The loading
+screen comes down once the area has stayed loaded for 16 more updates.
 Between rounds FE state 8's online display shows the script's round board (Round Results, "Next
 Round Starts in" and the script's six-second timer, nothing after the last round) until the
 script closes it. As under every front-end state in an online game (`Net::ResumeGame`), the game
@@ -497,15 +517,20 @@ to the lobby:
   match's "Matching up with skaters..." loading popup (popup 38, no options, not cancellable;
   the `MatchingUpSkaters` screen is debug-menu only); the sign-in, no-match, no-server,
   disconnected and kicked notices.
-- **Lobby and challenges**: no AI skaters (`AISkaterManager::LoadGame` notes the network game),
-  and, a port change as in Party Play, no pedestrians or traffic.
+- **Lobby and challenges**: no AI skaters (`AISkaterManager::LoadGame` notes the network game,
+  whether the game is joined from the main menu or from a game in play), and, a port change as
+  in Party Play, no pedestrians or traffic.
 - **Session markers**: `SessionMarker::Update` 0x828acc90 and `VerifyPosition` 0x828ab328 ask
   `Simulation::IsNetworkGame`, which holds in an online game, so security and no-skate zones
   never forbid a marker there. In its place `VerifyLocalPlayerOkToSet` 0x828ab4a0 checks the
   local skater's respawn transform (`CalcRespawnTransform` 0x825f09a8) with
   `BreadCrumbManager::IsPostionOk`.
 - **Lobby**: each player starts at the location's spawn point of its player index
-  (`GetStreamerPosition`); the top-left event log (`hud_online_eventlog2`) tells of joins,
+  (`GetStreamerPosition`). The original's online challenges are for six players and their
+  locations hold six spawn points, so a seventh or eighth player (PC port addition) starts at the
+  sixth's, in the lobby and in a round's teleports and sync points alike; `GetSpawnLocation`'s
+  own fallback for a missing index (the first point moved 5 m along -z per index) is often in the
+  ground. The top-left event log (`hud_online_eventlog2`) tells of joins,
   leaves, host changes, privacy changes and the host's location changes; the bottom-right
   lobby board ("lobbyhud", `SetupLobbyHUD`): the leaderboard titled by `Mission.GetTitle()`
   ("Challenge Lobby", or "Freeskate" in an online free skate game), each player by index with
@@ -607,10 +632,19 @@ to the lobby:
   others as ghosts. To the round's other players the leaver disconnects from the challenge
   after its last facts, as a player who left the game does, its skater goes at once, and the log
   reads "<name> has left the challenge."; the members already waiting see the leaver as itself
-  again and read the same line.
-- **Sync points**: the original's flow preloaded the round's NIS and waited for the streamer at
-  the spawn point before reporting the sync point; here the sync point goes out at once and the
-  teleport after the release streams the spawn (the flow teleport's `MoveStreamFocus`).
+  again and read the same line. The leave also ends the challenge's mission music as an
+  abandoned challenge does (`QuitChallenge`) and resets what the challenge gave the players'
+  scoring, as the next lobby reset's `ResetPlayers` would.
+- **A round's end** (a lobby reset or Leave Challenge): the challenge system's game unload shuts
+  its activities down, then the HUD manager's update runs over the deleted groups, so every
+  component they bound hides (S.K.A.T.E.'s trick list, the timers, the challenge's leaderboard)
+  before the system goes; overlay screens and the subtitle of a cutscene go with it. Every
+  skater then scores as with no challenge: the multiplier a Spot Battle turns off is back and
+  every trick kind is enabled. Leaving the game mid-challenge does the same through the game's
+  unload.
+- **Sync points**: the original's flow also preloaded the round's NIS before reporting the sync
+  point; here the scene loads when the script starts it. The loading screen leaves the stream
+  focus where the online game's area holds it, and shows no loading tag.
 - **No replays** (a port choice, unlike the original): an online game plays no highlight reel
   (`HighlightReel.PlayHighlightReel*` answer `cMsgHighlightReelComplete` at once) and no
   presentation replay (the `REPLAY` event goes on at once), so a challenge's end goes straight

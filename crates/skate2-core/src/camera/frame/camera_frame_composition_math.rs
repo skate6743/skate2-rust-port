@@ -91,7 +91,7 @@ pub(crate) fn framing_basis<T: ReckoningSinCosNumeric>(
 }
 
 /// `Matrix33FromLookAt829b0790`: normalize both crosses; retain input Z.
-pub(super) fn look_basis<N: ReckoningNumeric>(
+pub(crate) fn look_basis<N: ReckoningNumeric>(
     look: Vector,
     numeric: &mut N,
 ) -> Result<[Vector; 3], N::Error> {

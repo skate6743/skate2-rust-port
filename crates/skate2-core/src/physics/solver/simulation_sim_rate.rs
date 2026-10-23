@@ -44,9 +44,10 @@ impl std::fmt::Display for SimRateError {
 
 pub(crate) struct SimulationSimRate {
     game_info: Option<Arc<PhysicalGameInfo>>,
-    /// The port's online game, which `Simulation::IsNetworkGame` answers for the rate. The port
-    /// leaves `sGameInfo.isNetworkGame` clear online (its other network-game branches are the
-    /// original lockstep's), so the online session sets this in its place.
+    /// The port's online game, which `Simulation::IsNetworkGame` answers for the rate and which
+    /// solves with the network game's passes (`kMaxOnlineIterations`). The port leaves
+    /// `sGameInfo.isNetworkGame` clear online (its other network-game branches are the original
+    /// lockstep's), so the online session sets this in its place.
     online_game: bool,
     /// Simulation+0x84 `mCurrentSimUpdateRate`.
     current_sim_update_rate: f32,
@@ -80,6 +81,10 @@ impl SimulationSimRate {
     /// `GameModule::BackToSP` clears it (0x8273dac8).
     pub(crate) fn set_online_game(&mut self, online: bool) {
         self.online_game = online;
+    }
+    /// The port's online game in play.
+    pub(crate) fn online_game(&self) -> bool {
+        self.online_game
     }
     /// `Simulation::IsNetworkGame`8289e448; `SkaterManager::IsInAnOnlineGame`
     /// (ISkaterManager+0x2c, folded 825f1bb8) calls the same Simulation slot. In a network game

@@ -396,3 +396,62 @@ input/animation/publication path. Those overall checkpoints failed elsewhere
 (cvar-order expectation and duplicate query-world test setup respectively), so
 they are not a full accepted workspace snapshot. Numerical parity continues to
 require reference tick traces.
+
+## Title Update 2 off-board stick
+
+1.02 replaces the off-board steer and magnitude curves inside the same Fill
+(1.02 `Fill` 824e54e8, block 824e6314..68f4). While the left stick is held, its
+X and Y are the stick; the side is `-x` (824e64c4), scaled by 1.75 and squared
+with its sign until a turn latches. A latched turn keeps the stick's world
+direction (listener +0x80, flag +0x91) until the skater faces it. With B held in
+state 500, `PickOffBoardWalkDirection` (824e53b8) picks one of eight `OB_Walk*`
+intents from `-x, -y`. A positive `OB_Steer` selects `TurningRight` for an
+unmirrored skater and the off-board update turns by `-OB_Turn` at 500 deg/s.
+1.00 steered by `+sign(x)` through the Vault curves (824e4dd8).
+
+Off the board the Fill does not read the pad's stick. 1.02 also adds
+`sub_826F7668` (826f7668..78b4), which `PlayerUI::Update` (8232f550, grown from
+226 to 261 instructions) calls on the copied pad line at 8232f82c, before the
+focus test and the `PlayerInputData` pack. It runs while the local skater
+(`GetLocalActor`: the ghost, else `FindByIndex`) is off its board
+(`PhysOut_State::mIsOffboard`), not holding an object
+(`PhysOut_OffBoard::mIsGrabbingObject`) and not in state 505. It takes
+`(LStickL - LStickR, 0, LStickU - LStickD)` through the first three rows of
+`CameraPresentation::GetMatrix(true)`, clears the height, applies
+`Math::NormalizeSafe` with a zero default, and takes the result into the frame of
+`PhysOut_Skeleton::mEffectiveSkeletonRootMatrix` through its adjugate inverse,
+with the arithmetic of the latch at 824e63d0. The local X and Z are split back
+into buttons 16..19, so `GP_LStickX` and `GP_LStickY` become a unit vector in the
+skater's frame, whose X is up x forward.
+
+With the camera behind the skater, a push right therefore reaches the Fill as
+X = -1 and turns the skater right. A held direction stays where the camera sees
+it while the skater turns, so a stick held behind turns the skater round until
+it is past 0.7 forward, where `OBL_SteerMagnitude` starts the run. A retail 1.02
+trace shows the listener's stick sweeping from (0.24, -0.97) to (0.05, 0.99) at
+the turn rate during one held push, then physics state 504.
+
+The port applies the same transform in `try_player_sample`
+(`input_selected_player_sample.rs`, `OffBoardStickFrames`). The session supplies
+the shown camera, an online game's view or else the game camera, and the
+skater's effective root matrix. `GetMatrix(true)` would prefer a challenge camera
+or an ICE camera while one is active; the port does not show either while the
+simulation runs, so the stick follows the shown camera there too. AI skaters
+insert these intents themselves and are unaffected.
+
+1.02 also changes the run. `RunAround/LocoNew` attaches `ob_Turn` to `OBL_Steer`,
+and `CreateLocomotionTrajectory` (1.02 82a9a990, 1.00 82a96e28) turns each frame
+by the `PointGraph` of the bounded turn (key e8c68cdbc3a35230) times pi/180, the
+sign and the step time. 1.00 multiplies that by 1.5. 1.02 multiplies it by 80, by
+0.75 when the desired speed is above 0.85, and stores `(target - turn) * 0.04` on
+the turn it cleared (82a9b224..b374): 3.2 times the step at running speed, so a
+held turn runs a loop about twice as tight. Its sign is the raw `ble`, so an
+unordered turn takes -1. `UpdateLocomotionTrajectory` (1.02 82a98e60) applies the
+stop rate once the desired speed is at or below 0 (82a9a0ec), where 1.00 needed
+it below -0.1, so a released stick ends the run at once instead of easing off by
+0.15 per frame. `Skeleton::ProcessAnimAttributes` (1.02 82993b58) negates
+`OB_JumpX` (8299525c); `StandingJump` attaches it to `OB_ObjectMvX`, which follows
+the stick in the skater's frame. The port carries the three changes in
+`actor_animation_locomotion_create.rs`, `actor_animation_locomotion_update.rs`
+and `skeleton_processed_anim_attributes.rs`. The other 1.02 physics and camera
+changes concern grinds and stay out of the off-board port.

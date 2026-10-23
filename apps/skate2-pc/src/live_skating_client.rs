@@ -2644,8 +2644,11 @@ impl LiveSkatingClient {
         }
         let outcome = outcome?;
         self.gameplay = !matches!(outcome, SelectedQueuedFrameOutcome::Frontend);
+        let ended_career_hud = self.session.take_ended_career_hud();
         if self.session.take_game_unloaded() {
             view.exit_to_front_end()?;
+        } else if let Some(last) = ended_career_hud {
+            view.end_career(&last)?;
         }
         for (total, value) in self.frame_timings.core.iter_mut().zip(core) {
             *total += value;

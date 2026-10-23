@@ -177,7 +177,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         game.game = backend.game;
         game.location = location;
         game.backend = backend;
-        self.career = None;
+        self.drop_career()?;
         self.party_play.game = Some(game.clone());
         self.party_play.spawn = Some((game, start));
         self.freeskate.spawn_attributes_pending = true;

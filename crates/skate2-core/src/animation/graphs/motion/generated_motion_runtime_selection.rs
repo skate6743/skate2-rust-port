@@ -122,10 +122,12 @@ pub(super) fn expression(
             c(cond::PHYS_FILTERED_STATE_OFFBOARD)? || c(cond::HAS_INTENT_OFF_BOARD)?
         } //82912768: PhysFilteredState(offboard), else HasIntent(OffBoard)
         expr::STRIDE_TO_RUN_AROUND => c(cond::OB_TIME_TO_LAND_LESS_EQUAL_0_03)?, //8290be08: OBTimeToLand(lessEqual 0.03), stride -> RunAround107
-        expr::TAKEOFF_314_TO_DESCENT_315 => c(cond::WILL_EXPIRE_IN_0_017)?, //8290bb50: WillExpire(InTime=0.017), Takeoff314 -> Descent315
-        expr::DESCENT_315_TO_JUMPING_INTO_MOUNT_317 => c(cond::IN_STATE_FOR_TIME_DESCENT_LESS_0_3)?, //8290bbb0: InStateForTime(Descent, less 0.3) -> JumpingIntoMount317
-        expr::PHYS_FILTERED_STATE_OFFBOARD => c(cond::PHYS_FILTERED_STATE_OFFBOARD)?, //8290bc10: PhysFilteredState(offboard), Land316 guard
-        expr::TO_MOUNT | expr::JUMPING_INTO_MOUNT_317 => c(cond::HAS_INTENT_OB_MOUNT)?, //8290ba94: HasIntent(OB_Mount), shared by cases 24 and 29
+        expr::TAKEOFF_1355_TO_DESCENT_1356 => c(cond::WILL_EXPIRE_IN_0_017)?, //8290bb50: WillExpire(InTime=0.017), Takeoff1355 -> Descent1356
+        expr::DESCENT_1356_TO_JUMPING_INTO_MOUNT_1358 => {
+            c(cond::IN_STATE_FOR_TIME_DESCENT_LESS_0_3)?
+        } //8290bbb0: InStateForTime(Descent, less 0.3) -> JumpingIntoMount1358
+        expr::PHYS_FILTERED_STATE_OFFBOARD => c(cond::PHYS_FILTERED_STATE_OFFBOARD)?, //8290bc10: PhysFilteredState(offboard), Land1357 guard
+        expr::TO_MOUNT | expr::JUMPING_INTO_MOUNT_1358 => c(cond::HAS_INTENT_OB_MOUNT)?, //8290ba94: HasIntent(OB_Mount), shared by cases 24 and 29
         expr::INTO_BS_GRAB_OUT => !c(cond::HAS_INTENT_BSGRAB)?, //8290bc70: HasIntent(BSGRAB), cntlzw negation on both paths
         expr::LANDING_ON_BOARD_28 => {
             c(cond::CAN_LAND_ON_BOARD)? && c(cond::OB_TIME_TO_LAND_GREATER_0_05)?
@@ -170,7 +172,7 @@ pub(super) fn expression(
                 || (c(cond::CURRENT_STATE_OB_AIR_LEFT_FOOT_STRIDE)?
                     && c(cond::HAS_INTENT_OB_MOUNT)?)
         } //8291c13c
-        expr::STANDING_308_TO_RUN_AROUND_107 => c(cond::HAS_INTENT_OB_STEER_MAGNITUDE_HELD_2ND)?, //8290b9d4: offboard locomotion request
+        expr::IDLE_TO_RUN_AROUND => c(cond::HAS_INTENT_OB_STEER_MAGNITUDE_HELD_2ND)?, //8290b9d4: offboard locomotion request
         expr::OFF_BOARD_WILL_EXPIRE_IN_0_1 => c(cond::WILL_EXPIRE_IN_0_1_2ND)?, //8290ba34: offboard WillExpire
         expr::STANDING_JUMP_106 => c(cond::HAS_INTENT_OB_JUMP)?, //8290baf0: offboard idle target intent
         expr::SLIDE_OUT_EARLY => c(cond::HAS_ANIM_ATTRIBUTE_EARLY_OUT)?, //82910714: slide early-out animation attribute
@@ -194,7 +196,7 @@ pub(super) fn expression(
         expr::BRAKE => c(cond::HAS_INTENT_MANUAL_BRAKE_2ND)?, //8291114c: manual Brake intent
         expr::MOVING => c(cond::PHYSICS_SPEED_COMPARE_ABS_ALONG_SKATE_Z_GREATER_0_1)?, //829111ac: manual braking speed
         expr::STATIONARY => !c(cond::PHYSICS_SPEED_COMPARE_ABS_ALONG_SKATE_Z_GREATER_0_1)?, //8291120c: stationary complement, cache raw comparison
-        expr::STEP_BACKWARD_310 => {
+        expr::STEP_BACKWARD_313 => {
             c(cond::LAST_STATE_TO_STEP_BACKWARD)?
                 || (c(cond::HAS_INTENT_STEP_BACKWARD)? && !c(cond::IS_MIRRORED)?)
                 || (c(cond::HAS_INTENT_STEP_BACKWARD)? && c(cond::IS_MIRRORED)?)
@@ -214,6 +216,36 @@ pub(super) fn expression(
                 || (c(cond::HAS_INTENT_STEP_FORWARD)? && !c(cond::IS_MIRRORED)?)
                 || (c(cond::HAS_INTENT_STEP_FORWARD)? && c(cond::IS_MIRRORED)?)
         } //82917294: preserve repeated HasIntent reads
+        expr::STEP_FORWARD_RIGHT_310 => {
+            c(cond::LAST_STATE_TO_STEP_FORWARD_RIGHT)?
+                || (c(cond::HAS_INTENT_STEP_FORWARD_RIGHT)? && !c(cond::IS_MIRRORED)?)
+                || (c(cond::HAS_INTENT_STEP_FORWARD_LEFT)? && c(cond::IS_MIRRORED)?)
+        } //1.02 827632b0: mirrored, the other side's step
+        expr::STEP_RIGHT_311 => {
+            c(cond::LAST_STATE_TO_STEP_RIGHT)?
+                || (c(cond::HAS_INTENT_STEP_RIGHT)? && !c(cond::IS_MIRRORED)?)
+                || (c(cond::HAS_INTENT_STEP_LEFT)? && c(cond::IS_MIRRORED)?)
+        } //1.02 8276345c
+        expr::STEP_BACK_RIGHT_312 => {
+            c(cond::LAST_STATE_TO_STEP_BACK_RIGHT)?
+                || (c(cond::HAS_INTENT_STEP_BACK_RIGHT)? && !c(cond::IS_MIRRORED)?)
+                || (c(cond::HAS_INTENT_STEP_BACK_LEFT)? && c(cond::IS_MIRRORED)?)
+        } //1.02 82763608
+        expr::STEP_BACK_LEFT_314 => {
+            c(cond::LAST_STATE_TO_STEP_BACK_LEFT)?
+                || (c(cond::HAS_INTENT_STEP_BACK_LEFT)? && !c(cond::IS_MIRRORED)?)
+                || (c(cond::HAS_INTENT_STEP_BACK_RIGHT)? && c(cond::IS_MIRRORED)?)
+        } //1.02 8276395c
+        expr::STEP_LEFT_315 => {
+            c(cond::LAST_STATE_TO_STEP_LEFT)?
+                || (c(cond::HAS_INTENT_STEP_LEFT)? && !c(cond::IS_MIRRORED)?)
+                || (c(cond::HAS_INTENT_STEP_RIGHT)? && c(cond::IS_MIRRORED)?)
+        } //1.02 82763b08
+        expr::STEP_FORWARD_LEFT_316 => {
+            c(cond::LAST_STATE_TO_STEP_FORWARD_LEFT)?
+                || (c(cond::HAS_INTENT_STEP_FORWARD_LEFT)? && !c(cond::IS_MIRRORED)?)
+                || (c(cond::HAS_INTENT_STEP_FORWARD_RIGHT)? && c(cond::IS_MIRRORED)?)
+        } //1.02 82763cb4
         expr::NOT_HAS_INTENT_COFFIN => !c(cond::HAS_INTENT_COFFIN)?, //8290ec0c: HasIntent negated
         expr::HAS_INTENT_RIGHT_AND_LEFT_PUSH => {
             c(cond::HAS_INTENT_RIGHT_PUSH_2ND)? && c(cond::HAS_INTENT_LEFT_PUSH_2ND)?
@@ -343,10 +375,10 @@ pub(super) fn expression(
                 && (c(cond::HAS_INTENT_OB_DISMOUNT)? || c(cond::PHYSICS_WANTS_RUNOUT)?)
         } //8291ac08: physical gate before dismount/runout
         expr::TURNING_RIGHT_753 => {
-            (c(cond::HAS_INTENT_OB_STEER_GREATER_0_2)?
+            (c(cond::HAS_INTENT_OB_STEER_GREATER_0_05)?
                 && c(cond::HAS_INTENT_OB_STEER_MAGNITUDE_HELD_2ND)?
                 && !c(cond::IS_MIRRORED)?)
-                || (c(cond::HAS_INTENT_OB_STEER_LESS_NEG_0_2)?
+                || (c(cond::HAS_INTENT_OB_STEER_LESS_NEG_0_05)?
                     && c(cond::HAS_INTENT_OB_STEER_MAGNITUDE_HELD_2ND)?
                     && c(cond::IS_MIRRORED)?)
         } //82916ee4 and shared82912464
@@ -370,12 +402,12 @@ pub(super) fn expression(
                         && c(cond::HAS_INTENT_OB_STEER_MAGNITUDE_HELD)?)))
         } //82916c74..6ee0: ordered locomotion exit gate
         expr::STILL_752 => {
-            (c(cond::HAS_INTENT_OB_STEER_LESS_EQUAL_0_2)?
-                && c(cond::HAS_INTENT_OB_STEER_GREATER_EQUAL_NEG_0_2)?)
+            (c(cond::HAS_INTENT_OB_STEER_LESS_EQUAL_0_05)?
+                && c(cond::HAS_INTENT_OB_STEER_GREATER_EQUAL_NEG_0_05)?)
                 || !c(cond::HAS_INTENT_OB_STEER)?
                 || !c(cond::HAS_INTENT_OB_STEER_MAGNITUDE_HELD_2ND)?
         } //8291218c..2304: ordered four-intent gate
-        expr::TO_STEP_FORWARD_311 => {
+        expr::TO_STEP_FORWARD_317 => {
             (c(cond::HAS_INTENT_STEP_FORWARD)? && !c(cond::IS_MIRRORED)?)
                 || (c(cond::HAS_INTENT_STEP_FORWARD)? && c(cond::IS_MIRRORED)?)
         } //82912308: StepForward, preserve repeated reads
@@ -383,15 +415,15 @@ pub(super) fn expression(
             c(cond::IN_STATE_FOR_TIME_IDLE_GREATER_0_4)?
                 && c(cond::HAS_INTENT_OB_STEER_MAGNITUDE_HELD_2ND)?
         } //82912480: idle over 0.4 s, then steer held
-        expr::TO_STEP_BACKWARD_312 => {
+        expr::TO_STEP_BACKWARD_318 => {
             (c(cond::HAS_INTENT_STEP_BACKWARD)? && !c(cond::IS_MIRRORED)?)
                 || (c(cond::HAS_INTENT_STEP_BACKWARD)? && c(cond::IS_MIRRORED)?)
         } //8291254c: StepBackward, preserve repeated reads
         expr::TURNING_LEFT_754 => {
-            (c(cond::HAS_INTENT_OB_STEER_LESS_NEG_0_2)?
+            (c(cond::HAS_INTENT_OB_STEER_LESS_NEG_0_05)?
                 && c(cond::HAS_INTENT_OB_STEER_MAGNITUDE_HELD_2ND)?
                 && !c(cond::IS_MIRRORED)?)
-                || (c(cond::HAS_INTENT_OB_STEER_GREATER_0_2)?
+                || (c(cond::HAS_INTENT_OB_STEER_GREATER_0_05)?
                     && c(cond::HAS_INTENT_OB_STEER_MAGNITUDE_HELD_2ND)?
                     && c(cond::IS_MIRRORED)?)
         } //829170e8..7290 and shared tail82917090: preserve repeated cached reads

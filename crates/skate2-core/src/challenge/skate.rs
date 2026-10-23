@@ -281,6 +281,17 @@ impl ChallengeScoring {
         }
         inputs
     }
+
+    /// What every skater reads once the challenge system's game unloaded
+    /// (`Sk8ChallengeSystem::GameUnload` `0x825a4330`): its activities are shut down
+    /// (`ShutdownActivity` `0x82da2310`: no current activity, every kind enabled) and none is the
+    /// main challenge, for which `Physics::IsScoringMultiplierActive` (`0x827accc8`) answers 1.
+    /// The patterns are `cTrickPatternManager` statics and stay.
+    pub fn game_unload(&mut self) {
+        self.current = None;
+        self.enabled = [true; 14];
+        self.multiplier_active = true;
+    }
 }
 
 /// `cChallengeScoringManager::SetTrickType`/`SetAllTrickTypes` (`0x82da21b0`/`0x82da2238`):

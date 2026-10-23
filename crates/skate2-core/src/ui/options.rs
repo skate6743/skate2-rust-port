@@ -302,6 +302,14 @@ impl Controller {
         self.state.page = Page::Hidden;
         self.state.music_player = true;
     }
+    /// `OnLeave` 0x8266af70 as `PopAllStates` pops the state (or the music player over it):
+    /// the screen closes and nothing saves. The settings keep what the rows changed, and
+    /// `mIsDirty` stays until the next `OnEnter` clears it.
+    pub fn leave(&mut self) {
+        self.state.page = Page::Hidden;
+        self.state.music_player = false;
+        self.ready = false;
+    }
     /// The screen's `IntroComplete`: `OnScreenReady` makes it ready for input.
     pub fn acknowledge_intro(&mut self) {
         if self.visible() {

@@ -183,7 +183,6 @@ impl EditSkaterMovie {
         let panel = self
             .root
             .named(&["mSelection", "mInfopanelAnim", "mInfopanel"])?;
-        panel.named(&["mImage"])?.visible = false;
         let panel_type = if view.menu.banner() == "petes" {
             "petes"
         } else if view.menu.banner() == "none" {
@@ -222,6 +221,20 @@ impl EditSkaterMovie {
                 for name in ["LABELTEXT", "LABELTEXT_GLOW"] {
                     text(panel.named(&["mInfo", name])?, &info);
                 }
+            }
+        }
+        // The blurb, noblurb and petes panels DestroySponsorLogo; a part's panel ends in
+        // UpdateSponsorLogo, the logo of CAC_GetSponsorLogoFileName beside the part's name.
+        let logo = view.rows.get(view.selected).and_then(|row| row.sponsor_logo.clone())
+            .filter(|_| !matches!(panel_type, "blurb" | "noblurb" | "petes"));
+        let image = panel.named(&["mImage"])?;
+        image.visible = logo.is_some();
+        match logo {
+            Some(key) => {
+                image.properties.insert("cac_texture".into(), key);
+            }
+            None => {
+                image.properties.remove("cac_texture");
             }
         }
         Ok(())

@@ -1481,3 +1481,20 @@ fn the_online_challenge_loads_the_career_challenge_hull() {
     assert_eq!(hulls("m_4a_01_skate_carroll_koston_ol"), ["m_4a_01_skate_carroll_koston"]);
     assert_eq!(hulls("m_4a_01_skate_carroll_koston"), ["m_4a_01_skate_carroll_koston"]);
 }
+
+/// A Spot Battle (`OwnTheSpot`, 9) scores without the multiplier and a challenge can turn trick
+/// kinds off; once the challenge system's game unloads, the skaters score as with no challenge.
+#[test]
+fn a_game_unload_gives_the_skaters_the_scoring_of_no_challenge() {
+    let mut scoring = super::skate::ChallengeScoring {
+        current: Some(3),
+        multiplier_active: false,
+        ..Default::default()
+    };
+    scoring.enabled[4] = false;
+    scoring.game_unload();
+    let inputs = scoring.pop(true);
+    assert!(inputs.multiplier_active);
+    assert_eq!(inputs.enabled, [true; 14]);
+    assert_eq!(scoring.current, None);
+}

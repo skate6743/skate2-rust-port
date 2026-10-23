@@ -126,13 +126,14 @@ fn native_null_factory_result_continues_and_partial_sinit_is_not_repaired() {
 
 #[test]
 fn generated_motion_descriptors_preserve_packed_sections_and_original_root_order() {
-    assert_eq!(data::STATES.len(), 1354);
-    assert_eq!(data::BEHAVIOURS.len(), 2469);
-    assert_eq!(data::CONDITIONS.len(), 406);
+    // The original tables, then the rows the 1.02 off-board Idle appends.
+    assert_eq!(data::STATES.len(), 1354 + 6);
+    assert_eq!(data::BEHAVIOURS.len(), 2469 + 16);
+    assert_eq!(data::CONDITIONS.len(), 406 + 12);
     assert_eq!(data::HOOKS.len(), 18);
     assert_eq!(data::PARAMETERS.len(), 18);
-    assert_eq!(data::TRANSITIONS.len(), 1724);
-    assert_eq!(data::INDICES.len(), 1737);
+    assert_eq!(data::TRANSITIONS.len(), 1724 + 100);
+    assert_eq!(data::INDICES.len(), 1737 + 107);
     assert_eq!(data::STATES[0].name, "Motion");
     assert_eq!(data::STATES[0].children, Section { count: 7, index: 1 });
     assert_eq!(data::STATES[0].behaviours, Section { count: 4, index: 0 });

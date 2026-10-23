@@ -334,9 +334,10 @@ fn try_cofactor_inverse<N: ReckoningNumeric>(
     ]))
 }
 
-/// Shared determinant/adjugate basis graph: two-bone inverse 0x829b151c and
-/// wheel compression 0x82b2b5f4..b644. Callers retain their own cofactor
-/// construction order and translation multiply operand order.
+/// Shared determinant/adjugate basis graph: two-bone inverse 0x829b151c,
+/// wheel compression 0x82b2b5f4..b644 and the 1.02 Fill's latched stick
+/// 824e63d0..6488. Callers retain their own cofactor construction order and
+/// translation multiply operand order.
 pub(crate) fn try_inverse_basis_from_cofactors<N: ReckoningNumeric>(
     first_axis: SkeletonRootVector,
     cofactors: [SkeletonRootVector; 3],

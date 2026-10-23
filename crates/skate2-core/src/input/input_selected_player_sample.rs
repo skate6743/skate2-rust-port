@@ -4,15 +4,20 @@
 //! follow delivery; this leaf neither schedules nor acknowledges those stages.
 use super::SelectedDeviceInputRuntime;
 use crate::{
+    action_graph_input_listener::fill::{try_local_direction, world_direction},
     game_input_frame_session::GameInputFrameRequest,
     game_input_player::PlayerInputData,
     input_pad::device::PadRemap,
     input_pad_cache::InputPadCacheError,
     player::PlayerLoaderSlot,
+    reckoning_numeric::{
+        HostReckoningNumeric, ReckoningHostNumericError, ReckoningNumeric, try_normalize_safe,
+    },
     simulation_assembly_backend::constraint_session::world_services::{
         PhysicalGameInfo, PhysicalWorldServicesError,
     },
     skeleton_collision_numeric::SkeletonCollisionNumeric,
+    skeleton_root_transforms::SkeletonRootVector,
 };
 
 /// Actual pause-owner query, reached only for an unfocused sample.
@@ -30,6 +35,7 @@ pub(crate) trait PlayerInputProxyFrame {
 pub(crate) enum SelectedPlayerSampleError<P, F> {
     World(PhysicalWorldServicesError),
     Device(InputPadCacheError),
+    OffBoardStick(ReckoningHostNumericError),
     Pause(P),
     Proxy(F),
 }
@@ -38,9 +44,44 @@ impl<P: std::fmt::Debug, F: std::fmt::Debug> std::fmt::Display for SelectedPlaye
         match self {
             Self::World(error) => write!(f, "player input network state: {error:?}"),
             Self::Device(error) => write!(f, "player input current cache: {error}"),
+            Self::OffBoardStick(error) => write!(f, "player input off-board stick: {error}"),
             Self::Pause(error) => write!(f, "player input simulation pause: {error:?}"),
             Self::Proxy(error) => write!(f, "player input proxy frame: {error:?}"),
         }
+    }
+}
+
+/// What 1.02 `sub_826F7668` reads for a local skater off its board: the first three
+/// rows of `CameraPresentation::GetMatrix(true)` and of the skater's
+/// `PhysOut_Skeleton::mEffectiveSkeletonRootMatrix`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OffBoardStickFrames {
+    pub(crate) camera: [SkeletonRootVector; 3],
+    pub(crate) skater: [SkeletonRootVector; 3],
+}
+impl OffBoardStickFrames {
+    /// 1.02 `sub_826F7668` (826f7668..78b4), new in that update: the stick
+    /// (LStickL - LStickR, 0, LStickU - LStickD) through the camera's rows, flattened,
+    /// `NormalizeSafe`d with a zero default, then in the skater's frame through its
+    /// adjugate inverse. Its X and Z replace the four stick buttons, so a held direction
+    /// stays where the camera sees it while the skater turns toward it.
+    fn try_apply<N: ReckoningNumeric>(
+        &self,
+        values: &mut [f32; 24],
+        numeric: &mut N,
+    ) -> Result<(), N::Error> {
+        let stick = [values[17] - values[16], 0.0, values[18] - values[19], 0.0];
+        let mut view = world_direction(self.camera, stick);
+        view[1] = 0.0;
+        let direction = try_normalize_safe(view, [0.0; 4], numeric)?;
+        let local = try_local_direction(self.skater, direction, numeric)?;
+        // 826f7844..78a4: each axis splits back into its two buttons. The raw bge,
+        // bgt and ble all leave an unordered axis at zero in both.
+        values[17] = if local[0] < 0.0 { -local[0] } else { 0.0 };
+        values[16] = if local[0] > 0.0 { local[0] } else { 0.0 };
+        values[19] = if local[2] < 0.0 { -local[2] } else { 0.0 };
+        values[18] = if local[2] > 0.0 { local[2] } else { 0.0 };
+        Ok(())
     }
 }
 
@@ -80,12 +121,17 @@ impl<R: Clone, N: SkeletonCollisionNumeric, M: PadRemap<R>> SelectedDeviceInputR
     /// global game information and device manager. Controller selection is an
     /// explicit host-supplied native identity, independently of player index.
     /// No pause/proxy default is provided: unavailable collaborators fail lazily.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit retained runtime collaborators"
+    )]
     pub(crate) fn try_player_sample<P: PlayerInputPause, F: PlayerInputProxyFrame>(
         &self,
         loader: &PlayerLoaderSlot,
         controller: usize,
         game_info: &PhysicalGameInfo,
         has_focus: bool,
+        offboard: Option<&OffBoardStickFrames>,
         pause: &mut P,
         proxy: &mut F,
     ) -> Result<SelectedPlayerSample, SelectedPlayerSampleError<P::Error, F::Error>> {
@@ -99,6 +145,13 @@ impl<R: Clone, N: SkeletonCollisionNumeric, M: PadRemap<R>> SelectedDeviceInputR
             allow_sensor,
             has_focus: true,
         };
+        // 1.02 8232f7a4..f82c: before the focus test, the copied line of a local
+        // skater off its board, not holding an object and not landing on its deck.
+        if let Some(frames) = offboard {
+            frames
+                .try_apply(&mut input.sample.values, &mut HostReckoningNumeric)
+                .map_err(SelectedPlayerSampleError::OffBoardStick)?;
+        }
         if !has_focus {
             // Source clears all 24 words, including stale disconnected values;
             // it retains NumButtons and initially leaves payload focus true.

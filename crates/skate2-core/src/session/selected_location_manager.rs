@@ -156,4 +156,49 @@ impl LocationManager {
         transform[14] += offset;
         Some(transform)
     }
+
+    /// `GetSpawnLocation` for a player of an online game. The original's online challenges are
+    /// for six players, so their locations hold six spawn points; a player past the sixth (PC
+    /// port addition: eight players) without one of its own starts at the sixth's, not where the
+    /// fallback above puts it, 5 m along -z per index from the first and often in the ground.
+    pub(crate) fn online_spawn_location(&self, hash: u32, player: i32) -> Option<[f32; 16]> {
+        /// The sixth player's index.
+        const SIXTH: i32 = 5;
+        let own = usize::try_from(player).is_ok_and(|index| index < self.num_spawn_locations(hash));
+        self.spawn_location(hash, if player > SIXTH && !own { SIXTH } else { player })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Location, LocationManager};
+
+    /// A location with `count` spawn points, the nth's translation at (n, 0, 0).
+    fn location(hash: u32, count: u8) -> Location {
+        let at = |x: f32| {
+            let mut transform = [0.0; 16];
+            for axis in 0..4 {
+                transform[axis * 5] = 1.0;
+            }
+            transform[12] = x;
+            transform
+        };
+        Location { hash, transform: at(-1.0), sub_locations: (0..count).map(|n| at(f32::from(n))).collect() }
+    }
+
+    #[test]
+    fn an_online_player_past_the_sixth_starts_at_the_sixths_spawn_point() {
+        let manager = LocationManager { global: vec![location(1, 6), location(2, 8)], arenas: Vec::new() };
+        let x = |spawn: Option<[f32; 16]>| spawn.map(|transform| (transform[12], transform[14]));
+        for player in 0..6 {
+            assert_eq!(x(manager.online_spawn_location(1, player)), x(manager.spawn_location(1, player)));
+        }
+        assert_eq!(x(manager.online_spawn_location(1, 6)), Some((5.0, 0.0)));
+        assert_eq!(x(manager.online_spawn_location(1, 7)), Some((5.0, 0.0)));
+        // The native fallback the online players are kept from: the first point, 5 m per index along -z.
+        assert_eq!(x(manager.spawn_location(1, 7)), Some((0.0, -35.0)));
+        // A location with spawn points of its own for them keeps them.
+        assert_eq!(x(manager.online_spawn_location(2, 7)), Some((7.0, 0.0)));
+        assert_eq!(manager.online_spawn_location(3, 7), None);
+    }
 }

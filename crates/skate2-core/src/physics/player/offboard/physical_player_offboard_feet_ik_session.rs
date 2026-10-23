@@ -85,8 +85,6 @@ pub(crate) enum OffboardGroundFeetIkError {
     Steering(SimulationConstructedSteeringError<&'static str>),
     MissingProcessedFlags8d0,
     MissingOffboardState,
-    MissingOffboardAttributes,
-    TurnAttribute(StateConstructorError),
     MissingProcessedOffboardTurn,
     MissingProcessedStateTimer,
     MissingAutoTurn,
@@ -341,27 +339,6 @@ impl PhysicalAssemblyWorld {
         let height_above_ground = select_offboard_update_height(height_above_ground, flags);
         self.try_update_pair_offboard_location_viability(owner, ground, cvars, numeric)
             .map_err(E::Location)?;
-        let mut states = owner.remaining_states().lock().map_err(|_| E::Poisoned)?;
-        let Some(StatePayload::OffBoard(offboard)) = states
-            .states
-            .get_mut(&StateKind::OffBoard)
-            .filter(|state| state.published)
-            .and_then(|state| state.value.as_mut())
-        else {
-            return Err(E::MissingOffboardState);
-        };
-        let turn_factor = read_floats::<1>(
-            offboard
-                .attribs
-                .as_ref()
-                .ok_or(E::MissingOffboardAttributes)?,
-            // 82da042c insrdi inserts r9=9bf48a85 into the HIGH half
-            // of r4, whose low half is 51975cef. Reversing these halves
-            // silently falls back to zero and disables stationary turning.
-            0x9bf4_8a85_5197_5cef,
-        )
-        .map_err(E::TurnAttribute)?[0];
-        drop(states);
         // OffBoard.Update 0x82da046c reads the animation-owned +0x984 turn.
         let offboard_turn = processed
             .lock()
@@ -369,7 +346,6 @@ impl PhysicalAssemblyWorld {
             .animation_attribute_fields()
             .offboard_turn
             .ok_or(E::MissingProcessedOffboardTurn)?;
-        let scaled_turn = turn_factor * f32::from_bits(0x3c8e_fa35);
         let selected_turn = if offboard_turn.abs() < f32::from_bits(0x3c23_d70a) {
             let states = owner.remaining_states().lock().map_err(|_| E::Poisoned)?;
             let Some(StatePayload::OffBoard(offboard)) = states
@@ -397,10 +373,12 @@ impl PhysicalAssemblyWorld {
             };
             offboard.grab_object = Some(false);
         }
-        let turn = (scaled_turn * selected_turn) * f32::from_bits(0x3c88_8889);
+        // 1.02 82b6b64c..6654: a constant 500 deg/s in one product per 60 Hz frame
+        // replaces the state attribute's 135 deg/s.
+        let turn = selected_turn * f32::from_bits(0x3e14_ef4d);
         if std::env::var_os("SKATE2_TRACE_OFFBOARD_TURN").is_some() {
             eprintln!(
-                "offboard turn: attr={offboard_turn:?} factor={turn_factor:?} selected={selected_turn:?} radians={turn:?} heading={:?}",
+                "offboard turn: attr={offboard_turn:?} selected={selected_turn:?} radians={turn:?} heading={:?}",
                 self.skeleton(skeleton)
                     .map_err(E::Pool)?
                     .root_transforms()

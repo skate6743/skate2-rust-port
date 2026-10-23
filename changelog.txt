@@ -1,7 +1,7 @@
-Deck shadows fixed
-Career contest crowds added
-Player ghosts in pre-game online lobbies
-Access to Host Actions inside online challenges now (kicking players, etc.)
-Fixed unimplemented buttons causing crashes in career
-Fixed netcode issues that would've led to memory overloads and game crashes
-Display Settings now has VSync and Resolution Scale options
+Title Update 2 Offboard added (pre-patch was jankier)
+Online physics brought back from original game
+Edit Skater now shows brand icons on items
+Fixed issue with spawning underground in online
+Fixed SKATE letters sometimes getting stuck on screen in online
+Fixed missing names in online endgame scoreboard
+Proper macOS support is added and available at GitHub releases

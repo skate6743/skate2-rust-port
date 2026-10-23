@@ -565,6 +565,9 @@ pub struct SelectedLiveSession<T, C> {
     map_travel_on_board: bool,
     /// `StateGameUnload` ran since the presentation last asked.
     game_unloaded: bool,
+    /// The last HUD update of a challenge system that went outside a game unload, until the
+    /// presentation takes it.
+    ended_career_hud: Option<CareerHud>,
     /// The last game's `cChallengeDynamicHullManager::GameUnload` asked for unloads that the next
     /// game's load waits for.
     dynamic_hulls_unloading: bool,
@@ -688,6 +691,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             audio: Default::default(),
             map_travel_on_board: false,
             game_unloaded: false,
+            ended_career_hud: None,
             dynamic_hulls_unloading: false,
             frontend_world: Default::default(),
             movie: Default::default(),
@@ -2124,10 +2128,10 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
         let frontend_input = self.update_online_menu(frontend_input, policy.has_focus)?;
         // CheckForOnlineHubMenu (0x82656428): no memcard save, no quit under way, CheckForPauseState
-        // (no pausing state on top, the pause stack's owner INIT or MANUALCAM), no load, and the
-        // career's own refusals.
+        // (no pausing state on top, the pause stack's owner INIT or MANUALCAM), no load, no online
+        // loading screen (`mbDisableBackpackAndPauseMenu`), and the career's own refusals.
         let hub_can_open = self.completed_frames != 0 && !map_challenge_loading && !self.pause_menu.snapshot().visible
-            && !self.main_menu_pending && !self.career_saves.busy()
+            && !self.main_menu_pending && !self.career_saves.busy() && !self.online_loading_screen()
             && self.career.as_ref().is_none_or(career::CareerSession::online_hub_allowed)
             && self.inner.bound_input.as_ref().is_some_and(|input| input.try_can_open_frontend().unwrap_or(false));
         let frontend_input = self.update_online_hub(frontend_input, policy.has_focus, hub_can_open)?;
@@ -2378,6 +2382,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             return Ok(SelectedQueuedFrameOutcome::Frontend);
         }
         let round_syncing = self.online_round_syncing();
+        let online_loading_screen = self.online_loading_screen();
         let nis_on_round_ticks = self.online_round_ticking();
         let input = self.inner.bound_input.as_mut().expect("ready input");
         if self.map_menu.snapshot().visible {
@@ -2651,8 +2656,10 @@ impl<T, C> SelectedLiveSession<T, C> {
         let can_open = input.try_can_open_frontend()
             .map_err(|e| SelectedLiveError::failed(Stage::PreupdateInput, e))?
             // CheckForOptions82656718 rejects the service/script-owned
-            // mbDisableBackpackAndPauseMenu flag before opening StartHub.
-            && !self.career.as_ref().is_some_and(|career|career.system.world().pause_menu_disabled);
+            // mbDisableBackpackAndPauseMenu flag before opening StartHub, which the online
+            // loading screen sets as well.
+            && !self.career.as_ref().is_some_and(|career|career.system.world().pause_menu_disabled)
+            && !online_loading_screen;
         // Keep simulation/publication running until its real registration callback
         // completes. Pausing a pending peer match would prevent the next retry.
         let player_registered = matches!(
@@ -2782,6 +2789,10 @@ impl<T, C> SelectedLiveSession<T, C> {
         // gFEStateInfo (0x82fded80) rows 44, 68 and 69 pause as the StartHub's does: the single
         // player game does not simulate under the online hub and its screens.
         if hub_open && !self.online.network_resumed {
+            return Ok(SelectedQueuedFrameOutcome::Frontend);
+        }
+        // ChallengeLoadState's kPAUSE_STATE_ONLINE: the round loads with the simulation paused.
+        if self.online_round_loading() {
             return Ok(SelectedQueuedFrameOutcome::Frontend);
         }
         let frontend_input = if was_paused || pause.visible { Default::default() } else { frontend_input };
@@ -2916,6 +2927,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             )
         };
         let online_boundaries = self.online_held_boundaries();
+        let offboard_stick = self.offboard_stick_frames();
         let mut boundary_teleport = false;
         let input = self.inner.bound_input.as_mut().expect("ready input");
         let selected = &self.inner.player.as_ref().expect("ready player").selected;
@@ -3038,7 +3050,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     ..marker.hud
                 };
                 input
-                    .try_player_ui_sample_and_sync::<P>(loader, game_focus, &sync)
+                    .try_player_ui_sample_and_sync::<P>(loader, game_focus, offboard_stick.as_ref(), &sync)
                     .map_err(|e| SelectedLiveError::failed(Stage::PreupdateInput, e))?;
             }
         }
@@ -3887,6 +3899,46 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
         skaters.extend(self.online_audio_skaters());
         Some(skaters)
+    }
+
+    /// 1.02 `PlayerUI::Update` (8232f7a4..f82c): the frames `sub_826F7668` turns the left
+    /// stick with while the skater `GetLocalActor` finds (with no ghost, `FindByIndex` of the
+    /// PlayerUI's player) is off its board (`PhysOut_State::mIsOffboard`), not holding an
+    /// object (`PhysOut_OffBoard::mIsGrabbingObject`) and not landing on its deck. The camera
+    /// is `CameraPresentation::GetMatrix(true)` as the game shows it: an online game's view,
+    /// else the game camera.
+    fn offboard_stick_frames(
+        &self,
+    ) -> Option<crate::input_pad::device_manager::selected_runtime::player_sample::OffBoardStickFrames> {
+        use crate::skeleton_root_transforms::SkeletonRootVector;
+        let player = i32::from_ne_bytes(self.inner.bound_input.as_ref()?.player_index().to_ne_bytes());
+        let local = self.inner.world.as_ref()?.world.lock().ok()?.local_skater_identity.clone()?;
+        if !local.try_ghost_is_null().ok()? {
+            return None;
+        }
+        let actor = local.try_find_by_index(player).ok()??;
+        let physical = actor.cached_physical_allocation().ok()?;
+        let skater = {
+            let output = physical.owner().phys_out().lock().ok()?;
+            let state = output.try_state_output().ok()?;
+            if !state.is_offboard
+                || output.try_offboard_output().ok()?.is_grabbing_object
+                || state.physics_state == crate::physics_state_ids::PHYSICS_STATE_LANDINGONDECK
+            {
+                return None;
+            }
+            let rows = output.try_skeleton_output().ok()?.effective_skeleton_root_matrix.columns();
+            [rows[0], rows[1], rows[2]]
+        };
+        let camera = self
+            .online_view_camera()
+            .and_then(|camera| camera.matrix)
+            .or_else(|| self.game_camera_matrix())?;
+        let row = |row: usize| SkeletonRootVector::known(std::array::from_fn(|lane| camera[row * 4 + lane]));
+        Some(crate::input_pad::device_manager::selected_runtime::player_sample::OffBoardStickFrames {
+            camera: [row(0), row(1), row(2)],
+            skater,
+        })
     }
 
     /// The game camera's matrix as Skate rows (the producer projection `try_visual_snapshot`

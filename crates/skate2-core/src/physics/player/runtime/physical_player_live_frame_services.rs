@@ -26,6 +26,7 @@ pub(crate) enum LiveContactFeedbackError {
     AlreadyInitialized,
     MissingManagerParameters,
     Lock,
+    SimRateLock,
     Cvar(InputCvarError),
 }
 impl std::fmt::Display for LiveContactFeedbackError {
@@ -38,6 +39,7 @@ impl std::fmt::Display for LiveContactFeedbackError {
                 f.write_str("selected manager feedback Params uninitialized")
             }
             Self::Lock => f.write_str("selected manager feedback Params lock poisoned"),
+            Self::SimRateLock => f.write_str("Simulation sim rate lock poisoned"),
             Self::Cvar(e) => e.fmt(f),
         }
     }
@@ -86,6 +88,9 @@ impl<M, C> SimulationAssemblyConstraintSession<M, C> {
     }
     /// Native827b3738..3744, after input recognition and before Actor callbacks.
     /// The store survives later Actor failure; the returned snapshot feeds this solve.
+    /// Native selects by the exact retained flags (Both3 is single player), not the submit mask.
+    /// The port's online game keeps its Both island but takes the network game's count, as the
+    /// original's Simulation and Visual islands do.
     pub(crate) fn try_sample_prephysics_iterations(
         &mut self,
         cvars: &InputCvarReferences,
@@ -93,8 +98,13 @@ impl<M, C> SimulationAssemblyConstraintSession<M, C> {
         if self.simulation_max_iterations.is_none() {
             return Err(LiveContactFeedbackError::MissingManagerParameters);
         }
+        let online = self
+            .sim_rate
+            .lock()
+            .map_err(|_| LiveContactFeedbackError::SimRateLock)?
+            .online_game();
         let value = cvars
-            .try_island_max_iterations(self.island_flags)
+            .try_island_max_iterations(self.island_flags == 3 && !online)
             .map_err(LiveContactFeedbackError::Cvar)?;
         // Native LWZ/STW preserves all32 bits; do not clamp/sanitize the live target.
         let value = u32::from_ne_bytes(value.to_ne_bytes());

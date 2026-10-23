@@ -2816,7 +2816,7 @@ impl ProcessedAnimationIntent {
             "world_grab_z" => self.world_grab_z = value,
             "WipeoutControlX" => self.wipeout_control_x = value,
             "WipeoutControlY" => self.wipeout_control_y = value,
-            "OB_JumpX" => self.off_board_jump_x = value,
+            "OB_JumpX" => self.off_board_jump_x = -value,
             "OB_JumpZ" => self.off_board_jump_z = value,
             "MinJump" => self.minimum_jump = Some(value),
             "TrickHeight" => self.trick_height = Some(value),
@@ -3394,7 +3394,7 @@ mod tests {
         ];
         let intent = ProcessedAnimationIntent::from_scalar_attributes(&attributes);
         assert!((intent.off_board_turn + 0.3).abs() < f32::EPSILON);
-        assert!((intent.off_board_jump_x + 0.4).abs() < f32::EPSILON);
+        assert!((intent.off_board_jump_x - 0.4).abs() < f32::EPSILON);
         assert!((intent.grind_translation - 0.75).abs() < f32::EPSILON);
         assert!((intent.world_grab_z - 1.25).abs() < f32::EPSILON);
         assert!((intent.wipeout_control_y + 0.8).abs() < f32::EPSILON);

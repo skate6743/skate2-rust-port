@@ -86,3 +86,18 @@ fn prephysics_iterations_use_actual_flags_and_retain_store_across_target_changes
         assert_eq!(other.try_sample_prephysics_iterations(&refs).unwrap(), 29);
     }
 }
+
+#[test]
+fn an_online_game_solves_its_both_island_with_the_online_count() {
+    let refs = InputCvarReferences::new_static_initialized();
+    let mut manager = InputCvarManager::new();
+    manager.try_link(&refs).unwrap();
+    let mut world = World::try_new_with_island_flags(1, 0, 0, 0, 3).unwrap();
+    world.try_initialize_world_feedback_parameters().unwrap();
+    assert_eq!(world.try_sample_prephysics_iterations(&refs).unwrap(), 50);
+    world.sim_rate.lock().unwrap().set_online_game(true);
+    assert_eq!(world.try_sample_prephysics_iterations(&refs).unwrap(), 25);
+    assert_eq!(world.simulation_max_iterations, Some(25));
+    world.sim_rate.lock().unwrap().set_online_game(false);
+    assert_eq!(world.try_sample_prephysics_iterations(&refs).unwrap(), 50);
+}

@@ -30,6 +30,9 @@ pub(crate) struct EditSkaterFrontend {
     // Immutable catalog presentation only; installed choices and selection
     // remain live. Avoid GetAllPartsInWearStyleGroup for every rendered frame.
     part_rows: std::cell::RefCell<std::collections::BTreeMap<(bool, usize), EditSkaterRow>>,
+    /// `mBrandFilterList`: the `sponsor` class's leaf collections, which the constructor takes
+    /// from `GetLeafCollections` (`0x82680004`).
+    brand_filters: Vec<u64>,
     /// The wear styles menu's `mPartList`: `mCurrentPart`'s alternates, itself first.
     wear_styles: Vec<usize>,
     /// `mCurrentWearStyleIndex`: the wear style worn, in `wear_styles`.
@@ -56,6 +59,7 @@ const SHOP: u64 = 0xb5c3_cac4_b3dc_0165;
 const PETE: u64 = 0xe986_20ed_39c8_3b7a;
 const STAMP_ZONE: u64 = 0xbd77_229e_4122_863e;
 const STAMP: u64 = 0x0d71_da87_70e0_9cbc;
+const SPONSOR: u64 = 0x548b_58b0_c27c_9564;
 // RawPartDataV6: fields begin at byte28. These are serialized field indices,
 // not eCACPartAttribute enum values (which include non-string attributes).
 const PART_EYE_COLOUR: usize = (48 - 28) / 2;
@@ -79,7 +83,7 @@ mod parity_tests {
         }
         let db = Arc::new(CacPartDb::parse(&mounts.read_path(skate2_formats::cac_parts::DATABASE_PATH).unwrap()).unwrap());
         let vault = AttributeRuntimeVault::try_load_mounted(&mounts, "data/db/skater.vlt",
-            &[record_ops::COLOUR_CLASS, record_ops::COLOUR_ZONE_CLASS, MORPH_CLASS]).unwrap();
+            &[record_ops::COLOUR_CLASS, record_ops::COLOUR_ZONE_CLASS, MORPH_CLASS, SPONSOR]).unwrap();
         for male in [true, false] {
             let record = record_ops::fresh_record(&db, &vault, male).unwrap();
             let shop = EditSkaterShop::new(&db, 0, &|_, _| true, &|_, _| false).unwrap();
@@ -113,6 +117,35 @@ mod parity_tests {
                 assert!(materials.len() > 1, "{option:?}: HUD changed but material did not");
             }
         }
+    }
+    /// `GetSponsorLogoFileName`: a part whose brand a `sponsor` names shows that sponsor's logo,
+    /// an image `screens.big` holds.
+    #[test]
+    #[ignore = "requires original SKATE2_GAME_ROOT assets"]
+    fn original_part_brands_show_their_sponsor_logos() {
+        use skate2_formats::mount::{MountSet, MountedBig, SKATE2_ARCHIVES};
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").expect("game root"));
+        let mut mounts = MountSet::new();
+        for spec in SKATE2_ARCHIVES {
+            let path = spec.path_under(&root);
+            if path.is_file() { mounts.push(MountedBig::open(path, spec.use_external_header).unwrap()); }
+        }
+        let screens = MountedBig::open(root.join("data/fe/screens.big"), false).unwrap();
+        let db = Arc::new(CacPartDb::parse(&mounts.read_path(skate2_formats::cac_parts::DATABASE_PATH).unwrap()).unwrap());
+        let vault = AttributeRuntimeVault::try_load_mounted(&mounts, "data/db/skater.vlt",
+            &[record_ops::COLOUR_CLASS, record_ops::COLOUR_ZONE_CLASS, MORPH_CLASS, SPONSOR]).unwrap();
+        let record = record_ops::fresh_record(&db, &vault, true).unwrap();
+        let shop = EditSkaterShop::new(&db, 0, &|_, _| true, &|_, _| false).unwrap();
+        let frontend = EditSkaterFrontend::new(db.clone(), vault, record,
+            EditSkaterPolicy { unlock_all_clothing: true }, shop, false).unwrap();
+        let mut logos = std::collections::BTreeSet::new();
+        for index in 0..db.parts.len() {
+            let Some(logo) = frontend.sponsor_logo(index).unwrap() else { continue };
+            assert!(screens.read_path(&format!("data\\{logo}.rx2")).is_ok(), "{logo}");
+            logos.insert(logo);
+        }
+        assert!(!logos.is_empty());
+        assert_eq!(frontend.brand_key("not a brand").unwrap(), 0);
     }
 }
 #[derive(Clone)]
@@ -184,6 +217,7 @@ impl EditSkaterFrontend {
                 .map(|p| p.attributes[7] == u16::MAX)
                 .collect(),
             db,
+            brand_filters: vault.leaf_collections_sorted(SPONSOR)?,
             vault,
             policy,
             parts: Vec::new(),
@@ -1304,6 +1338,7 @@ impl EditSkaterFrontend {
                             "fe\\cas\\{}",
                             clothing_thumbnail(&self.db, p, self.record.data.is_male)?
                         )),
+                        sponsor_logo: self.sponsor_logo(*i)?,
                         status: self.part_status(*i).into(),
                         is_new: self.shop.is_new(*i),
                         cost: shop::cost(p),
@@ -1517,6 +1552,25 @@ impl EditSkaterFrontend {
             skate2_formats::cac_parts::SLOT_NAMES[p.slot as usize],
         ));
         Ok(out)
+    }
+    /// `GetBrandKey` (`0x826496d8`): the first brand filter whose `sponsor` name (layout +0) is
+    /// the brand, 0 when none is.
+    fn brand_key(&self, brand: &str) -> RecordResult<u64> {
+        for &key in &self.brand_filters {
+            if self.vault.instance(SPONSOR, key).try_cached_layout_text(0)?.is_some_and(|name| name.bytes() == brand.as_bytes()) {
+                return Ok(key);
+            }
+        }
+        Ok(0)
+    }
+    /// `GetSponsorLogoFileName` (`0x82652f28`) of a part in the part thumbnails: the logo file
+    /// (layout +4) of the `sponsor` its brand (`pManufacturerID`, `no_brand` without one) names;
+    /// `None` for `no_image` when no sponsor has the brand's name or the sponsor has no logo.
+    fn sponsor_logo(&self, index: usize) -> RecordResult<Option<String>> {
+        let brand = self.db.attribute(&self.db.parts[index], 34)?;
+        let key = self.brand_key(if brand.is_empty() { "no_brand" } else { brand })?;
+        let Some(logo) = self.vault.instance(SPONSOR, key).try_cached_layout_text(4)? else { return Ok(None) };
+        Ok(Some(std::str::from_utf8(logo.bytes())?.to_owned()))
     }
 }
 fn flag(v: u8) -> bool {

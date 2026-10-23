@@ -1335,6 +1335,9 @@ pub struct EditSkaterRow {
     pub kind: String,
     pub value: i32,
     pub texture: Option<String>,
+    /// `GetSponsorLogoFileName` (`0x82652f28`): the logo of the part's brand, which the info
+    /// panel's `UpdateSponsorLogo` loads beside the part's name; `None` for its `no_image`.
+    pub sponsor_logo: Option<String>,
     pub status: String,
     pub is_new: bool,
     pub colours: Vec<[u8; 3]>,

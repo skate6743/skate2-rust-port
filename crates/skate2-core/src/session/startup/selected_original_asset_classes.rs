@@ -23,6 +23,7 @@ pub(crate) fn selected_additional_classes() -> Vec<u64> {
         0x0d71_da87_70e0_9cbc, // CAS stamps
         0xae1f_950c_a0d1_adf2, // CAS colour zones
         0x6d93_4d0e_38c9_5e19, // CAS colours
+        0x548b_58b0_c27c_9564, // sponsor: CAS brand filters and their logos
         crate::selected_original_assets_bootstrap::map_catalog::LOCATION_CLASS,
         crate::selected_original_assets_bootstrap::map_catalog::GROUP_CLASS,
         crate::selected_original_assets_bootstrap::map_catalog::ICON_CLASS,

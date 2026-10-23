@@ -158,9 +158,13 @@ others, and each pacing player's facts carry every vote and every player who lef
 of and that no tick has counted yet. Every console applies them at the tick of those facts:
 a vote sets its voter's `MissionFrame::vote` for `ChallengeVotingManager::Update`, a leave
 disconnects a player who is not pacing (a pacing player who leaves is disconnected at the first
-tick its facts are missing). Applying a vote again is harmless, so a pending vote travels until a
-tick counts it; pending votes are dropped once voting stops. Measured 2026-10-16 with three
-players in Spot Battle: the two watching players' presses reached the turn player, rode its next
+tick its facts are missing). A console holds a player who left by user id and numbers them by
+the table the notes go out under: the challenge's table (`GameReset(Challenge)`) is packed again
+without the players who left during the load, so a load-table index would name whoever moved
+into it, and those players are not in the challenge at all. Applying a vote again is harmless,
+so a pending vote travels until a tick counts it; pending votes are dropped once voting stops.
+Measured 2026-10-16 with three players in Spot Battle: the two watching players' presses reached
+the turn player, rode its next
 facts, and all three consoles applied them at the same ticks (820 and 821); over a whole
 three-player game every vote (18) was applied at the same tick on every console and each turn's
 vote ended it alike.

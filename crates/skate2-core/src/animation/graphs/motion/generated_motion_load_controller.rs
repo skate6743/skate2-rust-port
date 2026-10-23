@@ -13,6 +13,9 @@ use crate::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+/// Condition cache size: one result and one active bit per declaration.
+const CONDITIONS: usize = super::data::CONDITIONS.len();
+
 /// ToggleBoard::Data, allocated by CreateInstance82cbb1c0 (0x64 bytes).
 /// The constructor at 82cbb0a8 only initializes the retrieval-name words;
 /// the other fields have no value until the source writes them.
@@ -238,9 +241,9 @@ pub(crate) struct GeneratedMotionController<K> {
     /// Source `IndexSet` has capacity40; mutation must enforce that limit.
     pub(crate) current_behaviours: Vec<u16>,
     pub(crate) instances: [BehaviourInstanceSlot; 40],
-    pub(crate) condition_active: [u32; 13],
+    pub(crate) condition_active: [u32; CONDITIONS.div_ceil(32)],
     /// Native cached result bits are unknown until the matching active bit.
-    pub(crate) condition_results: [Option<bool>; 406],
+    pub(crate) condition_results: [Option<bool>; CONDITIONS],
     pub(crate) call_behaviours: bool,
     pub(crate) allow_evaluations: bool,
 }
@@ -275,8 +278,8 @@ impl<K> GeneratedMotionController<K> {
                 behaviour: None,
                 instance: None,
             }),
-            condition_active: [0; 13],
-            condition_results: [None; 406],
+            condition_active: [0; CONDITIONS.div_ceil(32)],
+            condition_results: [None; CONDITIONS],
             call_behaviours,
             allow_evaluations: false,
         };
