@@ -327,3 +327,27 @@ branch probe, not claimed real triangle geometry. Existing thin/mesh tests now
 check fat-wrapper numeric refusal after the proper normal/GP construction
 prefix instead of the removed unsupported-fatness refusal. Root owns Cargo
 validation and integration; no World batch or wheel scheduling changed here.
+
+## Trajectory walk consumer (2026-10-23)
+
+`TrajectoryWalkFunctor::operator()` (0x827c1c78) runs the collection
+`LineTest<TrajectoryLineTestFunctor>` (0x827c1300). Its mesh body (0x827c01a0)
+calls this wrapper at **827c033c** with the trajectory radius as line fatness and
+zero triangle fatness, and the functor keeps the wrapper-adjusted position.
+`CalculateTimeOfCollision` (**827c1d18**) and the ground-normal box of position
+plus and minus the radius (**827c1d8c**) both start from that surface point, not
+from the swept-sphere center.
+
+The ground and DMO trajectory sweeps call
+`skate2-formats/src/collision.rs::sphere_segment_triangle_intersection`, which now
+applies the same correction: the center minus `normal * radius`, using the unit
+normal of its face, edge, vertex or overlap case. The line-test path
+(`try_triangle_line`) already applied it. The helper's other differences from the
+region walk, listed above, remain.
+
+Ledge steps depend on this point. `ConsiderPointVersusEdge` (0x827bfb58) accepts
+an edge-moved point only within `testRadius - stepRadius` (0.2 - 0.08) of the
+collision position, and the moved point sits `stepRadius * 1.01` (0.0808) behind
+the face. From the face contact the distance is 0.0808, so the step onto the top
+is accepted. From the sphere center, one trajectory radius (0.05) in front of the
+face, it is 0.1308, so the step is rejected.

@@ -2593,8 +2593,9 @@ pub fn thin_segment_triangle_intersection(
 /// `FatTriangleLineSegIntersect` (`0x82adeb48`) and its
 /// `rwcSphereLineSegIntersect` helper (`0x82acdef0`): face, edge, and vertex
 /// regions all compete for the earliest fraction, and an initial overlap is
-/// reported at fraction zero. `position` is the sphere-center position used by
-/// Skate 2's trajectory predictor.
+/// reported at fraction zero. As `rw::collision::TriangleLineSegIntersect`
+/// (`0x82adf658`) does after the fat test, `position` is the sphere center moved
+/// back along `normal` by the radius: the contact point.
 #[must_use]
 pub fn sphere_segment_triangle_intersection(
     line_start: [f32; 3],
@@ -2617,6 +2618,7 @@ pub fn sphere_segment_triangle_intersection(
             0.0,
             line_start,
             line_delta,
+            radius,
             vertices,
             initial_nearest,
             initial_barycentric,
@@ -2668,6 +2670,7 @@ pub fn sphere_segment_triangle_intersection(
         parameter,
         line_start,
         line_delta,
+        radius,
         vertices,
         nearest,
         barycentric,
@@ -2730,12 +2733,13 @@ fn sphere_triangle_hit(
     parameter: f32,
     line_start: [f32; 3],
     line_delta: [f32; 3],
+    radius: f32,
     vertices: [[f32; 3]; 3],
     nearest: [f32; 3],
     barycentric: [f32; 3],
 ) -> TriangleHit {
-    let position = add(line_start, scale(line_delta, parameter));
-    let offset = subtract(position, nearest);
+    let center = add(line_start, scale(line_delta, parameter));
+    let offset = subtract(center, nearest);
     let normal = if dot(offset, offset) > 0.0 {
         normalize(offset)
     } else {
@@ -2751,7 +2755,7 @@ fn sphere_triangle_hit(
     };
     TriangleHit {
         line_parameter: parameter,
-        position,
+        position: subtract(center, scale(normal, radius)),
         normal,
         barycentric,
     }
@@ -5327,7 +5331,7 @@ mod tests {
         )
         .unwrap();
         assert!((face.line_parameter - 0.375).abs() < 1.0e-6);
-        for (actual, expected) in face.position.into_iter().zip([0.25, 0.25, 0.5]) {
+        for (actual, expected) in face.position.into_iter().zip([0.25, 0.25, 0.0]) {
             assert!((actual - expected).abs() < 1.0e-6);
         }
         for (actual, expected) in face.normal.into_iter().zip([0.0, 0.0, 1.0]) {
@@ -5362,7 +5366,7 @@ mod tests {
             sphere_segment_triangle_intersection([0.25, 0.25, 0.2], [0.0, 0.0, 1.0], 0.5, triangle)
                 .unwrap();
         assert!(hit.line_parameter.abs() < f32::EPSILON);
-        for (actual, expected) in hit.position.into_iter().zip([0.25, 0.25, 0.2]) {
+        for (actual, expected) in hit.position.into_iter().zip([0.25, 0.25, -0.3]) {
             assert!((actual - expected).abs() < 1.0e-6);
         }
         for (actual, expected) in hit.normal.into_iter().zip([0.0, 0.0, 1.0]) {

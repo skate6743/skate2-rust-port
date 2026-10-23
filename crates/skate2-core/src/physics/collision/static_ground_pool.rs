@@ -1835,7 +1835,7 @@ pub(crate) mod tests {
 
         assert_eq!(result.surface_id, 0x1234);
         assert_eq!(result.normal.map(f32::to_bits), [0, 0, 0x3f80_0000]);
-        assert!(result.position[2] > 0.0 && result.position[2] < 1.0);
+        assert!(result.position[2].abs() < 1.0e-6);
     }
 
     #[test]

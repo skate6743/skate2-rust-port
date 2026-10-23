@@ -4,4 +4,4 @@ Edit Skater now shows brand icons on items
 Fixed issue with spawning underground in online
 Fixed SKATE letters sometimes getting stuck on screen in online
 Fixed missing names in online endgame scoreboard
-macOS support has been merged. GitHub release for mac will be coming soon
+Collision fix that blocked jumping to ledges
