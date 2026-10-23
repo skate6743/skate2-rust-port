@@ -12,7 +12,7 @@ behavior is an explicit, documented exception, never a silent substitute.
 ## Layout
 
 - `apps/skate2-pc`: the PC game (window, input, renderer, first-launch game-folder prompt).
-- `apps/skate2-server`: the online server, for Windows and Linux.
+- `apps/skate2-server`: the online server, for Windows, Linux and macOS.
 - `apps/build_secret.rs`: the build secret both apps' build scripts share.
 - `crates/skate2-core`: the reconstructed game (simulation, physics, animation, challenges,
   career, UI, sessions). Folder guide: `crates/skate2-core/src/README.md` and
@@ -82,9 +82,9 @@ doc comment when an address is known.
 
 ## Building
 
-- `build-release.bat` (Windows) and `build-release.sh` (Linux server) build the release
-  binaries. With a `release-secret.txt` key (`tools/new_release_secret.py`) both platforms'
-  builds of one version share their secret; without it every build has its own.
+- `build-release.bat` (Windows), `build-release.sh` (Linux) and `build-release-macos.sh` (macOS)
+  build the release binaries. With a `release-secret.txt` key (`tools/new_release_secret.py`)
+  both platforms' builds of one version share their secret; without it every build has its own.
 - `skate2-pc.exe` with no arguments runs the quiet game; `play-*.bat` run the diagnostic
   variants (traces, performance, career tests).
 

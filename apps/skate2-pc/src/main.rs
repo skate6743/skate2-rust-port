@@ -245,7 +245,26 @@ mod pedestrian_render;
 mod visual_indicator_view;
 mod particle_view;
 
+/// A bundle's app is started in `/`, where the game cannot keep its files, so a launch from the
+/// bundle (Finder, LaunchServices) starts the game in its own folder instead. Started from
+/// anywhere else, a terminal or `cargo run`, the folder it starts in is already the game's.
+#[cfg(target_os = "macos")]
+fn enter_bundle_data_folder() {
+    let Some(executable) = std::env::current_exe().ok() else { return };
+    if !executable.to_string_lossy().contains("/Contents/MacOS/") {
+        return;
+    }
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let data = std::path::Path::new(&home).join("Library/Application Support/Skate 2");
+    if let Err(error) = std::fs::create_dir_all(&data).and_then(|()| std::env::set_current_dir(&data)) {
+        eprintln!("the game's folder {} cannot be used: {error}", data.display());
+    }
+}
+
 fn main() -> ExitCode {
+    // Before anything reads a relative path: a bundle's launch starts in `/`.
+    #[cfg(target_os = "macos")]
+    enter_bundle_data_folder();
     panic_report::install();
     gpu_log::install();
     // This executable's build (its build script's secret): its server and its client meet only
@@ -285,6 +304,10 @@ fn main() -> ExitCode {
                 }
                 ExitCode::FAILURE
             };
+            // macOS: winit takes NSApplication as its principal class, which the folder dialog
+            // below would take first, so the event loop is made before that dialog.
+            #[cfg(target_os = "macos")]
+            render_window::prepare_event_loop();
             return match game_root::resolve() {
                 Ok(Some(root)) => match game_update::play(&root) {
                     Ok(()) => ExitCode::SUCCESS,

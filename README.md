@@ -4,7 +4,7 @@
 
 **Skate 2, rebuilt as a native PC game in Rust.**
 
-Windows · Linux · Online play
+Windows · Linux · macOS · Online play
 
 [Download](https://github.com/skate6743/skate2-rust-port/releases/latest) ·
 [How to play](#how-to-play) ·
@@ -65,9 +65,10 @@ PC. Requires your own legally obtained Xbox 360 copy of Skate 2 to run, you will
 
 ### What you need
 
-- Windows 10 or 11 (64-bit), or 64-bit Linux.
+- Windows 10 or 11 (64-bit), 64-bit Linux, or macOS on Apple silicon (build it yourself:
+  [docs/release/macos.md](docs/release/macos.md)).
 - A processor with AVX2 (Intel since 2013, AMD since 2015) and a graphics card with DirectX 12
-  or Vulkan.
+  or Vulkan on Windows and Linux; any Apple silicon Mac on macOS, through Metal.
 - **Your own copy of retail Skate 2 for Xbox 360**, extracted to a folder: the one that holds
   `default.xex` and the game's `data` folder. A disc image has to be extracted first.
 - A controller. Xbox and PlayStation controllers work on Windows; on Linux and the Steam Deck,
@@ -91,10 +92,23 @@ PC. Requires your own legally obtained Xbox 360 copy of Skate 2 to run, you will
 
 What Linux needs (drivers, libraries, the Steam Deck) is in [docs/release/linux.md](docs/release/linux.md).
 
+### macOS
+
+There is no download for macOS yet: build it from source, which leaves a **Skate 2.app** in
+`dist/macos`. Open it and select your copy's `default.xex` the first time. The app starts itself
+in `~/Library/Application Support/Skate 2`, where `config.json` and `saves/` then stay, and it
+opts into macOS Game Mode (`LSSupportsGameMode`, macOS 26 and later), which quiets background
+work while you play. An Xbox, PlayStation or Switch controller works through SDL3, as on Linux.
+What the build needs, and the parts of the game macOS does not have yet, are in
+[docs/release/macos.md](docs/release/macos.md).
+
 ### If the game closes or shows nothing
 
 - A message names the error and your graphics card, and a report is saved to
-  `saves\crash_reports` beside the game. Send both with your report.
+  `saves\crash_reports` beside the game. Send both with your report. On macOS the report is in
+  `~/Library/Application Support/Skate 2/saves/crash_reports`, and a fatal error the app had no
+  message box for is written there too; run `Skate 2.app/Contents/MacOS/Skate 2` from a terminal
+  to see what it prints.
 - To try the other graphics API, make a `.bat` file beside the game with `set WGPU_BACKEND=dx12`
   (or `vulkan`) on one line and `skate2-pc.exe` on the next, and run it. `set SKATE2_NO_MSAA=1`
   turns antialiasing off.
@@ -105,8 +119,8 @@ Choose **Online** on the main menu and pick a nickname. Releases connect to the 
 server. To play on another one, set `"server": "host:port"` in `online-config.json` beside the
 game.
 
-**Hosting:** `skate2-pc --server <ip:port>` runs the game in dedicated server mode, on Windows or
-Linux. The Linux zip also holds `skate2-server`, the server alone, for a VPS or any machine
+**Hosting:** `skate2-pc --server <ip:port>` runs the game in dedicated server mode, on Windows,
+Linux or macOS. The Linux zip also holds `skate2-server`, the server alone, for a VPS or any machine
 without a display. Players join only a server of the same release; `--update` on either program
 puts the newest release in place. A server can also run a barebones moderation panel, with chat shadowbans
 and IP bans: see [the server's documentation](docs/online/implementation.md#the-server).
@@ -121,8 +135,9 @@ version.
 ### Saves and settings
 
 Everything stays in the folder you run the game from: `config.json`, `online-config.json` and
-`saves/`. Replays and photos go to `saves/skate_reel/`. MP4 export needs FFmpeg with H.264 and
-AAC: put `ffmpeg.exe` (`ffmpeg` on Linux) beside the game, or on your `PATH`.
+`saves/`. On macOS the app starts itself in `~/Library/Application Support/Skate 2`, so they stay
+there. Replays and photos go to `saves/skate_reel/`. MP4 export needs FFmpeg with H.264 and
+AAC: put `ffmpeg.exe` (`ffmpeg` on Linux and macOS) beside the game, or on your `PATH`.
 
 ## Not done yet
 
@@ -153,6 +168,17 @@ Played from the repository root, `config.json` and `saves/` stay there, and git 
 
 The packages it needs are in [docs/release/linux.md](docs/release/linux.md).
 
+**macOS** (built and played on Apple silicon; Intel Macs are untested):
+
+```sh
+./build-release-macos.sh            # dist/macos/skate2-pc, skate2-server and 'Skate 2.app'
+cargo run --release -p skate2-pc    # build the game and start it from the repository root
+```
+
+SDL3 builds from source here too, so CMake, Ninja and the Xcode command line tools are needed;
+the bundle's icon is made with the `sips` and `iconutil` that macOS ships. The rest is in
+[docs/release/macos.md](docs/release/macos.md).
+
 A build without `release-secret.txt` makes its own online key, so it plays only on a server run
 from the same executable (`skate2-pc --server`). Releases (the release key, the update files and
 the steps) are in [docs/release/auto-update.md](docs/release/auto-update.md). Run the tests with
@@ -181,7 +207,7 @@ runs, traces and research tools are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md
 | AI skaters | [docs/ai/](docs/ai/README.md) |
 | Graphics | [docs/GRAPHICS.md](docs/GRAPHICS.md) |
 | Replay and photo export | [docs/MEDIA_EXPORT.md](docs/MEDIA_EXPORT.md) |
-| Releases and updates | [docs/release/auto-update.md](docs/release/auto-update.md), [Linux](docs/release/linux.md) |
+| Releases and updates | [docs/release/auto-update.md](docs/release/auto-update.md), [Linux](docs/release/linux.md), [macOS](docs/release/macos.md) |
 
 ## AI usage
 

@@ -29,16 +29,7 @@ pub(crate) fn gpu() -> Option<&'static str> {
 /// Install once at process startup, before any worker can panic. Resolving the
 /// save directory here avoids consulting profile/save locks inside the hook.
 pub(crate) fn install() {
-    let directory = skate2_core::edit_skater_profile::EditSkaterProfileStore::default_path()
-        .ok()
-        .and_then(|profile| profile.parent().map(|parent| parent.join("crash_reports")))
-        .and_then(|path| {
-            if path.is_absolute() {
-                Some(path)
-            } else {
-                std::env::current_dir().ok().map(|root| root.join(path))
-            }
-        });
+    let directory = report_directory();
     let executable = std::env::current_exe().ok();
     // A player's launch (main.rs), who sees no console.
     let player = crate::game_update::player_launch();
@@ -86,6 +77,37 @@ pub(crate) fn install() {
             ));
         }
     }));
+}
+
+/// The folder the reports go to: `crash_reports` beside the game's saves.
+fn report_directory() -> Option<PathBuf> {
+    skate2_core::edit_skater_profile::EditSkaterProfileStore::default_path()
+        .ok()
+        .and_then(|profile| profile.parent().map(|parent| parent.join("crash_reports")))
+        .and_then(|path| {
+            if path.is_absolute() {
+                Some(path)
+            } else {
+                std::env::current_dir().ok().map(|root| root.join(path))
+            }
+        })
+}
+
+/// A fatal error that is not a panic, written where the crash reports go. macOS has no message box
+/// to show it in from a running application, so the file is all a player's launch can leave.
+#[cfg(target_os = "macos")]
+pub(crate) fn save_error_report(text: &str) {
+    let report = format!(
+        "Skate 2 PC error\nVersion: {}\nExecutable: {}\nGPU: {}\n\n{text}\n",
+        env!("CARGO_PKG_VERSION"),
+        std::env::current_exe()
+            .as_deref()
+            .map_or_else(|_| "<unknown>".into(), |path| path.display().to_string()),
+        gpu().unwrap_or("<not chosen yet>"),
+    );
+    if let Err(error) = write_report(report_directory().as_deref(), &report) {
+        eprintln!("could not save the error report: {error}");
+    }
 }
 
 fn write_report(directory: Option<&Path>, report: &str) -> io::Result<PathBuf> {

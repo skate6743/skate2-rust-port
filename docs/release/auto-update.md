@@ -80,9 +80,11 @@ the Linux programs stay executable.
 **Platforms:** `windows` is the Windows game (which also hosts with `--server`); `linux` holds
 the Linux game and the dedicated server, and each of the two updates from it, so a server's
 folder gets the game's file beside it as well. The Windows program also runs on Linux (Proton,
-Wine), and then updates from the Windows zip. A build passes over the manifest's lines it does
-not know, so a later release can add a zip under a name of its own without older builds
-refusing the release; only a new first line, a new format, stops them.
+Wine), and then updates from the Windows zip. A macOS build updates from nothing: no release
+holds a zip for it, so `Platform::current()` is `None` there, the check is passed over and
+`--update` says the build does not update ([macos.md](macos.md)). A build passes over the
+manifest's lines it does not know, so a later release can add a zip under a name of its own
+without older builds refusing the release; only a new first line, a new format, stops them.
 
 **Which builds update:** only a release build that names its repository. A release build has
 `release-secret.txt`, from which the build script derives the public key it checks signatures
@@ -133,6 +135,8 @@ download a new release by hand.
    `release-repository.txt` included: `build-release-linux.bat` runs `build-release.sh` in WSL,
    or run `./build-release.sh` on Linux. Both land in `dist/linux` (`skate2-pc`,
    `skate2-server`). Setting the Linux build up: [linux.md](linux.md).
+   `./build-release-macos.sh` builds both for macOS the same way, into `dist/macos`
+   ([macos.md](macos.md)); no release holds that build yet.
 5. Package and sign on Windows: `package-release.bat`. It writes
    `dist\skate2-windows-x64.zip`, `dist\skate2-linux-x64.zip`, `dist\latest-release.txt` and
    `dist\latest-release.txt.sig`, and refuses a program older than `Cargo.toml`: one built

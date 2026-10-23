@@ -222,6 +222,10 @@ mod tests {
     use std::io::{BufRead as _, BufReader, Write as _};
     use std::net::TcpListener;
 
+    /// The platform these tests update from: a release's own, whichever it is. The host's
+    /// platform is `None` where releases have no zip, so the tests name one instead.
+    const PLATFORM: Platform = Platform::Windows;
+
     /// An HTTP server on this machine serving `files` by path, for `requests` requests.
     fn serve(files: Vec<(String, Vec<u8>)>, requests: usize) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
@@ -276,7 +280,12 @@ mod tests {
         sha256.copy_from_slice(&Sha256::digest(sha_of.unwrap_or(&zip)));
         let manifest = Manifest {
             version: Version::parse("0.2.0").expect("version"),
-            assets: vec![Asset { platform: Platform::current().expect("platform"), name: "game.zip".into(), size: zip.len() as u64, sha256 }],
+            assets: vec![Asset {
+                platform: PLATFORM,
+                name: "game.zip".into(),
+                size: zip.len() as u64,
+                sha256,
+            }],
         }
         .text();
         let seed = crate::release_key::update_signing_seed(&signer.repeat(64));
@@ -291,7 +300,7 @@ mod tests {
             repository: "owner/game".into(),
             public_key: manifest::public_key(&crate::release_key::update_signing_seed(&"7".repeat(64))),
             version: Version::parse("0.1.0").expect("version"),
-            platform: Platform::current().expect("platform"),
+            platform: PLATFORM,
             directory: folder.clone(),
             executable: "game.exe".into(),
         };
@@ -326,6 +335,9 @@ mod tests {
         assert!(!release.folder.join(DOWNLOAD).exists());
     }
 
+    /// Where releases hold a zip for this platform, a build with the key and the repository
+    /// updates, and nothing else does.
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn only_a_build_with_a_key_and_a_repository_updates() {
         let key = manifest::hex(&[3; 32]);
@@ -339,6 +351,7 @@ mod tests {
         assert!(Config::for_build(Some(&key), Some("owner/name"), "0.1", "game.exe").is_none(), "a bad version");
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn a_release_s_files_come_from_its_tag() {
         let key = manifest::hex(&[3; 32]);
@@ -346,5 +359,14 @@ mod tests {
         assert_eq!(config.latest_manifest_url(), "https://github.com/owner/name/releases/latest/download/latest-release.txt");
         let version = Version::parse("0.2.0").expect("version");
         assert_eq!(config.release_url(version, "game.zip"), "https://github.com/owner/name/releases/download/v0.2.0/game.zip");
+    }
+
+    /// Where releases hold no zip for this platform, even a build with the key and the repository
+    /// has nothing to update from: the same files are a build that never looks.
+    #[cfg(not(any(windows, target_os = "linux")))]
+    #[test]
+    fn a_platform_without_a_release_zip_does_not_update() {
+        let key = manifest::hex(&[3; 32]);
+        assert!(Config::for_build(Some(&key), Some("owner/name"), "0.1.0", "game.exe").is_none());
     }
 }

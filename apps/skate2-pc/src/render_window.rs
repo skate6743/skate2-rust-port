@@ -161,7 +161,34 @@ fn event_loop() -> Result<EventLoop<()>, winit::error::EventLoopError> {
     EventLoop::new()
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: winit needs the principal class (`NSApplication`) to be its own, and another part of the
+/// application (rfd's first-launch folder dialog) would take it first, which winit refuses. The
+/// event loop is therefore made before that dialog and kept for [`run_with_options`].
+#[cfg(target_os = "macos")]
+pub fn prepare_event_loop() {
+    EARLY_EVENT_LOOP.with(|slot| {
+        if slot.borrow().is_none() {
+            *slot.borrow_mut() = Some(EventLoop::new());
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+std::thread_local! {
+    static EARLY_EVENT_LOOP: std::cell::RefCell<
+        Option<Result<EventLoop<()>, winit::error::EventLoopError>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(target_os = "macos")]
+fn event_loop() -> Result<EventLoop<()>, winit::error::EventLoopError> {
+    match EARLY_EVENT_LOOP.with(|slot| slot.borrow_mut().take()) {
+        Some(prepared) => prepared,
+        None => EventLoop::new(),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn event_loop() -> Result<EventLoop<()>, winit::error::EventLoopError> {
     EventLoop::new()
 }

@@ -54,6 +54,10 @@ pub(crate) fn resolve() -> Result<Option<PathBuf>, String> {
 
 /// A player launch's fatal error, which the console closing with the game would hide.
 pub(crate) fn show_error(text: &str) {
+    // macOS shows no message box from a running application, so the error is kept where the crash
+    // reports go as well as told.
+    #[cfg(target_os = "macos")]
+    crate::panic_report::save_error_report(text);
     tell(MessageLevel::Error, text);
 }
 
