@@ -67,6 +67,12 @@ pub(crate) struct SelectedPlayerTick {
     // rendering may span multiple simulation ticks and must not lose events.
     pub(crate) scoring_hud_frames: std::cell::RefCell<Vec<crate::ui::trick_backend::PhysicsFrame>>,
     pub(crate) scoring_hud_subscribed: std::cell::Cell<bool>,
+    // False for the next tick while an online game follows another player's skater (set before
+    // each gameplay tick, back to true after it): the HUD shows that skater's frames
+    // (`online::hud_record`), and the tick's local frame waits in `scoring_hud_held` for the
+    // online tick to take its backend commands and rate.
+    pub(crate) scoring_hud_local: std::cell::Cell<bool>,
+    pub(crate) scoring_hud_held: std::cell::RefCell<Option<crate::ui::trick_backend::PhysicsFrame>>,
     // Explicit selected SimUpdate2 camera subsequence, not its omitted managers.
     camera_subsequence: Option<u32>,
     // PhysOutModule_Hud's statistics members and the TricksBackEnd line their bests follow.
@@ -365,6 +371,8 @@ impl SelectedPlayerTick {
             visual_tick: 0,
             scoring_hud_frames: Default::default(),
             scoring_hud_subscribed: Default::default(),
+            scoring_hud_local: std::cell::Cell::new(true),
+            scoring_hud_held: Default::default(),
             camera_subsequence: None,
             hud_stats: Default::default(),
             #[cfg(test)]
@@ -832,6 +840,8 @@ impl SelectedPlayerTick {
             );
         }
         let post_solve_time = profile_start.map(|start| start.elapsed());
+        // One tick's choice: a step no online game sets up shows the local skater.
+        let local_hud_shown = self.scoring_hud_local.replace(true);
         if self.scoring_hud_subscribed.get() {
             let local_owner = Arc::clone(
                 local_actor.cached_physical_allocation().map_err(E::Physical)?.owner(),
@@ -841,7 +851,15 @@ impl SelectedPlayerTick {
                 .map_err(|e|E::SimRate(crate::simulation_sim_rate::SimRateError::Queue(e)))?;
             frame.simulation_rate = world.sim_rate.lock().map_err(|_| E::SimRatePoisoned)?
                 .current_sim_update_rate();
-            self.scoring_hud_frames.get_mut().push(frame);
+            // A held frame no online tick took keeps its commands for the next one queued.
+            if let Some(held) = self.scoring_hud_held.get_mut().take() {
+                frame.backend_commands.splice(0..0, held.backend_commands);
+            }
+            if local_hud_shown {
+                self.scoring_hud_frames.get_mut().push(frame);
+            } else {
+                *self.scoring_hud_held.get_mut() = Some(frame);
+            }
         }
         // PhysOutModule_Hud::Update 827c79b8 keeps the statistics every frame, HUD shown or not.
         {

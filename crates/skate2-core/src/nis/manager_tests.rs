@@ -583,6 +583,27 @@ fn a_scene_with_bit_1_holds_load_state_6_until_the_stream_focus_has_loaded() {
 }
 
 #[test]
+fn an_online_game_snaps_and_plays_a_streamed_scene_with_its_stream_focus_unloaded() {
+    // UpdateLoadState (0x82875bc0) waits for IsStreamFocusLoaded in states 2 and 6 only outside
+    // an online game.
+    let directory = directory_at("online", scene_type::RACE_START, 3, [10.0, 5.0, 20.0], 2.0);
+    let mut nis = NisSystem::new(directory, Arc::new(FixedTracks), None, "English");
+    nis.set_online_game(true);
+    nis.run_basic_nis("online", 0, false, true);
+    let mut ground = |_: [f32; 4], _: [f32; 4]| Ok(Some(([10.0, 3.0, 20.0], [0.0, 1.0, 0.0])));
+    let mut frames = 0;
+    while !nis.is_in_playback() {
+        nis.set_stream_focus_loaded(false);
+        nis.update_simulation(&mut ground).unwrap();
+        nis.update_presentation(DT);
+        nis.take_events();
+        frames += 1;
+        assert!(frames < 120);
+    }
+    assert_eq!(nis.pres.handle.as_ref().unwrap().frame.location, [10.0, 3.0, 20.0]);
+}
+
+#[test]
 #[ignore = "requires original external game data via SKATE2_GAME_ROOT"]
 fn the_tutorial_nis_preloads_and_plays_the_ollie_gesture_tip_from_its_overlay_channel() {
     use crate::nis::fe_overlays::TUTORIAL_GESTURE_OLLIE;

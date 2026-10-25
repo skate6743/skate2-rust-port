@@ -3103,6 +3103,12 @@ impl<T, C> SelectedLiveSession<T, C> {
         let profile_queued = crate::diagnostics::frame_profile::span(
             crate::diagnostics::frame_profile::TICK_QUEUED_FRAME,
         );
+        // The trick HUD's skater this tick: online, the other player's the console follows
+        // (`online::hud_record`), else the local one.
+        self.online.hud_followed = self.online_spectated_user();
+        if let Some(tick) = self.inner.selected_tick.as_ref() {
+            tick.scoring_hud_local.set(self.online.hud_followed.is_none());
+        }
         let result = self
             .inner
             .try_with_selected_queued_frame_challenge(

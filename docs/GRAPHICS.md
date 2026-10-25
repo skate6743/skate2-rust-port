@@ -548,7 +548,13 @@ review yet.
     presents as off and `FrameCap` waits at least the monitor's interval instead: a Fifo
     swapchain whose window another one covers can stop taking frames, and a frame held in
     its present holds the simulation (the SIM thread's next tick waits for the window to
-    take the last one), long enough online for the server to drop the game as frozen;
+    take the last one), long enough online for the server to drop the game as frozen. Any
+    swapchain can stall that way (wgpu's acquire gives up after a second), so an unfocused
+    frame that gets no image, or waits 250 ms or more for its image and present, puts the
+    window in the background (`render_window.rs`): its client frames run on the minimized
+    window's 8.3 ms timer, draw nothing and count as shown, so the simulation keeps
+    wall-clock pace and fade-covered loads go on. Focus, or the cursor moving over the
+    window, brings the redraws back;
   - `SKATE2_NO_VSYNC` for uncapped presentation (VSync off, no cap).
 - **Backends.** Every wgpu backend is allowed (Vulkan first, then DX12), and the DX12 shaders
   compile with FXC, which ships with Windows: wgpu's automatic choice takes any `dxcompiler.dll`

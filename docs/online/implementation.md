@@ -432,9 +432,45 @@ as any other then. The dynamic shadow follows the spectated skater too, and so d
 presentation's stream focus (the root of the frame the puppet shows), so the city loads around
 the player watched. Remote skaters' audio ids
 are their slots past the SkaterManager's eight Actors, so none shares the local skater's. Scenes
-cannot be skipped online, so every console runs them over the same ticks. A scene that snaps its
-characters to the ground (Death Race's heat starts) streams its location, and later its restore
-position, from the running game's stream focus rather than the paused one.
+cannot be skipped online, so every console runs them over the same ticks. In an online game a
+scene's load does not wait for the stream focus (`UpdateLoadState` skips `IsStreamFocusLoaded`
+in its states 2 and 6 while `Net::IsInOnlineGame`), so a scene snapped to the ground (Death
+Race's heat starts) asks for the ground at once; a restore position still streams from the
+running game's stream focus rather than the paused one.
+
+**The spectated skater's trick HUD.** The original's `PhysOutModule_Hud::Update` (0x827c79b8)
+feeds the one `TricksBackEnd` from `SkaterManager::GetLocal()`'s `PhysOut`, so while a script
+follows another player the bottom-left trick display (trick name with spins, flips and stance,
+multiplier, sequence and line scores, line timer, big-trick and "over" contexts) shows that
+player's tricks. `SetLocalIndex` resets nothing of it (its observers are the camera, the
+challenge AI and the census). Each replay frame therefore carries the owner's trick HUD record
+(`crates/skate2-core/src/online/hud_record.rs`, protocol 12), the state its HUD frame holds:
+- The latest trick begun or converted to, as its Vault key, never its name. The receiver builds
+  the name from its own trick database, as the original built it, and a key names the same trick
+  whatever game data each console has. A key the database does not hold shows no name; key 0 is
+  the scoring's own "no valid trick", shown as the original shows one.
+- The spins, flips, stance, multiplier, scores, line and context entries.
+- A wrapping count of each HUD event (trick, sequence begun and completed, landing, interrupting
+  wipeout, wipeout, reactivation, air finished).
+
+The record is coded like the audio words, XORed against the frame before, so a tick without a
+trick costs well under a bit. Events travel as counts because frames are not resent: a lost tick
+only delays the next record's events; none is lost or shown twice. Where a gap hides whether an
+end came before a start, the ends go first. Every record is checked on receipt, and a malformed
+one is dropped as a lost one. The ranges are past anything a skater reaches: spins ±64, flips ±16,
+multiplier 0..16, finite floats, no more taps than tricks, known context kinds. The sender holds
+its own values to them.
+
+Each remote skater's records are taken as its playout passes their ticks, whether or not anyone
+follows it, so the HUD changes as the puppet does. Following a skater starts from its state then,
+never from a burst of earlier events. Before each gameplay tick the session picks the HUD's
+skater: the one `online_spectated` names, which is the same one the camera, shadow, streaming and
+audio follow. That tick's local HUD frame then stays back. The followed skater's frames, at least
+one a tick, take its place, and the local frame's backend commands, simulation rate and line
+maximum carry over to them. When the followed skater goes (it leaves, stops arriving or the round
+ends) the local frames come back at once, and the HUD carries on from the frames before, as the
+original's one `TricksBackEnd` does. The choice is made per tick: any tick that does not set it
+shows the local skater.
 
 **Challenges: the facts lockstep.** A challenge script must reach the same letters, turns,
 scores and results on every console. Each console runs the whole challenge script, for every

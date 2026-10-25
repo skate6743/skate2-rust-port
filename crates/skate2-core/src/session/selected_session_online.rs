@@ -182,6 +182,12 @@ pub(super) struct Online {
     outbox: Vec<ClientMessage>,
     /// The local skater's replay frames since the last run went out.
     run: Vec<NetFrame>,
+    /// The trick HUD's view of the local skater that its replay frames carry, and whether the
+    /// last tick could not take it (traced once a time it starts failing).
+    hud: crate::online::hud_record::HudRecorder,
+    hud_unrecorded: bool,
+    /// The other player whose skater the trick HUD follows this tick (`Online.SwitchCamera`).
+    pub(super) hud_followed: Option<u64>,
     /// The game's invisible boundaries while its area is held (`InvisibleBoundaryManager`).
     pub(super) boundaries: Option<Arc<crate::challenge::invisible_boundary::InvisibleBoundaries>>,
     /// The game's challenge hulls and the static objects `Dmo::SimManager` places from them.
@@ -585,6 +591,10 @@ impl<T, C> SelectedLiveSession<T, C> {
         if let Some(owner) = self.inner.world.as_ref() {
             let world = owner.world.lock().map_err(|_| error("world lock poisoned"))?;
             world.sim_rate.lock().map_err(|_| error("sim rate lock poisoned"))?.set_online_game(online);
+        }
+        // Net::IsInOnlineGame (0x82559b80): the flow's STATE_OnlineGame, which a scene's load reads.
+        if let Some(career) = self.career.as_mut() {
+            career.nis.set_online_game(self.online.game.is_some());
         }
         Ok(())
     }
@@ -1096,6 +1106,8 @@ impl<T, C> SelectedLiveSession<T, C> {
         };
         // The console's own skater's record, also while the audio takes a followed one as local.
         let audio = self.audio_own_record();
+        self.record_online_hud();
+        let followed = self.online.hud_followed;
         let projection = self.inner.world.as_ref().and_then(|world| world.local.try_camera_producer_projection().ok());
         // A run ends in a sample: every PLAYING_INTERVAL ticks while the local skater plays the
         // round, every INTERVAL ticks otherwise, and at a teleport and the tick after it. While
@@ -1140,7 +1152,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     lanes
                 })
                 .collect();
-            let mut net = NetFrame { tick, header, pose: Some(pose), twist: frame.twist_ratios, camera: camera.map(|values| values.to_vec()).unwrap_or_default(), audio_floats, audio_words };
+            let mut net = NetFrame { tick, header, pose: Some(pose), twist: frame.twist_ratios, camera: camera.map(|values| values.to_vec()).unwrap_or_default(), audio_floats, audio_words, hud: self.online.hud.words() };
             if let Some(path) = std::env::var_os("SKATE2_DIAGNOSTIC_ONLINE_FRAME_DUMP")
                 && self.online.frame_dump.is_none()
             {
@@ -1169,6 +1181,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             }
         }
         let camera_position = camera.map_or([0.0; 3], |values| [values[0], values[1], values[2]]);
+        let mut followed_hud = None;
         for remote in game.remotes.values_mut() {
             match remote.finish_character() {
                 Some(Ok(took)) => trace(format_args!("{:016x}'s character built in {:.1} ms", remote.user_id, took.as_secs_f64() * 1000.0)),
@@ -1178,6 +1191,11 @@ impl<T, C> SelectedLiveSession<T, C> {
             let shown = remote.visible();
             if let Err(e) = remote.advance(tick, camera_position, &vault, &cvars) {
                 trace(format_args!("{:016x}: {e}", remote.user_id));
+            }
+            // Every remote's records are taken each tick, the followed one's for the HUD.
+            let hud = remote.take_hud();
+            if followed == Some(remote.user_id) {
+                followed_hud = Some(hud);
             }
             if tick % 600 == 0 {
                 let (held, shown, delay, pace, teleports) = remote.take_held();
@@ -1197,7 +1215,58 @@ impl<T, C> SelectedLiveSession<T, C> {
                 self.online.event_log.add(EventText::named("ID_ONLINE_EVENT_JOIN_SKATER", &name));
             }
         }
+        self.show_followed_hud(followed_hud);
         Ok(())
+    }
+
+    /// `PhysOutModule_Hud::Update`'s frame of the console's own skater this tick, for the trick
+    /// HUD record its replay frame carries: the frame its own HUD shows, followed or not.
+    fn record_online_hud(&mut self) {
+        let frame = (|| {
+            let world = self.inner.world.as_ref()?;
+            let actor = self.inner.player.as_ref()?.selected.actor.as_deref()?;
+            let physical = actor.cached_physical_allocation().ok()?;
+            let world = world.world.lock().ok()?;
+            Some(world.try_scoring_hud_frame(physical.owner()))
+        })();
+        match frame {
+            Some(Ok(frame)) => {
+                self.online.hud.record(&frame);
+                self.online.hud_unrecorded = false;
+            }
+            Some(Err(e)) => {
+                if !self.online.hud_unrecorded {
+                    trace(format_args!("our trick HUD record is unavailable: {e:?}"));
+                }
+                self.online.hud_unrecorded = true;
+            }
+            None => {}
+        }
+    }
+
+    /// While the console follows another player's skater, the trick HUD shows that skater's
+    /// frames in place of this tick's local one (`PhysOutModule_Hud::Update` reads `GetLocal()`,
+    /// which `Online.SwitchCamera` points at it), built from the records its playout passed. The
+    /// local frame held back for them gives its backend commands and rate; if the followed
+    /// skater went this tick, the local frame shows after all.
+    fn show_followed_hud(&self, followed: Option<(Vec<crate::online::hud_record::HudStep>, Option<crate::online::hud_record::HudRecord>)>) {
+        let Some(tick) = self.inner.selected_tick.as_ref() else { return };
+        let Some(local) = tick.scoring_hud_held.borrow_mut().take() else { return };
+        let frames = match followed {
+            Some((steps, latest)) => crate::online::hud_record::followed_frames(&steps, latest.as_ref(), local, |key| self.hud_trick_name(key)),
+            None => vec![local],
+        };
+        tick.scoring_hud_frames.borrow_mut().extend(frames);
+    }
+
+    /// A followed skater's trick's name, from this console's trick database (its own skater's):
+    /// `None` for a key it does not hold.
+    fn hud_trick_name(&self, key: u64) -> Option<crate::ui::trick_backend::TrickName> {
+        let world = self.inner.world.as_ref()?;
+        let actor = self.inner.player.as_ref()?.selected.actor.as_deref()?;
+        let physical = actor.cached_physical_allocation().ok()?;
+        let world = world.world.lock().ok()?;
+        world.try_hud_trick_name(physical.owner(), key).ok().flatten()
     }
 
     /// The remote skaters' frames this tick, for the presentation's submission.

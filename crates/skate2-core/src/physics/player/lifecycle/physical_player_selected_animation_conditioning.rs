@@ -74,6 +74,15 @@ impl PhysicalAssemblyWorld {
         let output = owner.phys_out().lock().map_err(|_| E::Poisoned)?;
         conditioners.try_scoring_hud_frame(&output).map_err(E::Hud)
     }
+    /// The HUD's name of the trick with Vault key `key`, from `owner`'s trick database.
+    pub(crate) fn try_hud_trick_name(&self, owner: &PhysicalPlayerAssemblyOwner, key: u64)
+        -> Result<Option<crate::ui::trick_backend::TrickName>, SelectedAnimationFinishError>
+    {
+        use SelectedAnimationFinishError as E;
+        let conditioners = owner.conditioners.lock().map_err(|_| E::Poisoned)?;
+        let conditioners = conditioners.as_ref().ok_or(E::MissingConditioners)?;
+        conditioners.try_hud_trick_name(key).map_err(E::Hud)
+    }
     /// Selected native Animation.Update82e31970. Other `UpdateAll` children remain
     /// explicit exclusions; this token is not whole-frame completion.
     pub(crate) fn try_finish_selected_animation(

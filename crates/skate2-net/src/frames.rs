@@ -6,7 +6,8 @@
 //! Only what a remote skater's restore, its audio and a spectator's view read travels: the
 //! header's root rotation, world position, board speed, peer and flag words (its hips and board
 //! matrices repeat the pose) and the audio record's words every tick, and on sample ticks the
-//! pose, twist ratios, the audio record's floats and the game camera. The receiver carries the
+//! pose, twist ratios, the audio record's floats and the game camera, and every tick the trick
+//! HUD's view of the skater (`skate2_core::online::hud_record`, opaque words here). The receiver carries the
 //! floats and twist of the last tick that had them. A sender's ticks travel in runs, each ending
 //! in a sample: [`PLAYING_INTERVAL`] ticks while its skater plays a challenge round,
 //! [`INTERVAL`] otherwise. While the other players watch the skater every tick of its runs is a
@@ -51,6 +52,8 @@ pub const HISTORY: usize = 64;
 pub const MAX_BONES: usize = 512;
 /// The most values in the camera or an audio list.
 pub const MAX_VALUES: usize = 1024;
+/// The most words of a tick's trick HUD record.
+pub const MAX_HUD_WORDS: usize = 64;
 
 /// Header words 32 to 38: the root rotation quaternion and world position (`ReadSkater`'s
 /// bytes 128 and 144).
@@ -106,6 +109,8 @@ pub struct NetFrame {
     pub camera: Vec<f32>,
     pub audio_floats: Vec<f32>,
     pub audio_words: Vec<u32>,
+    /// The tick's trick HUD record; empty without one.
+    pub hud: Vec<u32>,
 }
 
 /// The values a sample tick adds: the pose, twist ratios, audio floats and camera.
@@ -126,6 +131,7 @@ pub struct QuantFrame {
     words: [u32; KEPT_WORDS],
     sample: Option<Arc<Sample>>,
     audio_words: Vec<u32>,
+    hud: Vec<u32>,
 }
 
 fn quantize(value: f32, units: f32) -> i32 {
@@ -172,6 +178,7 @@ impl QuantFrame {
                 })
             }),
             audio_words: frame.audio_words.clone(),
+            hud: frame.hud.clone(),
         }
     }
 
@@ -181,7 +188,7 @@ impl QuantFrame {
     }
 
     fn empty() -> Self {
-        Self { tick: 0, root: [0; ROOT_VALUES], speed: 0, words: [0; KEPT_WORDS], sample: None, audio_words: Vec::new() }
+        Self { tick: 0, root: [0; ROOT_VALUES], speed: 0, words: [0; KEPT_WORDS], sample: None, audio_words: Vec::new(), hud: Vec::new() }
     }
 }
 
@@ -288,6 +295,7 @@ struct Models {
     speed: Classes,
     words: Words,
     audio_words: Words,
+    hud_words: Words,
     sample: Bit,
     same_length: Bit,
     length: Integer,
@@ -420,17 +428,18 @@ fn code_length(channel: &mut impl Channel, length: usize, base: Option<usize>, m
     }
 }
 
-fn code_word_list(channel: &mut impl Channel, words: &mut Vec<u32>, base: &[u32], models: &mut Models) -> DecodeResult<()> {
-    let (count, same) = code_length(channel, words.len(), Some(base.len()), models, MAX_VALUES)?;
+/// A list of up to `max` words against `base`, in the contexts `contexts` picks.
+fn code_word_list(channel: &mut impl Channel, words: &mut Vec<u32>, base: &[u32], models: &mut Models, max: usize, contexts: fn(&mut Models) -> &mut Words) -> DecodeResult<()> {
+    let (count, same) = code_length(channel, words.len(), Some(base.len()), models, max)?;
     if channel.decoding() {
         words.clear();
         words.resize(count, 0);
     }
     let zeros = if same { Vec::new() } else { vec![0; count] };
-    code_words(channel, words, if same { base } else { &zeros }, &mut models.audio_words)
+    code_words(channel, words, if same { base } else { &zeros }, contexts(models))
 }
 
-/// A tick's header values and audio words.
+/// A tick's header values, audio words and trick HUD record.
 fn code_header(channel: &mut impl Channel, frame: &mut QuantFrame, chain: &Chain, models: &mut Models) -> DecodeResult<()> {
     let tick = frame.tick;
     let last = chain.last.as_ref();
@@ -445,7 +454,8 @@ fn code_header(channel: &mut impl Channel, frame: &mut QuantFrame, chain: &Chain
     let speed = last.map_or(0, |last| moved(last.speed, last.tick, before.map(|before| (before.speed, before.tick)), tick));
     stepped(channel, &mut models.speed, last.map_or(0, |last| last.speed), speed, &mut frame.speed)?;
     code_words(channel, &mut frame.words, &last.map_or([0; KEPT_WORDS], |last| last.words), &mut models.words)?;
-    code_word_list(channel, &mut frame.audio_words, last.map_or(&[], |last| last.audio_words.as_slice()), models)
+    code_word_list(channel, &mut frame.audio_words, last.map_or(&[], |last| last.audio_words.as_slice()), models, MAX_VALUES, |models| &mut models.audio_words)?;
+    code_word_list(channel, &mut frame.hud, last.map_or(&[], |last| last.hud.as_slice()), models, MAX_HUD_WORDS, |models| &mut models.hud_words)
 }
 
 /// A sample's pose: each bone's scale and translation lanes and its rotation, predicted on from
@@ -633,9 +643,11 @@ pub fn dump_record(frame: &NetFrame) -> Vec<u8> {
             w.f32(value);
         }
     }
-    w.u32(u32::try_from(frame.audio_words.len()).unwrap_or(0));
-    for &word in &frame.audio_words {
-        w.u32(word);
+    for list in [&frame.audio_words, &frame.hud] {
+        w.u32(u32::try_from(list.len()).unwrap_or(0));
+        for &word in list.iter() {
+            w.u32(word);
+        }
     }
     w.into_vec()
 }
@@ -678,8 +690,15 @@ pub fn read_dump_record(data: &[u8]) -> DecodeResult<NetFrame> {
     }
     let count = usize::try_from(r.u32()?).map_err(|_| DecodeError("words"))?.min(MAX_VALUES);
     let audio_words = (0..count).map(|_| r.u32()).collect::<DecodeResult<Vec<u32>>>()?;
+    // Dumps written before the trick HUD record end here.
+    let hud = if r.is_empty() {
+        Vec::new()
+    } else {
+        let count = usize::try_from(r.u32()?).map_err(|_| DecodeError("hud words"))?.min(MAX_HUD_WORDS);
+        (0..count).map(|_| r.u32()).collect::<DecodeResult<Vec<u32>>>()?
+    };
     let [camera, audio_floats] = lists;
-    Ok(NetFrame { tick, header, pose, twist, camera, audio_floats, audio_words })
+    Ok(NetFrame { tick, header, pose, twist, camera, audio_floats, audio_words, hud })
 }
 
 /// Whether tick `a` precedes `b`, across the counter's wrap.
@@ -915,6 +934,7 @@ impl FrameReceiver {
                 .unwrap_or_default(),
             audio_floats: carried.map(|sample| sample.audio_floats.iter().map(|&value| dequantize(value, AUDIO_UNITS)).collect()).unwrap_or_default(),
             audio_words: frame.audio_words.clone(),
+            hud: frame.hud.clone(),
         }
     }
 
@@ -969,6 +989,7 @@ mod tests {
             camera: vec![phase, 2.0 * phase, 0.0, 0.0, (phase * 0.05).sin(), 0.0, (phase * 0.05).cos(), 60.0],
             audio_floats: (0..160).map(|i| if i % 3 == 0 { phase * i as f32 } else { 0.0 }).collect(),
             audio_words: (0..40).map(|i| if i == 5 { tick / 10 } else { 7 }).collect(),
+            hud: (0..15).map(|i| if i == 7 { tick / 4 } else { u32::from(i == 1) }).chain((tick % 40 < 10).then_some([0x8000_0003, 0x4120_0000]).into_iter().flatten()).collect(),
         }
     }
 
@@ -983,6 +1004,7 @@ mod tests {
         assert!((f32::from_bits(restored.header[ROOT_WORD + 4]) - f32::from_bits(input.header[ROOT_WORD + 4])).abs() < 1e-3);
         assert!((f32::from_bits(restored.header[SPEED_WORD]) - f32::from_bits(input.header[SPEED_WORD])).abs() < 1e-2);
         assert_eq!(restored.audio_words, input.audio_words);
+        assert_eq!(restored.hud, input.hud);
         if let (Some(pose), Some(original)) = (&restored.pose, &input.pose) {
             for (bone, original) in pose.iter().zip(original) {
                 for lane in 0..BONE_LANES {

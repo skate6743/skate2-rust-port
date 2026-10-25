@@ -915,6 +915,12 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.online_spectated()?.root()
     }
 
+    /// The player whose skater the trick HUD follows: the one the console follows, as
+    /// `PhysOutModule_Hud::Update` (0x827c79b8) reads `GetLocal()`.
+    pub(in super::super) fn online_spectated_user(&self) -> Option<u64> {
+        self.online_spectated().map(|remote| remote.user_id)
+    }
+
     /// The challenge pinned or unpinned the local skater (`cMsgPinPlayer`).
     pub(in super::super) fn online_local_pinned(&mut self, pin: bool) {
         let tick = self.completed_frames;

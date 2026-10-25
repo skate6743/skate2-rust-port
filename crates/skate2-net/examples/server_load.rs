@@ -107,6 +107,7 @@ fn frame(player: usize, tick: u32, sample: bool, noise: &mut Noise) -> NetFrame 
         camera: vec![position[0] - 4.0 * heading.cos(), position[1] + 1.5, position[2] - 4.0 * heading.sin(), rotation[0], rotation[1], rotation[2], rotation[3], 60.0],
         audio_floats: (0..60).map(|index| (seconds * (1 + index % 5) as f32).sin() * (index % 3) as f32).collect(),
         audio_words: (0..16).map(|index| if index == 3 { tick / 30 } else { 7 }).collect(),
+        hud: (0..15).map(|index| if index == 7 { tick / 6 } else { 0 }).collect(),
     }
 }
 

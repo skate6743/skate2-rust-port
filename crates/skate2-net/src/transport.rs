@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 /// Bytes identifying the protocol at the start of every datagram.
 pub const MAGIC: u16 = 0x5332;
 /// Raised whenever the wire format changes; a mismatch refuses the connection.
-pub const PROTOCOL_VERSION: u8 = 11;
+pub const PROTOCOL_VERSION: u8 = 12;
 /// The largest datagram either side sends, below common path MTUs so no datagram fragments.
 pub const MAX_DATAGRAM: usize = 1200;
 /// The largest reliable fragment; longer messages are split.

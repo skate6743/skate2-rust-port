@@ -1,7 +1,2 @@
-Title Update 2 Offboard added (pre-patch was jankier)
-Online physics brought back from original game
-Edit Skater now shows brand icons on items
-Fixed issue with spawning underground in online
-Fixed SKATE letters sometimes getting stuck on screen in online
-Fixed missing names in online endgame scoreboard
-Collision fix that blocked jumping to ledges
+Fixed issue an with being disconnected from Alt+Tabbing in online
+When spectating, you can now see other players tricks and current score

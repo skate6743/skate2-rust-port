@@ -183,7 +183,7 @@ fn scoring_frontend_preserves_nollie_variant_and_cab_name_rules() {
     let tuning=DisplayTuning { allowed:true,nollie_delay:140,jolt_threshold:0.73,jolt_distance:50.,jolt_speed:9.98,jolt_recovery:0.3258 };
     let mut b=TricksBackend::default(); let mut d=TrickDisplay::default(); let mut commands=Vec::new();
     let mut locale=|label:&str| -> RenderResult<String> {Ok(label.into())};
-    b.current=Some(TrickName {index:12,valid:true,label:Some("nollie".into()),accepts_spin:true,
+    b.current=Some(TrickName {index:12,attrib_key:0,valid:true,label:Some("nollie".into()),accepts_spin:true,
         nollie:true,fakie_variant:Some(("ollie".into(),false))});
     b.switched=true;
     d.event(&mut b,DisplayEvent::Start,tuning,&mut commands);

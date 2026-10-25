@@ -8,6 +8,9 @@ use std::sync::Arc;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TrickName {
     pub index: i32,
+    /// The trick's Vault collection key (`TrickSettings::trick_attrib_key`), 0 for none: what an
+    /// online skater's HUD record names the trick by, since an index depends on the game data.
+    pub attrib_key: u64,
     pub valid: bool,
     pub label: Option<Arc<str>>,
     pub accepts_spin: bool,

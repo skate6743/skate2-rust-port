@@ -142,6 +142,7 @@ fn frame(tick: u32) -> NetFrame {
         camera: vec![1.0; 8],
         audio_floats: vec![0.25; 64],
         audio_words: vec![3; 16],
+        hud: vec![0; 15],
     }
 }
 

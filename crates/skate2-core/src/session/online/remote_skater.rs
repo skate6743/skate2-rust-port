@@ -34,6 +34,7 @@ use crate::{
     world::try_simulation_quaternion_candidate,
 };
 use skate2_formats::{andale::AndaleSqt, mount::MountSet};
+use crate::online::hud_record::{HudFollower, HudRecord, HudStep};
 use skate2_net::frames::{CAMERA_VALUES, HEADER_WORDS, INTERVAL, NetFrame, tick_before};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -42,6 +43,10 @@ use std::sync::{Arc, Mutex};
 const CHARACTER_VERSION: u8 = 1;
 /// Frames kept behind the one shown.
 const KEPT_BEHIND: u32 = 120;
+/// How far the moment shown may move back behind the trick HUD records it passed and still be
+/// the same run of the sender's ticks (a playout shift); further back, the sender's ticks started
+/// again, and the records start over.
+const HUD_REWIND: u32 = 600;
 /// The most frames kept, the oldest going first: ten seconds of a sender's ticks, past any lag
 /// of the moment shown behind the newest (it reaches the newest at once after a hold). Frames
 /// stamped far ahead of the sender's ticks are never shown, and would otherwise pile up.
@@ -489,6 +494,9 @@ pub(super) struct RemoteSkater {
     teleports: u32,
     /// No frame for [`STALE_TICKS`]: the skater is not shown.
     stale: bool,
+    /// The trick HUD records of the ticks the moment shown has passed, and the newest such tick.
+    hud: HudFollower,
+    hud_through: Option<u32>,
     /// The character a recipe is building on its own thread, and how long it took.
     building: Option<std::thread::JoinHandle<(Result<Character, String>, std::time::Duration)>>,
 }
@@ -527,6 +535,8 @@ impl RemoteSkater {
             held: (0, 0),
             teleports: 0,
             stale: true,
+            hud: HudFollower::default(),
+            hud_through: None,
             building: None,
         }
     }
@@ -690,6 +700,7 @@ impl RemoteSkater {
     pub(super) fn advance(&mut self, local_tick: u32, camera: [f32; 3], vault: &Arc<AttributeRuntimeVault>, cvars: &InputCvarReferences) -> Result<(), String> {
         self.stale = self.last_arrival.is_none_or(|arrival| local_tick.saturating_sub(arrival) > STALE_TICKS);
         let Some(time) = self.playout.next(local_tick) else { return Ok(()) };
+        self.pass_hud(floor_tick(time));
         self.held.1 += 1;
         if self.last_sample.is_some_and(|sample| time >= f64::from(sample)) {
             self.held.0 += 1;
@@ -730,6 +741,36 @@ impl RemoteSkater {
         let keep = floor_tick(time).saturating_sub(KEPT_BEHIND);
         self.frames = self.frames.split_off(&keep);
         Ok(())
+    }
+
+    /// Hands the trick HUD the records of the ticks the moment shown moved past, up to `through`,
+    /// so a followed skater's HUD changes as its skater does. A moment that holds or moves back
+    /// passes nothing; one far back (the sender's ticks started again) starts over.
+    fn pass_hud(&mut self, through: u32) {
+        if let Some(passed) = self.hud_through
+            && !tick_before(passed, through)
+        {
+            if passed.wrapping_sub(through) <= HUD_REWIND {
+                return;
+            }
+            self.hud.forget();
+            self.hud_through = None;
+        }
+        let first = self.hud_through.map_or(through, |passed| passed.wrapping_add(1));
+        let passed: Vec<(u32, &NetFrame)> = if first <= through {
+            self.frames.range(first..=through).map(|(&tick, frame)| (tick, frame)).collect()
+        } else {
+            self.frames.range(first..).chain(self.frames.range(..=through)).map(|(&tick, frame)| (tick, frame)).collect()
+        };
+        for (tick, frame) in passed {
+            self.hud.pass(tick, &frame.hud);
+        }
+        self.hud_through = Some(through);
+    }
+
+    /// The trick HUD records passed since the last call, oldest first, and the newest passed.
+    pub(super) fn take_hud(&mut self) -> (Vec<HudStep>, Option<HudRecord>) {
+        (self.hud.take(), self.hud.latest().cloned())
     }
 
     /// The ticks that held the pose at or past the newest sample and the ticks shown since the
@@ -999,7 +1040,7 @@ mod tests {
     }
 
     fn frame(tick: u32, camera: Vec<f32>) -> NetFrame {
-        NetFrame { tick, header: [0; HEADER_WORDS], pose: None, twist: [0.0; 4], camera, audio_floats: Vec::new(), audio_words: Vec::new() }
+        NetFrame { tick, header: [0; HEADER_WORDS], pose: None, twist: [0.0; 4], camera, audio_floats: Vec::new(), audio_words: Vec::new(), hud: Vec::new() }
     }
 
     /// A frame with its root and one bone at `x`.
@@ -1014,6 +1055,34 @@ mod tests {
     fn root_x(skater: &RemoteSkater, time: f64) -> f32 {
         let (before, after) = skater.around(time).unwrap();
         f32::from_bits(header_at(before, after)[ROOT_WORD + 4])
+    }
+
+    #[test]
+    fn the_trick_hud_passes_each_record_once_as_the_moment_shown_reaches_it() {
+        let mut skater = RemoteSkater::new(1, 0);
+        let mut recorder = crate::online::hud_record::HudRecorder::default();
+        for tick in 0..12 {
+            if tick == 5 {
+                recorder.record(&crate::ui::trick_backend::PhysicsFrame { sequence_begun: true, ..Default::default() });
+            }
+            let mut frame = frame(tick, Vec::new());
+            frame.hud = recorder.words();
+            if tick != 7 {
+                skater.receive(tick, frame, true, true);
+            }
+        }
+        let mut passed = |through: u32| {
+            skater.pass_hud(through);
+            skater.take_hud().0.len()
+        };
+        assert_eq!(passed(3), 1, "the first record shown");
+        assert_eq!(passed(8), 4, "4, 5, 6 and 8: the lost 7 passes nothing");
+        assert_eq!(passed(8), 0, "a moment that holds passes nothing");
+        assert_eq!(passed(6), 0, "nor one that moves back");
+        assert_eq!(passed(11), 3);
+        // Far back: the sender's ticks started again, and the records start over from there.
+        assert_eq!(passed(11_u32.wrapping_sub(HUD_REWIND + 1)), 0);
+        assert!(skater.take_hud().1.is_none());
     }
 
     #[test]

@@ -2215,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "skate2-pc"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "chrono",
  "cpal",
@@ -2242,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "skate2-server"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.3.4",
@@ -2257,7 +2257,7 @@ version = "0.1.0"
 
 [[package]]
 name = "skate2-update"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "ed25519-dalek",
  "sha2",

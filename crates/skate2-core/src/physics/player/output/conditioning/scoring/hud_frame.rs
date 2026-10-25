@@ -28,7 +28,7 @@ fn name(db: &TrickDatabase, settings: &TrickSettings) -> Result<TrickName, Score
         db.lookup_id(settings.fakie_variant_id, &mut variant)?;
     }
     Ok(TrickName {
-        index: settings.trick_index as i32, valid: true,
+        index: settings.trick_index as i32, attrib_key: settings.trick_attrib_key, valid: true,
         label: settings.trick_name_hal.clone(),
         // RefreshTrickDisplay82619580: all aerial types and grabs except coffin.
         accepts_spin: matches!(settings.trick_type, 1 | 2 | 3 | 7 | 10 | 12 | 13)
@@ -39,6 +39,20 @@ fn name(db: &TrickDatabase, settings: &TrickSettings) -> Result<TrickName, Score
     })
 }
 impl Conditioners {
+    /// The HUD's name of the trick with a Vault key, as `try_scoring_hud_frame` names a begun
+    /// trick: a followed online skater's trick, sent as its key (`online::hud_record`). `None` for
+    /// a key this database does not hold.
+    pub(crate) fn try_hud_trick_name(&self, key: u64) -> Result<Option<TrickName>, ScoreError> {
+        let retained = &self.scoring.published_value().ok_or(ScoreError::Missing("HUD scoring owner"))?.payload;
+        let db = retained.database.as_ref().ok_or(ScoreError::Missing("HUD trick database"))?;
+        let mut settings = TrickSettings::new();
+        db.lookup_attrib_key(key, &mut settings)?;
+        if !settings.is_valid {
+            return Ok(None);
+        }
+        name(db, &settings).map(Some)
+    }
+
     pub(crate) fn try_scoring_hud_frame(&self, output: &PhysicalPlayerPhysOut) -> Result<PhysicsFrame, ScoreError> {
         output.check_current_guard().map_err(ScoreError::Access)?;
         if !self.matches_output(output) { return Err(ScoreError::Invalid("HUD foreign PhysOut")); }

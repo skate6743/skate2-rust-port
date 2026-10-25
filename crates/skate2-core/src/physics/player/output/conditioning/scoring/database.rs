@@ -72,6 +72,18 @@ impl TrickDatabase {
         };
         self.lookup_key(key, index, settings)
     }
+    /// The trick whose Vault collection key is `key`; invalid for a key not in the database.
+    pub(super) fn lookup_attrib_key(
+        &self,
+        key: u64,
+        settings: &mut TrickSettings,
+    ) -> Result<(), ScoreError> {
+        settings.is_valid = false;
+        let Some(&index) = self.indices.get(&key) else {
+            return Ok(());
+        };
+        self.lookup_key(key, index, settings)
+    }
     pub(super) fn lookup(
         &self,
         name: &str,

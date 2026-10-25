@@ -138,6 +138,12 @@ pub struct RenderWindowOptions {
 /// How often a minimized window runs its client's frame.
 const MINIMIZED_FRAME: Duration = Duration::from_micros(8_333);
 
+/// An unfocused window's frame that waits this long for its swapchain image or present, or
+/// gets none, moves the client's frames to the minimized window's timer: a window another one
+/// covers can stop taking frames, and each wait holds the simulation (wgpu's acquire gives up
+/// only after a second).
+const BACKGROUND_STALL: Duration = Duration::from_millis(250);
+
 /// The window system's event loop. On Linux, winit takes Wayland whenever `WAYLAND_DISPLAY` is
 /// set and gets no second attempt after a failed one, so a session whose Wayland socket is
 /// missing (a stale variable) and that has an X server gets X11.
@@ -258,6 +264,10 @@ pub fn run_with_options(
         .and_then(|count| count.parse::<u32>().ok())
         .unwrap_or(u32::MAX);
     let mut alt = false;
+    let mut focused = true;
+    // Unfocused and its swapchain stalled: the client's frames run on the minimized timer and
+    // draw nothing until the window is focused again or the cursor moves over it.
+    let mut background = false;
     event_loop.run(move |event, target| {
         target.set_control_flow(ControlFlow::Wait);
         if let Event::WindowEvent { window_id, event } = event {
@@ -268,7 +278,18 @@ pub fn run_with_options(
             let result = client.window_event(&event).and_then(|()| {
                 match event {
                     WindowEvent::CloseRequested => target.exit(),
-                    WindowEvent::Focused(focused) => renderer.set_focused(focused),
+                    WindowEvent::Focused(now_focused) => {
+                        renderer.set_focused(now_focused);
+                        focused = now_focused;
+                        if focused && background {
+                            background = false;
+                            window.request_redraw();
+                        }
+                    }
+                    WindowEvent::CursorMoved { .. } if background => {
+                        background = false;
+                        window.request_redraw();
+                    }
                     WindowEvent::ModifiersChanged(modifiers) => alt = modifiers.state().alt_key(),
                     WindowEvent::KeyboardInput { event, .. }
                         if alt && !text_entry && !event.repeat && event.state == winit::event::ElementState::Pressed
@@ -298,6 +319,7 @@ pub fn run_with_options(
                         renderer.resize(size.width, size.height);
                         window.request_redraw();
                     }
+                    WindowEvent::RedrawRequested if background => {}
                     WindowEvent::RedrawRequested => {
                         renderer.wait_for_frame_cap();
                         let redraw_start = Instant::now();
@@ -441,10 +463,17 @@ pub fn run_with_options(
                             true
                         } else {
                             match renderer.render(&scene) {
-                                Ok(()) => true,
+                                Ok(()) => {
+                                    let last = renderer.last_frame();
+                                    background = !focused && last.acquire + last.present >= BACKGROUND_STALL;
+                                    true
+                                }
                                 Err(error) => match error.downcast_ref::<crate::gpu_renderer::SurfaceUnavailable>() {
                                     Some(crate::gpu_renderer::SurfaceUnavailable::Timeout
-                                        | crate::gpu_renderer::SurfaceUnavailable::Occluded) => false,
+                                        | crate::gpu_renderer::SurfaceUnavailable::Occluded) => {
+                                        background = !focused;
+                                        false
+                                    }
                                     Some(crate::gpu_renderer::SurfaceUnavailable::Lost
                                         | crate::gpu_renderer::SurfaceUnavailable::Outdated) => {
                                         let size = window.inner_size();
@@ -492,7 +521,8 @@ pub fn run_with_options(
                             target.exit();
                             return Ok(());
                         }
-                        if window.inner_size().width != 0
+                        if !background
+                            && window.inner_size().width != 0
                             && window.inner_size().height != 0
                             && !(completion_reached && options.hold_at_completion)
                         {
@@ -526,10 +556,11 @@ pub fn run_with_options(
                 renderer.resize(size.width, size.height);
                 window.request_redraw();
             }
-            if minimized {
-                // A minimized window gets no redraws and presents nothing; its
-                // client frames keep the simulation at wall-clock pace, so the
-                // game neither stalls nor races to catch up once restored. With
+            if minimized || background {
+                // A minimized window gets no redraws and presents nothing, nor does
+                // a background one; their client frames keep the simulation at
+                // wall-clock pace, so the game neither stalls nor races to catch up
+                // once restored, and online it keeps reporting to the server. With
                 // nothing on screen each frame counts as shown, so the frontend
                 // fade's scene switches, which wait for a presented frame, go on.
                 if let Err(error) = client.frame(&renderer, &mut scene, Instant::now()) {

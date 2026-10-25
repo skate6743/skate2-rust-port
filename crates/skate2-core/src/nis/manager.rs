@@ -995,6 +995,9 @@ struct Presentation {
     special_flags: i32,
     /// `SceneManagerImpl::mWaitStreamerBeforeTransitionOut`.
     wait_streamer: bool,
+    /// `SceneManagerImpl::mIsInOnlineGame`: `StartNIS` found the flow's `STATE_OnlineGame`
+    /// active.
+    in_online_game: bool,
 }
 
 /// What the renderer and the front end show of the NIS this frame.
@@ -1083,6 +1086,8 @@ pub struct NisSystem {
     /// The audio system (`SingletonHolder<AudioSystem>`); none without audio.
     audio: Option<Arc<dyn AudioInterface>>,
     audio_clock: AudioClock,
+    /// `Sk8::Net::IsInOnlineGame` (`0x82559b80`): the flow's `STATE_OnlineGame` is active.
+    online_game: bool,
 }
 
 impl NisSystem {
@@ -1170,6 +1175,7 @@ impl NisSystem {
                 overrides: PlaybackOverrides::default(),
                 special_flags: SPECIAL_FLAG_NONE,
                 wait_streamer: false,
+                in_online_game: false,
             },
             to_presentation: VecDeque::new(),
             to_simulation: VecDeque::new(),
@@ -1179,6 +1185,7 @@ impl NisSystem {
             preloaded_scene: None,
             audio: None,
             audio_clock: AudioClock::default(),
+            online_game: false,
         }
     }
 
@@ -1295,6 +1302,13 @@ impl NisSystem {
     /// wherever the focus is.
     pub fn set_stream_focus_loaded(&mut self, loaded: bool) {
         self.pres.stream_focus_loaded = loaded;
+    }
+
+    /// `Sk8::Net::IsInOnlineGame` (`0x82559b80`): whether the flow's `STATE_OnlineGame` is
+    /// active. A scene's load then waits neither for the simulation's pause nor for the stream
+    /// focus (`UpdateLoadState` states 1, 2 and 6).
+    pub fn set_online_game(&mut self, online: bool) {
+        self.online_game = online;
     }
 
     /// The local skater's hips as its presentation restored them
@@ -2024,8 +2038,10 @@ impl NisSystem {
         }
     }
 
-    /// `StartNIS` (`0x8286b8b8`).
+    /// `StartNIS` (`0x8286b8b8`): `mIsInOnlineGame` takes `Net::IsInOnlineGame` whatever the
+    /// load state.
     fn start_nis(&mut self, hash: u32) {
+        self.pres.in_online_game = self.online_game;
         if self.pres.load_state != 0 {
             return;
         }
@@ -2084,8 +2100,9 @@ impl NisSystem {
         }
         match self.pres.load_state {
             1 => {
-                // Waits for the simulation to be paused.
-                if self.sim.paused {
+                // Waits for the simulation to be paused, unless the scene started in an online
+                // game (`mIsInOnlineGame`).
+                if self.pres.in_online_game || self.sim.paused {
                     self.audio_queue_for_start();
                     // ScenePlayer::FERequestPreload (0x8286c618) with
                     // kNISQueuesTheFE (1): the take's overlay states.
@@ -2118,7 +2135,8 @@ impl NisSystem {
                 }
             }
             2 => {
-                if self.pres.stream_focus_loaded {
+                // An online game does not wait for the stream focus (`Net::IsInOnlineGame`).
+                if self.pres.stream_focus_loaded || self.online_game {
                     if self.pres.snap_scene {
                         let [x, y, z] = self.pres.frame.location;
                         self.to_simulation.push_back(ToSimulation::WorldCollisionQuery([x, y, z, 0.0]));
@@ -2165,8 +2183,10 @@ impl NisSystem {
                 }
             }
             6 => {
-                // mBitField bit 1 waits for the stream focus (offline).
+                // mBitField bit 1 waits for the stream focus outside an online game
+                // (`Net::IsInOnlineGame`).
                 let streaming = self.directory.properties(self.pres.scene_hash).is_some_and(|props| props.bit_field & 2 != 0)
+                    && !self.online_game
                     && !self.pres.stream_focus_loaded;
                 if !streaming {
                     if !self.pres.transitions.in_transition()

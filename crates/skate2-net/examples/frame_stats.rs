@@ -40,6 +40,9 @@ fn without(frame: &NetFrame, keep: &str) -> NetFrame {
         frame.audio_floats.clear();
         frame.audio_words.clear();
     }
+    if keep != "hud" {
+        frame.hud.clear();
+    }
     frame
 }
 
@@ -84,7 +87,7 @@ fn main() {
     }
     let bones = frames.iter().find_map(|frame| frame.pose.as_ref().map(Vec::len)).unwrap_or(0);
     println!("{bones} bones; camera {} values, audio {}+{}", frames[0].camera.len(), frames[0].audio_floats.len(), frames[0].audio_words.len());
-    for part in ["all", "header", "pose", "pose+camera", "twist", "audio"] {
+    for part in ["all", "header", "pose", "pose+camera", "twist", "audio", "hud"] {
         let runs = runs(&frames.iter().map(|frame| if part == "all" { frame.clone() } else { without(frame, part) }).collect::<Vec<_>>(), interval, every);
         let mut sender = FrameSender::default();
         let mut server = FrameReceiver::default();
