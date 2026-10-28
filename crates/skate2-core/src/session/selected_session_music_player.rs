@@ -4,6 +4,7 @@ use super::{SelectedLiveError, SelectedLiveSession, SelectedLiveStage};
 use crate::{
     edit_skater_profile::{AudioProfile, EditSkaterProfileStore},
     ui::{
+        controller_config,
         music_player::{self, profile_music_mode, Manager, MusicRequest},
         online_config::OnlineConfig,
         options::{Action, Controller, ProfileSettings},
@@ -15,7 +16,6 @@ fn error(e: impl std::fmt::Display) -> SelectedLiveError {
     SelectedLiveError::failed(SelectedLiveStage::PreupdateInput, e.to_string())
 }
 
-#[derive(Default)]
 pub(super) struct ProfileAudio {
     /// `ProfileBackEnd::mSettings`.
     pub(super) settings: ProfileSettings,
@@ -27,6 +27,21 @@ pub(super) struct ProfileAudio {
     pub(super) new_profile: bool,
     /// The audio system's `IAudioInterface`, when the host has one.
     pub(super) interface: Option<std::sync::Arc<dyn crate::nis::audio::AudioInterface>>,
+}
+
+impl Default for ProfileAudio {
+    /// Silent until the boot reads SKATER.P's settings (PC port change): the audio system starts
+    /// before the profile is read, and at `tSettings::Default`'s full volumes a profile saved at
+    /// no volume would sound until then. A profile without settings reads the defaults.
+    fn default() -> Self {
+        Self {
+            settings: ProfileSettings { sfx_volume: 0.0, dialogue_volume: 0.0, music_volume: 0.0, ..ProfileSettings::default() },
+            manager: None,
+            menu: music_player::Controller::default(),
+            new_profile: false,
+            interface: None,
+        }
+    }
 }
 /// What Options' input did this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,7 +109,8 @@ impl ProfileAudio {
     /// `FrontEndState_Options::RequestExit` 0x82681700: the music player's `mbIsDirty` folds
     /// into `mIsDirty`, which saves the profile (`RequestSave(eBeMemcardSave_Profile)`) when no
     /// main challenge runs or the game mode is Party Play. The PC rows save apart from it: the
-    /// display chunk, and Show Lobby Chat in `online-config.json`.
+    /// display chunk, Show Lobby Chat and Show Ghost Players in pregame lobby in
+    /// `online-config.json`, and the stick settings in `controller_config.json`.
     fn request_options_exit(&mut self, options: &mut Controller, main_challenge: bool, party_play: bool) -> Result<(), SelectedLiveError> {
         let dirty = self.menu.take_dirty() | options.dirty();
         let path = EditSkaterProfileStore::default_path().map_err(error)?;
@@ -108,8 +124,13 @@ impl ProfileAudio {
                 .and_then(|mut store| store.save_display_settings(options.snapshot().values))
                 .map_err(error)?;
         }
-        if options.lobby_chat_dirty() {
-            OnlineConfig { show_lobby_chat: options.show_lobby_chat(), ..OnlineConfig::load() }.save().map_err(error)?;
+        if options.lobby_chat_dirty() || options.ghost_players_dirty() {
+            OnlineConfig { show_lobby_chat: options.show_lobby_chat(), show_ghost_players: options.show_ghost_players(), ..OnlineConfig::load() }
+                .save()
+                .map_err(error)?;
+        }
+        if options.sticks_dirty() {
+            controller_config::save(&options.sticks()).map_err(error)?;
         }
         options.close_after_save();
         Ok(())

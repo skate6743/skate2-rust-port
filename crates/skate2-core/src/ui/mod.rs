@@ -13,8 +13,10 @@ pub mod hom_scoring;
 
 pub mod pause_menu;
 pub mod main_menu;
+pub mod dlc_menu;
 pub mod profile_name;
 pub mod game_config;
+pub mod controller_config;
 pub mod online_config;
 pub mod online_match;
 pub mod online_hub;
@@ -86,6 +88,8 @@ impl FrontendAudioState {
     pub const REPLAY_FOOTAGE: Self = Self { state: 56, music_state: 9, paused: true };
     pub const ONLINE_OPTIONS: Self = Self { state: 23, music_state: 0, paused: false };
     pub const ONLINE_HUB: Self = Self { state: 44, music_state: 3, paused: true };
+    /// `FrontEndState_FreeskateActivitySignUp`'s row 67: pause, the HUD hidden, FE music 4.
+    pub const FREESKATE_ACTIVITY_SIGN_UP: Self = Self { state: 67, music_state: 4, paused: true };
     pub const UNRANKED_FREESKATE: Self = Self { state: 68, music_state: 9, paused: true };
     pub const UNRANKED_CUSTOM_MATCH: Self = Self { state: 69, music_state: 9, paused: true };
     pub const SKATE_REEL_GENERAL: Self = Self { state: 55, music_state: 9, paused: true };

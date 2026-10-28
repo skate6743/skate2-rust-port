@@ -5,6 +5,8 @@ use skate2_net::protocol::{nickname_character, valid_nickname};
 
 /// What the nickname prompt and the Online options say of a nickname the server does not take.
 pub const NICKNAME_NOT_PERMITTED: &str = "Nickname not permitted.";
+/// What the nickname prompt says of a saved nickname longer than the prompt types.
+pub const NICKNAME_TOO_LONG: &str = "Nicknames hold at most 16 characters.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prompt {
@@ -36,10 +38,14 @@ impl Prompt {
         prompt
     }
     /// The nickname prompt for a saved nickname the game cannot sign in with: what the prompt can
-    /// type of it under [`NICKNAME_NOT_PERMITTED`]; with none saved, the first nickname's prompt.
+    /// type of it under [`NICKNAME_TOO_LONG`] when it is longer than a nickname, else under
+    /// [`NICKNAME_NOT_PERMITTED`]; with none saved, the first nickname's prompt.
     pub fn nickname_replacing(saved: &str) -> Self {
         let mut prompt = Self::nickname_with(saved);
-        if !saved.trim().is_empty() {
+        let saved = saved.trim();
+        if saved.chars().count() > super::online_config::NICKNAME_LIMIT {
+            prompt.error = Some(NICKNAME_TOO_LONG.into());
+        } else if !saved.is_empty() {
             prompt.error = Some(NICKNAME_NOT_PERMITTED.into());
         }
         prompt
@@ -88,7 +94,7 @@ impl Prompt {
 
 #[cfg(test)]
 mod tests {
-    use super::{NICKNAME_NOT_PERMITTED, Prompt, TextInput};
+    use super::{NICKNAME_NOT_PERMITTED, NICKNAME_TOO_LONG, Prompt, TextInput};
     use skate2_net::protocol::{NICKNAME_CHARACTERS, valid_nickname};
 
     #[test]
@@ -114,6 +120,9 @@ mod tests {
         assert_eq!(prompt.error.as_deref(), Some(NICKNAME_NOT_PERMITTED));
         assert_eq!(Prompt::nickname_replacing("Rob!").error.as_deref(), Some(NICKNAME_NOT_PERMITTED));
         assert_eq!(Prompt::nickname_replacing("").error, None);
+        let long = Prompt::nickname_replacing("TwentyFourCharacterName1");
+        assert_eq!((long.text.as_str(), long.error.as_deref()), ("TwentyFourCharac", Some(NICKNAME_TOO_LONG)), "a saved name past 16 asks again");
+        assert!(valid_nickname(&long.text));
         let mut profile = Prompt::default();
         profile.input(TextInput::Insert("A.B!".into()));
         assert_eq!(profile.text, "A.B!", "the profile name keeps every printable character");

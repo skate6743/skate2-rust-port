@@ -2,7 +2,7 @@
 //! Load cost is bytes / 133333 from cStreamFile::Update824e0f8c, not elapsed
 //! frames. CalcStreamLoadStats824d6798 counts only the first eight entries,
 //! omitting resident collections and reads that have already delivered bytes.
-use skate2_formats::{stream::{CollectionSpace,CollectionMap},stream_xml::StreamXml};
+use skate2_formats::{stream::{CollectionSpace,CollectionMap,MAX_FOCUS_ENTRIES,merge_focus_collections},stream_xml::StreamXml};
 use std::sync::Arc;
 
 #[derive(Clone,Copy,Debug)]
@@ -23,21 +23,29 @@ pub struct VisualFocus {
     pub space:Arc<CollectionSpace>,
     pub map:Arc<CollectionMap>,
     pub xml:Option<Arc<StreamXml>>,
+    /// A loaded additional world's file of the type, which FindCollections824dfea8 merges
+    /// with the first file's selection.
+    pub additional:Option<(Arc<CollectionSpace>,Arc<CollectionMap>)>,
     pub radius:f32,
     pub resident:Vec<u64>,
     pub texture:bool,
 }
 impl VisualFocus {
     pub fn status(&self,position:[f32;3],xml_enabled:bool)->Result<Status,&'static str> {
-        let selected=match self.xml.as_ref().filter(|_|xml_enabled) {
+        let mut selected=match self.xml.as_ref().filter(|_|xml_enabled) {
             Some(xml)=>xml.focus_collections(&self.space,position,self.radius,16),
             None=>self.space.focus_collections(position,self.radius,16),
         };
+        if let Some((space,_))=&self.additional {
+            selected=merge_focus_collections([selected,space.focus_collections(position,self.radius,MAX_FOCUS_ENTRIES)]);
+            selected.truncate(16);
+        }
         let mut loaded=0;let mut ticks=0u32;
         for (i,entry) in selected.iter().enumerate() {
             let resident=self.resident.contains(&entry.id);
             loaded+=usize::from(resident);
-            let size=self.map.collections.iter().find(|c|c.id==entry.id).ok_or("replay visual focus collection missing from XSM")?.payload_size;
+            let size=std::iter::once(&*self.map).chain(self.additional.as_ref().map(|(_,map)|&**map))
+                .flat_map(|map|&map.collections).find(|c|c.id==entry.id).ok_or("replay visual focus collection missing from XSM")?.payload_size;
             ticks=ticks.wrapping_add(collection_ticks(i,size,resident,0));
         }
         // IsStreamFocusLoaded824d7a00/GameLoad requires all Pres/Sim, but

@@ -84,6 +84,14 @@ pub(crate) struct PhysicalGameInfo {
     /// The challenge system's invisible boundaries while an online game holds its area, which
     /// `Simulation::TestForNetworkGameCollisionConstraints` 0x8289e510 reads.
     online_boundaries: Mutex<Option<Arc<crate::challenge::invisible_boundary::InvisibleBoundaries>>>,
+    /// PC port: the longest a wipeout runs before its auto teleport while an online round of
+    /// S.K.A.T.E. or Spot Battle plays; none elsewhere.
+    turn_bail_limit: Mutex<Option<f32>>,
+    /// The port's online game: the original's sets `isNetworkGame` (`StateOnlineGame::
+    /// SetupInitalGameInfo` 0x8275dba4) until `GameModule::BackToSP`, which the port's netcode
+    /// leaves clear; the skater's physics asks it as the original's does
+    /// ([`PhysicalWorldServices::try_is_network_game`]).
+    online_game: Mutex<bool>,
 }
 impl PhysicalGameInfo {
     /// Selected `GameInfo` ctor82559418 store825594d4, PDB+293.
@@ -95,7 +103,25 @@ impl PhysicalGameInfo {
             ignore_wipeout_reset_button: Mutex::new(false), //GameInfo825594e8, +298
             free_skate: Mutex::new((1.0, 1.0, true)), // GameInfo825594c8..825594ec
             online_boundaries: Mutex::new(None),
+            turn_bail_limit: Mutex::new(None),
+            online_game: Mutex::new(false),
         })
+    }
+    /// The port's online game (see the field).
+    pub(crate) fn try_online_game(&self) -> Result<bool, PhysicalWorldServicesError> {
+        Ok(*self.online_game.lock().map_err(|_| PhysicalWorldServicesError::Poisoned)?)
+    }
+    pub(crate) fn try_set_online_game(&self, online: bool) -> Result<(), PhysicalWorldServicesError> {
+        *self.online_game.lock().map_err(|_| PhysicalWorldServicesError::Poisoned)? = online;
+        Ok(())
+    }
+    /// The online turn's wipeout limit (see the field).
+    pub(crate) fn try_turn_bail_limit(&self) -> Result<Option<f32>, PhysicalWorldServicesError> {
+        Ok(*self.turn_bail_limit.lock().map_err(|_| PhysicalWorldServicesError::Poisoned)?)
+    }
+    pub(crate) fn try_set_turn_bail_limit(&self, limit: Option<f32>) -> Result<(), PhysicalWorldServicesError> {
+        *self.turn_bail_limit.lock().map_err(|_| PhysicalWorldServicesError::Poisoned)? = limit;
+        Ok(())
     }
     /// The online game's boundaries, while it holds its area.
     pub(crate) fn try_online_boundaries(
@@ -186,8 +212,12 @@ impl PhysicalWorldServices {
             collection: Mutex::new(allocated.then(|| Vec::with_capacity(9))),
         })
     }
+    /// `PhysicalPlayerHiLOD::mINetworkGameQuery`'s `Simulation::IsNetworkGame` 0x8289e448, which
+    /// the constructor's tail (0x82e04d2c) and `TeleportPlayerNow` (0x82e009c8) ask: an online
+    /// game's skater and board collide normally from a spawn or a teleport, without the single
+    /// player game's world-only spell. True in the port's online game too.
     pub(crate) fn try_is_network_game(&self) -> Result<bool, PhysicalWorldServicesError> {
-        self.game_info.try_is_network_game()
+        Ok(self.game_info.try_online_game()? || self.game_info.try_is_network_game()?)
     }
     /// `Simulation::Add`828a7c98 appends the same early registered `IPhysical`.
     /// Source does not deduplicate. Capacity overflow's fixed allocator path

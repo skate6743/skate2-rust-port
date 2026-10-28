@@ -30,6 +30,17 @@ if [ -f release-repository.txt ]; then
     SKATE2_UPDATE_REPOSITORY=$(tr -d ' \r\n' < release-repository.txt)
     export SKATE2_UPDATE_REPOSITORY
 fi
+# release-server.txt (host:port, kept out of the repository) is the server a player's game
+# connects to when their file names none; SKATE2_DEFAULT_SERVER set by the caller wins.
+if [ -z "${SKATE2_DEFAULT_SERVER:-}" ] && [ -f release-server.txt ]; then
+    SKATE2_DEFAULT_SERVER=$(tr -d ' \r\n' < release-server.txt)
+    export SKATE2_DEFAULT_SERVER
+fi
+if [ -n "${SKATE2_DEFAULT_SERVER:-}" ]; then
+    echo "Default server: $SKATE2_DEFAULT_SERVER"
+else
+    echo "No release-server.txt: the default server is this machine's."
+fi
 # Release binaries embed their dependencies' source paths, which name the home folder and with it
 # the user name; the build writes ~ in its place.
 host=$(rustc -vV | sed -n 's/^host: //p')

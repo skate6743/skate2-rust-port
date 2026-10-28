@@ -211,7 +211,7 @@ fn repeated_packet_maps_again_and_live_remap_is_retained() {
     assert!(!device.active);
 }
 #[test]
-fn wireless_reset_uses_actual_high_offset_and_unknown_guitar_survives_numeric_failure() {
+fn wireless_reset_stays_still_and_unknown_guitar_survives_numeric_failure() {
     let mut device = XenonPadDevice::<u32>::new(0);
     let mut p = Platform::new();
     p.wireless = true;
@@ -221,8 +221,13 @@ fn wireless_reset_uses_actual_high_offset_and_unknown_guitar_survives_numeric_fa
     device
         .reset_actuators(&mut p, &refs, &mut HostReckoningNumeric)
         .unwrap();
+    // A still request stays still (PC port); a moving one takes the wireless tuning.
     assert_eq!(device.actuators[0].desired, 0);
-    assert_eq!(device.actuators[1].desired, 3276);
+    assert_eq!(device.actuators[1].desired, 0);
+    device
+        .set_actuator(1, 0.5, &mut p, &refs, &mut HostReckoningNumeric)
+        .unwrap();
+    assert_eq!(device.actuators[1].desired, 37682);
     // Supported tuning preserves unordered through both raw branch clamps.
     assert!(matches!(
         device.set_actuator(0, f32::NAN, &mut p, &refs, &mut HostReckoningNumeric),

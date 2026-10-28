@@ -3,23 +3,28 @@
 //! and unloads drive the PROXY registrations (`proxy_world`); full processed
 //! Presentation registration remains separate work. The mission hulls the
 //! simulation's hull loaders registered join each generation
-//! (`hull_presentation`).
+//! (`hull_presentation`). A loaded additional world's Pres and Tex files join
+//! the selection, as `cAssetStreamSystem::FindCollections` (`0x824dfea8`)
+//! selects from every file of a type.
 use crate::{
     gpu_renderer::{GpuTextureUploader, RenderResult},
     proxy_texture_world::ProxyTextures,
     proxy_world::SharedProxyWorld,
+    render_streams::{RenderStreamFile, RenderStreams},
 };
 use skate2_core::{
-    game_stream::StreamKind,
+    game::WORLD_STREAM_PATH,
+    game_stream::{StreamKind, StreamPaths},
     presentation::{HullPresentation, PresentationScene},
     streaming::{CollectionRequestKind, StreamFocusTransition},
     texture::TextureScene,
-    world_stream_catalog::WorldStreamCatalog,
+    world_stream_catalog::{FileRegistrationSnapshot, WorldStreamCatalog},
 };
 use skate2_formats::{
     mount::MountSet,
     stream::{
-        CollectionMap, CollectionSpace, FocusCollection, TEXTURE_FOCUS_RADIUS, WORLD_FOCUS_RADIUS,
+        CollectionSpace, DEFAULT_PRESENTATION_FOCUS_COLLECTIONS, FocusCollection, MAX_FOCUS_ENTRIES,
+        TEXTURE_FOCUS_RADIUS, WORLD_FOCUS_RADIUS, merge_focus_collections,
     },
     stream_xml::StreamXml,
 };
@@ -30,7 +35,7 @@ use std::{
 };
 
 struct FocusSource {
-    map: Arc<CollectionMap>,
+    file: RenderStreamFile,
     space: Arc<CollectionSpace>,
     xml: Option<Arc<StreamXml>>,
     radius: f32,
@@ -48,6 +53,9 @@ impl FocusSource {
         let file = catalog
             .file(&collection.owner)?
             .ok_or("visual seed stream not registered")?;
+        Self::from_file(file, kind, radius)
+    }
+    fn from_file(file: FileRegistrationSnapshot, kind: StreamKind, radius: f32) -> RenderResult<Self> {
         if file.kind != kind {
             return Err("visual seed stream kind mismatch".into());
         }
@@ -60,7 +68,7 @@ impl FocusSource {
             .map(|bytes| StreamXml::parse(bytes, kind.suffix(), &space).map(Arc::new))
             .transpose()?;
         Ok(Self {
-            map,
+            file: RenderStreamFile::from_paths(map, &file.paths),
             space,
             xml,
             radius,
@@ -76,6 +84,49 @@ impl FocusSource {
         }
         self.space.focus_collections(position, self.radius, 16)
     }
+}
+
+/// A loaded additional world's Pres and Tex files (`StartAdditionalWorldStreamLoad`), which the
+/// selection takes from with BAM's while the session holds the world loaded. Once it no longer
+/// does, they leave the selection and go when the installed generation holds none of their
+/// collections, which the session's unload waits for.
+struct AdditionalSources {
+    world: String,
+    pres: FocusSource,
+    /// None while texture streaming is off (`kEnableTextureStream`), as for BAM.
+    tex: Option<FocusSource>,
+    leaving: bool,
+}
+impl AdditionalSources {
+    fn registered(catalog: &WorldStreamCatalog, world: &str) -> RenderResult<Self> {
+        let source = |kind: StreamKind, radius: f32| -> RenderResult<Option<FocusSource>> {
+            let paths = StreamPaths::derive(WORLD_STREAM_PATH, world, kind)?;
+            catalog.file_with_paths(kind, &paths)?.map(|file| FocusSource::from_file(file, kind, radius)).transpose()
+        };
+        Ok(Self {
+            world: world.to_owned(),
+            pres: source(StreamKind::Presentation, WORLD_FOCUS_RADIUS)?
+                .ok_or_else(|| format!("additional world {world} presentation stream not registered"))?,
+            tex: source(StreamKind::Texture, TEXTURE_FOCUS_RADIUS)?,
+            leaving: false,
+        })
+    }
+    /// Whether the installed generation holds any of its collections.
+    fn held_by(&self, scene: &PresentationScene, textures: &TextureScene) -> bool {
+        let listed = |file: &RenderStreamFile, id: u64| file.map.collections.iter().any(|entry| entry.id == id);
+        scene.collections.iter().chain(&scene.dependencies).any(|collection| listed(&self.pres.file, collection.id))
+            || self.tex.as_ref().is_some_and(|tex| textures.collections.iter().any(|collection| listed(&tex.file, collection.id)))
+    }
+}
+
+/// `cAssetStreamSystem::FindCollections` (`0x824dfea8`) over a type's files: the first file's
+/// selection with the next file's merged in, nearest first, at most `cap`
+/// (`kPresMaxFocusCollections` for Pres).
+fn merged_selection(first: Vec<FocusCollection>, more: Option<Vec<FocusCollection>>, cap: usize) -> Vec<FocusCollection> {
+    let Some(more) = more else { return first };
+    let mut selected = merge_focus_collections([first, more]);
+    selected.truncate(cap);
+    selected
 }
 
 pub(crate) type PreparedRenderState = (
@@ -133,8 +184,10 @@ pub(crate) struct CityStreaming {
     /// Proxy revision of the installed scene; none before activation.
     proxy_revision: Option<u64>,
     sources: Option<(FocusSource, FocusSource)>,
+    additional: Option<AdditionalSources>,
     pending: Option<mpsc::Receiver<Loaded>>,
 }
+
 impl CityStreaming {
     pub(crate) fn is_pending(&self) -> bool { self.pending.is_some() }
     pub(crate) fn new(
@@ -148,8 +201,76 @@ impl CityStreaming {
             proxy,
             proxy_revision: None,
             sources: None,
+            additional: None,
             pending: None,
         }
+    }
+
+    /// The additional world whose collections the presentation may hold: the one it selects
+    /// from, or one leaving until the installed generation holds none of its collections.
+    pub(crate) fn additional_world(&self) -> Option<&str> {
+        self.additional.as_ref().map(|world| world.world.as_str())
+    }
+
+    /// The additional world the selection takes from.
+    pub(crate) fn selected_world(&self) -> Option<&str> {
+        self.selectable().map(|world| world.world.as_str())
+    }
+
+    fn selectable(&self) -> Option<&AdditionalSources> {
+        self.additional.as_ref().filter(|world| !world.leaving)
+    }
+
+    /// The Pres and Tex selections at `position` over every file.
+    fn select(&self, position: [f32; 3], xml_enabled: bool) -> Option<(Vec<FocusCollection>, Vec<FocusCollection>)> {
+        let (pres, tex) = self.sources.as_ref()?;
+        let more = self.selectable();
+        Some((
+            merged_selection(
+                pres.select(position, xml_enabled),
+                more.map(|world| world.pres.select(position, xml_enabled)),
+                DEFAULT_PRESENTATION_FOCUS_COLLECTIONS,
+            ),
+            merged_selection(
+                tex.select(position, xml_enabled),
+                more.and_then(|world| world.tex.as_ref()).map(|tex| tex.select(position, xml_enabled)),
+                MAX_FOCUS_ENTRIES,
+            ),
+        ))
+    }
+
+    /// Whether the texture selection at `position` is empty, as it can be at an additional
+    /// world's location, whose textures its Pres files carry.
+    pub(crate) fn texture_selection_empty(&self, position: [f32; 3], xml_enabled: bool) -> bool {
+        self.select(position, xml_enabled).is_some_and(|(_, tex)| tex.is_empty())
+    }
+
+    /// Follows the session's loaded additional world (`world`).
+    fn sync_additional(
+        &mut self,
+        world: Option<&str>,
+        scene: Option<&PresentationScene>,
+        textures: Option<&TextureScene>,
+    ) -> RenderResult<()> {
+        if let Some(held) = self.additional.as_mut()
+            && world != Some(held.world.as_str())
+        {
+            held.leaving = true;
+        }
+        if let Some(held) = self.additional.as_ref().filter(|held| held.leaving)
+            && let (Some(scene), Some(textures)) = (scene, textures)
+            && !held.held_by(scene, textures)
+        {
+            eprintln!("city streaming: additional world {} released", held.world);
+            self.additional = None;
+        }
+        if let Some(world) = world
+            && self.additional.is_none()
+        {
+            self.additional = Some(AdditionalSources::registered(&self.catalog, world)?);
+            eprintln!("city streaming: additional world {world} joins the selection");
+        }
+        Ok(())
     }
 
     /// Loads the PROXY collections in `mProxyCollectionID` order (texture
@@ -166,6 +287,7 @@ impl CityStreaming {
         Some(skate2_core::streaming::area_loaded::PresentationStreamArea {
             space: Arc::clone(&pres.space),
             xml: pres.xml.clone(),
+            additional: self.selectable().map(|world| Arc::clone(&world.pres.space)),
             radius: pres.radius,
             resident: scene.collections.iter().map(|collection| collection.id).collect(),
         })
@@ -175,10 +297,14 @@ impl CityStreaming {
         ->Option<[skate2_core::streaming::replay_focus::VisualFocus;2]> {
         use skate2_core::streaming::replay_focus::VisualFocus;
         let (pres,tex)=self.sources.as_ref()?;
+        let more=self.selectable();
+        let additional=|source:&FocusSource|(Arc::clone(&source.space),Arc::clone(&source.file.map));
         Some([
-            VisualFocus {space:Arc::clone(&pres.space),map:Arc::clone(&pres.map),xml:pres.xml.clone(),radius:pres.radius,
+            VisualFocus {space:Arc::clone(&pres.space),map:Arc::clone(&pres.file.map),xml:pres.xml.clone(),
+                additional:more.map(|world|additional(&world.pres)),radius:pres.radius,
                 resident:scene.collections.iter().map(|c|c.id).collect(),texture:false},
-            VisualFocus {space:Arc::clone(&tex.space),map:Arc::clone(&tex.map),xml:tex.xml.clone(),radius:tex.radius,
+            VisualFocus {space:Arc::clone(&tex.space),map:Arc::clone(&tex.file.map),xml:tex.xml.clone(),
+                additional:more.and_then(|world|world.tex.as_ref()).map(additional),radius:tex.radius,
                 resident:textures.collections.iter().map(|c|c.id).collect(),texture:true},
         ])
     }
@@ -225,6 +351,7 @@ impl CityStreaming {
         disabled: bool,
         xml_enabled: bool,
         hulls: &[HullPresentation],
+        additional_world: Option<&str>,
     ) -> RenderResult<Option<PreparedRenderState>> {
         if let Some(pending) = &self.pending {
             match pending.try_recv() {
@@ -242,6 +369,7 @@ impl CityStreaming {
                 }
             }
         }
+        self.sync_additional(additional_world, scene.as_ref(), textures.as_ref())?;
         // A proxy registration change without a focus change (a mapping that
         // arrived after its high collection registered) still needs a new
         // draw list.
@@ -291,9 +419,7 @@ impl CityStreaming {
                     )?,
                 ));
             }
-            let (pres, tex) = self.sources.as_ref().expect("sources initialized above");
-            let selected_pres = pres.select(position, xml_enabled);
-            let selected_tex = tex.select(position, xml_enabled);
+            let (selected_pres, selected_tex) = self.select(position, xml_enabled).expect("sources initialized above");
             let ids = |selected: &[FocusCollection]| {
                 selected.iter().map(|c| c.id).collect::<BTreeSet<_>>()
             };
@@ -302,11 +428,16 @@ impl CityStreaming {
                 || ids(&selected_tex)
                     != current_textures.collections.iter().map(|c| c.id).collect();
             if changed {
+                let (pres, tex) = self.sources.as_ref().expect("sources initialized above");
+                let more = self.selectable();
+                let streams = |first: &FocusSource, more: Option<&FocusSource>| RenderStreams {
+                    files: std::iter::once(first.file.clone()).chain(more.map(|source| source.file.clone())).collect(),
+                };
                 moved = Some((
                     selected_pres,
                     selected_tex,
-                    Arc::clone(&pres.map),
-                    Arc::clone(&tex.map),
+                    streams(pres, more.map(|world| &world.pres)),
+                    streams(tex, more.and_then(|world| world.tex.as_ref())),
                 ));
             } else {
                 // Do not reorder index-based handles just because distances change.
@@ -333,19 +464,19 @@ impl CityStreaming {
             .spawn(move || {
                 let result = (|| -> RenderResult<_> {
                     let mut transition = None;
-                    if let Some((selected_pres, selected_tex, pres_map, tex_map)) = moved {
+                    if let Some((selected_pres, selected_tex, pres_streams, tex_streams)) = moved {
                         transition = Some(crate::move_runtime_presentation_selection(
                             &mut scene_owner,
                             &mounts,
                             position,
-                            &pres_map,
+                            &pres_streams,
                             &selected_pres,
                         )?);
                         crate::move_runtime_texture_selection(
                             &mut texture_owner,
                             &mounts,
                             position,
-                            &tex_map,
+                            &tex_streams,
                             &selected_tex,
                         )?;
                         scene_owner.bind_resident_textures(&texture_owner);

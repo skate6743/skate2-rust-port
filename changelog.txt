@@ -1,2 +1,6 @@
-Fixed issue an with being disconnected from Alt+Tabbing in online
-When spectating, you can now see other players tricks and current score
+DLC support added, link XBOX DLCs in the "Downloadable Content" section
+Added spectating to online lobbies by pressing LB+B
+Freeskate activities added, propose them from the online menu
+Proper Controller Settings have been added
+Edit Skater can now be used live in online
+Fixed some crashes and updated netcode

@@ -50,6 +50,15 @@ pub(crate) trait SelectedSessionTerrainSlot {
     fn dynamic_hulls_loading(&self) -> bool;
     fn dynamic_hulls_unloaded(&self) -> bool;
     fn hull_presentations(&self) -> Vec<crate::presentation::HullPresentation>;
+    /// An additional world's stream (`selected_session_terrain_additional`).
+    fn try_start_additional_world(&mut self, file: &str) -> Result<(), SelectedSessionTerrainError>;
+    fn try_poll_additional_world(&mut self) -> Result<bool, SelectedSessionTerrainError>;
+    fn additional_world(&self) -> Option<&str>;
+    fn additional_world_loaded(&self) -> bool;
+    fn request_additional_world_unload(&mut self);
+    fn cancel_additional_world_unload(&mut self);
+    fn additional_world_leaving(&self) -> bool;
+    fn try_update_additional_world_unload(&mut self, presentation_holds: bool) -> Result<bool, SelectedSessionTerrainError>;
     fn bounds(&self) -> &WorldBoundsPublication;
     fn terrain_for(
         &self,
@@ -135,6 +144,30 @@ impl<E: WorldStreamEffects> SelectedSessionTerrainSlot for SelectedSessionTerrai
     }
     fn hull_presentations(&self) -> Vec<crate::presentation::HullPresentation> {
         SelectedSessionTerrain::hull_presentations(self)
+    }
+    fn try_start_additional_world(&mut self, file: &str) -> Result<(), SelectedSessionTerrainError> {
+        SelectedSessionTerrain::try_start_additional_world(self, file)
+    }
+    fn try_poll_additional_world(&mut self) -> Result<bool, SelectedSessionTerrainError> {
+        SelectedSessionTerrain::try_poll_additional_world(self)
+    }
+    fn additional_world(&self) -> Option<&str> {
+        SelectedSessionTerrain::additional_world(self)
+    }
+    fn additional_world_loaded(&self) -> bool {
+        SelectedSessionTerrain::additional_world_loaded(self)
+    }
+    fn request_additional_world_unload(&mut self) {
+        SelectedSessionTerrain::request_additional_world_unload(self);
+    }
+    fn cancel_additional_world_unload(&mut self) {
+        SelectedSessionTerrain::cancel_additional_world_unload(self);
+    }
+    fn additional_world_leaving(&self) -> bool {
+        SelectedSessionTerrain::additional_world_leaving(self)
+    }
+    fn try_update_additional_world_unload(&mut self, presentation_holds: bool) -> Result<bool, SelectedSessionTerrainError> {
+        SelectedSessionTerrain::try_update_additional_world_unload(self, presentation_holds)
     }
     fn bounds(&self) -> &WorldBoundsPublication {
         &self.stream().bounds

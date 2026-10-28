@@ -8,7 +8,7 @@ use super::{
 use super::super::party_skaters::PartyCharacter;
 use crate::{
     challenge::{
-        attrib_db::{AttribDb, CAREER_VAULTS},
+        attrib_db::AttribDb,
         signpost_progress,
     },
     edit_skater_profile::EditSkaterProfileStore,
@@ -163,17 +163,9 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// front end's fade (where native shows the tips load screen); the completed challenge's
     /// session goes.
     pub(super) fn switch_party_play(&mut self, location: party_play::Location) -> Result<(), SelectedLiveError> {
-        /// `challenge_global_data.Location` (`tLocationID`).
-        const CHALLENGE_GLOBAL_DATA: u64 = 0xA4F3_5B15_9D74_32B5;
-        const LOCATION: u64 = 0xF1C6_D5FA_4A23_951E;
         let backend = self.career.as_ref().and_then(|career| career.party_backend()).cloned().ok_or_else(|| error("party play back end absent"))?;
         let mut game = self.party_play.game.clone().ok_or_else(|| error("party play game absent"))?;
-        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("party play data absent"))?;
-        let name = db
-            .attribute(CHALLENGE_GLOBAL_DATA, location.key, LOCATION)
-            .and_then(|location| location.text(0))
-            .ok_or_else(|| error("party play challenge location absent"))?;
-        let start = table.find(name).ok_or_else(|| error(format!("party play start {name} absent")))?.transform;
+        let (start, world) = self.party_challenge_start(location.key)?;
         game.game = backend.game;
         game.location = location;
         game.backend = backend;
@@ -181,11 +173,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.party_play.game = Some(game.clone());
         self.party_play.spawn = Some((game, start));
         self.freeskate.spawn_attributes_pending = true;
-        self.frontend_fade.cover();
-        self.map_travel = Some(start);
-        self.map_travel_presentation_ready = false;
-        self.map_travel_dispatched = false;
-        self.map_travel_on_board = true;
+        self.start_world_travel(world, start, true);
         Ok(())
     }
 
@@ -197,7 +185,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     pub(super) fn open_party_play(&mut self) -> Result<(), SelectedLiveError> {
         let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("party play assets absent"))?.mounts);
         if self.freeskate.data.is_none() {
-            let db = Arc::new(AttribDb::load(&mounts, &CAREER_VAULTS).map_err(error)?);
+            let db = Arc::new(AttribDb::load_career(&mounts).map_err(error)?);
             let table = LocationTable::parse(&mounts.read_path(SIM_LOCATIONS).map_err(error)?).map_err(error)?;
             self.freeskate.data = Some((db, table));
         }

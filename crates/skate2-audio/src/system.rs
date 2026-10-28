@@ -616,7 +616,9 @@ impl AudioSystem {
             core,
             splicer: SpliceManager::new(),
             mixer: DynamicMixer::new(),
-            state: GameAudioState::default(),
+            // Silent until the first update hands it the profile's volumes (PC port change): the
+            // game reads SKATER.P after the audio system starts.
+            state: GameAudioState { sfx_volume: 0.0, speech_volume: 0.0, music_volume: 0.0, ..GameAudioState::default() },
             master_sub_mix,
             global_effects,
             speech,

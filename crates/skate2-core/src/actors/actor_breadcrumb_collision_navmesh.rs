@@ -22,7 +22,6 @@ pub(crate) enum BreadCrumbCollisionGateError<E> {
     World(PhysicalWorldLineError<E>),
     MissingWorldServices,
     Network(crate::simulation_assembly_backend::constraint_session::world_services::PhysicalWorldServicesError),
-    PendingNetworkCollision,
 }
 
 #[derive(Debug)]
@@ -105,12 +104,10 @@ impl ActorBreadCrumbManager {
             .physical_world_services()
             .ok_or(E::MissingWorldServices)?;
         // The network-game tail (0x82ce1c60): a crumb is kept only well inside the game's
-        // invisible boundaries (`TestForNetworkGameCollisionConstraints` with radius -1).
+        // invisible boundaries (`TestForNetworkGameCollisionConstraints` with radius -1). With
+        // none loaded `IsPositionOk` walks an empty map and its FLT_MAX nearest edge passes.
         if let Some(boundaries) = services.game_info().try_online_boundaries().map_err(E::Network)? {
             return Ok(boundaries.is_position_ok(candidate.columns()[3].xyz, -1.0));
-        }
-        if services.try_is_network_game().map_err(E::Network)? {
-            return Err(E::PendingNetworkCollision);
         }
         Ok(true)
     }

@@ -120,6 +120,12 @@ pub struct GpuTexture {
     cube: bool,
 }
 
+impl GpuTexture {
+    pub(crate) fn is_cube(&self) -> bool {
+        self.cube
+    }
+}
+
 /// Everything presented in one frame: the retained map draw list first, then
 /// individually bound objects such as the selected character and the spawned
 /// LivingWorld DMOs, in material draw order.

@@ -101,6 +101,10 @@ pub(crate) struct PresentationAnimation {
     pub(crate) hips_transforms: Arc<Mutex<[Option<crate::animation::AnimationMatrix>; 9]>>,
     pub(crate) hips: Option<i32>,
     pub(crate) skateboard: Option<i32>,
+    /// The hierarchy's `Head`, `LeftFoot` and `RightFoot`, every skater's alike: the body points
+    /// another online player's scoring takes of a skater shown from its replay frames (PC port
+    /// addition; the original read them of the simulated skeleton).
+    pub(crate) body: Option<[usize; 3]>,
     pub(crate) twist_bones: [Option<i32>; 14],
     pub(crate) offsets: Option<PresentationOffsets>,
     pub(crate) ghost_next: Vec<MaybeUninit<u8>>,
@@ -124,6 +128,7 @@ impl PresentationAnimation {
             hips_transforms: Arc::new(Mutex::new([None; 9])),
             hips: None,
             skateboard: None,
+            body: None,
             twist_bones: [None; 14],
             offsets: None,
             ghost_next: vec![],
@@ -151,6 +156,8 @@ impl PresentationAnimation {
         let full_hierarchy = Arc::new(hierarchy(&full)?);
         self.hips = Some(native_bone(&full_hierarchy, "hips")?);
         self.skateboard = Some(native_bone(&full_hierarchy, "skateboard_root")?);
+        let body = [native_bone(&full_hierarchy, "Head")?, native_bone(&full_hierarchy, "LeftFoot")?, native_bone(&full_hierarchy, "RightFoot")?];
+        self.body = body.iter().all(|&bone| bone >= 0).then(|| body.map(|bone| usize::try_from(bone).unwrap_or(usize::MAX)));
         let playback =
             self.register_playback(source, &full, b"SkaterACS", b"SkaterFull", &full_setup())?;
         self.full = Some(Arc::clone(&playback));

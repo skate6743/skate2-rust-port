@@ -36,7 +36,6 @@ pub(crate) enum LiveBreadCrumbSelectionError {
     FootForward(ActorBreadCrumbMountError),
     MissingWorldServices,
     Network(PhysicalWorldServicesError),
-    PendingNetworkLivingWorld,
     MissingRingRadii,
 }
 
@@ -78,9 +77,10 @@ impl<'a> LiveBreadCrumbSelectionSource<'a> {
         }
     }
 
-    /// Native LW predicate tests network first. On the selected offline path,
-    /// vehicle sphere, pedestrian sphere, then DMO capsule are delegated to
-    /// the one retained World/LW bridge. The caller supplies native radii.
+    /// Native LW predicate tests network first: a network game accepts every
+    /// crumb (0x82ce135c -> 0x82ce14ac `li r3, 1`). Offline, vehicle sphere,
+    /// pedestrian sphere, then DMO capsule are delegated to the one retained
+    /// World/LW bridge. The caller supplies native radii.
     fn try_living_world_accepts_transform(
         &mut self,
         transform: &SkeletonRootMatrix,
@@ -93,7 +93,7 @@ impl<'a> LiveBreadCrumbSelectionSource<'a> {
             .physical_world_services()
             .ok_or(E::MissingWorldServices)?;
         if services.try_is_network_game().map_err(E::Network)? {
-            return Err(E::PendingNetworkLivingWorld);
+            return Ok(true);
         }
         let living = self
             .owners

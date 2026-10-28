@@ -451,13 +451,16 @@ fn tool_tip(menu: &mut Clip, assets: &Assets, shown: bool) -> RenderResult<()> {
     Ok(())
 }
 
-/// A hub string as the screen shows it: a HAL id localized, a `#` name, or
-/// `"#%s (%d/%d)"` of a packed string.
+/// A hub string as the screen shows it: a HAL id localized, a `#` name, `"#%s (%d/%d)"` of a
+/// packed string, or `"#\xBB %s"` of one, the fonts mapping 0xBB to the flash character.
 fn title_text(assets: &Assets, title: &Title) -> RenderResult<String> {
     Ok(match title {
         Title::Hal(label) => assets.localize(label)?,
+        // The data's own ids, as a text field shows one the strings lack.
+        Title::Text(label) => String::from_utf16(&assets.initial_text(label))?,
         Title::Literal(text) => text.clone(),
         Title::Count { label, count, total } => format!("{} ({count}/{total})", assets.localize(label)?),
+        Title::Completed(label) => format!("\u{bb} {}", String::from_utf16(&assets.initial_text(label))?),
     })
 }
 

@@ -18,6 +18,8 @@ pub const MAX_NAME: usize = 64;
 pub const MAX_RECIPE: usize = 128 * 1024;
 /// The longest challenge facts record of one tick.
 pub const MAX_FACTS: usize = 16 * 1024;
+/// The most online challenges one `Content` message names.
+pub const MAX_CONTENT: usize = 4096;
 
 /// `Sk8::Net::ChallengeType`.
 pub mod challenge {
@@ -31,6 +33,17 @@ pub mod challenge {
     pub const HALL_OF_MEAT: u8 = 7;
     pub const ONLINE_FREE_SKATE: u8 = 8;
     pub const COUNT: u8 = 9;
+
+    /// The fewest participants a game of `challenge_type` starts its challenge with: two
+    /// (`GoToStartChallenge` 0x826617a0), or one for Spot Battle and Hall of Meat, which a player
+    /// can play alone for a record (PC port addition).
+    #[must_use]
+    pub const fn min_participants(challenge_type: u8) -> usize {
+        match challenge_type {
+            OWN_THE_SPOT | HALL_OF_MEAT => 1,
+            _ => 2,
+        }
+    }
 }
 
 /// `Sk8::Net::RequestType` of `GameRequest`.
@@ -47,6 +60,21 @@ pub mod reset {
     pub const LOBBY_SKATE: u8 = 0;
     pub const LOAD_CHALLENGE: u8 = 1;
     pub const CHALLENGE: u8 = 2;
+}
+
+/// `Message_GameProposal::ProposalType`: a freeskate activity proposed in an online free skate.
+pub mod proposal {
+    /// A member proposes the activity (`GoToStartFreeskateActivity` 0x8266c728).
+    pub const PROPOSE: u8 = 0;
+    /// A member accepts it (`FrontEndState_FreeskateActivitySignUp::ReceiveInput` 0x826a5648),
+    /// and the server tells every member who did.
+    pub const ACCEPT: u8 = 1;
+    /// The server proposes it to every member, with its proposer and the time left.
+    pub const BROADCAST: u8 = 2;
+    /// The time ran out before every member it was proposed to accepted it.
+    pub const TIMEOUT: u8 = 3;
+    /// The activity started without the member, who was still on its way into the game's world.
+    pub const MISSED: u8 = 4;
 }
 
 /// `Sk8::Net::TimerType` of `GameTimer`.
@@ -96,7 +124,7 @@ pub mod refuse {
 }
 
 /// The longest nickname, in characters: where the game's nickname prompt stops.
-pub const NICKNAME_CHARACTERS: usize = 24;
+pub const NICKNAME_CHARACTERS: usize = 16;
 
 /// Whether a nickname may hold the character: a letter, a digit, a space, `-`, `_` or `'`.
 #[must_use]
@@ -104,7 +132,7 @@ pub const fn nickname_character(character: char) -> bool {
     character.is_ascii_alphanumeric() || matches!(character, ' ' | '-' | '_' | '\'')
 }
 
-/// Whether a nickname is one the game's prompt makes: 1 to 24 [`nickname_character`]s, at least
+/// Whether a nickname is one the game's prompt makes: 1 to 16 [`nickname_character`]s, at least
 /// one a letter or a digit, no space at either end (the game trims what was typed). The server
 /// drops a connection that signs in with any other.
 #[must_use]
@@ -431,8 +459,8 @@ pub enum ClientMessage {
     CancelPlayNow,
     /// `IE_LeaveGame`.
     LeaveGame,
-    /// The player's appearance, uploaded once per game (`StateOnlineRecipe::DoUploadRecipe`
-    /// 0x8275ee18).
+    /// The player's appearance, uploaded as the game is entered (`StateOnlineRecipe::
+    /// DoUploadRecipe` 0x8275ee18), and again after the pre-game Edit Skater (PC port addition).
     Recipe(Vec<u8>),
     /// `Message_GameRequest`.
     GameRequest { request: u8, value: u64 },
@@ -471,6 +499,18 @@ pub enum ClientMessage {
     /// The pause menu's Leave Challenge (PC port addition): the participant leaves the challenge
     /// in progress and waits in its pre-game lobby until the game is back in lobby skate.
     LeaveChallenge,
+    /// `Message_GameProposal` of a freeskate activity: [`proposal::PROPOSE`] or
+    /// [`proposal::ACCEPT`].
+    GameProposal { kind: u8, activity: u64 },
+    /// The online challenges the build has, by key, sent once signed in (PC port addition, as
+    /// `ChallengeKeyPreference` 0x8276c678 fits the search to the console's own challenges):
+    /// matchmaking and the lobby browser then offer only games at them.
+    Content(Vec<u64>),
+    /// The console's S.K.A.T.E. round has waited for one player's facts at a tick for seconds
+    /// (PC port addition), sent again every second while the wait goes on: once every other
+    /// participant, at least two, has a fresh report of the same player at the same tick, the
+    /// server takes that player out of the challenge.
+    Stalled { user_id: u64, tick: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -489,9 +529,10 @@ pub enum ServerMessage {
     /// `GameRemovePlayer`.
     PlayerLeave { user_id: u64, reason: u8 },
     Recipe { user_id: u64, data: Vec<u8> },
-    /// `GameReset`: the reset type, the shared random seed, the session and the challenge's
-    /// participants by player index (0 past the last).
-    GameReset { kind: u8, seed: u32, session: u32, participants: [u64; MAX_PLAYERS] },
+    /// `GameReset`: the reset type, the shared random seed, the session, the challenge's
+    /// participants by player index (0 past the last) and the freeskate activity the challenge is
+    /// (`mActivity`; 0 for the game's own challenge).
+    GameReset { kind: u8, seed: u32, session: u32, participants: [u64; MAX_PLAYERS], activity: u64 },
     SyncPoint { round: u32 },
     AllPlayersComplete,
     FinalResults(Vec<PlayerStats>),
@@ -516,8 +557,13 @@ pub enum ServerMessage {
     /// The public games, for the lobby browser (PC port addition).
     Lobbies(Vec<LobbyInfo>),
     /// A participant left the challenge for its pre-game lobby (`LeaveChallenge`, PC port
-    /// addition), to every member of the game.
+    /// addition), or every other participant's S.K.A.T.E. round waited on it (`Stalled`), to every
+    /// member of the game.
     ChallengeLeave { user_id: u64 },
+    /// `Message_GameProposal` of a freeskate activity, [`proposal::ACCEPT`] to
+    /// [`proposal::MISSED`]: the member it is about (the proposer of a broadcast, the member who
+    /// accepted) and the milliseconds a broadcast leaves to accept it.
+    GameProposal { kind: u8, activity: u64, user_id: u64, timeout: u32 },
 }
 
 /// A run: its first tick and length, the frames it is coded against as their distance back from
@@ -649,6 +695,23 @@ impl ClientMessage {
                 w.u32(*game);
             }
             Self::LeaveChallenge => w.u8(21),
+            Self::GameProposal { kind, activity } => {
+                w.u8(22);
+                w.u8(*kind);
+                w.u64(*activity);
+            }
+            Self::Content(challenges) => {
+                w.u8(23);
+                w.varint(challenges.len() as u64);
+                for &challenge in challenges {
+                    w.u64(challenge);
+                }
+            }
+            Self::Stalled { user_id, tick } => {
+                w.u8(24);
+                w.u64(*user_id);
+                w.u32(*tick);
+            }
         }
         w.into_vec()
     }
@@ -721,6 +784,22 @@ impl ClientMessage {
             19 => Self::ListLobbies,
             20 => Self::JoinLobby { game: r.u32()? },
             21 => Self::LeaveChallenge,
+            22 => {
+                let kind = r.u8()?;
+                if !matches!(kind, proposal::PROPOSE | proposal::ACCEPT) {
+                    return Err(DecodeError("proposal type"));
+                }
+                Self::GameProposal { kind, activity: r.u64()? }
+            }
+            23 => {
+                let count = r.len(MAX_CONTENT)?;
+                let mut challenges = Vec::with_capacity(count);
+                for _ in 0..count {
+                    challenges.push(r.u64()?);
+                }
+                Self::Content(challenges)
+            }
+            24 => Self::Stalled { user_id: r.u64()?, tick: r.u32()? },
             _ => return Err(DecodeError("unknown client message")),
         };
         r.finish()?;
@@ -782,7 +861,7 @@ impl ServerMessage {
                 w.u64(*user_id);
                 w.bytes(data);
             }
-            Self::GameReset { kind, seed, session, participants } => {
+            Self::GameReset { kind, seed, session, participants, activity } => {
                 w.u8(9);
                 w.u8(*kind);
                 w.u32(*seed);
@@ -790,6 +869,7 @@ impl ServerMessage {
                 for participant in participants {
                     w.u64(*participant);
                 }
+                w.u64(*activity);
             }
             Self::SyncPoint { round } => {
                 w.u8(10);
@@ -869,6 +949,13 @@ impl ServerMessage {
                 w.u8(25);
                 w.u64(*user_id);
             }
+            Self::GameProposal { kind, activity, user_id, timeout } => {
+                w.u8(26);
+                w.u8(*kind);
+                w.u64(*activity);
+                w.u64(*user_id);
+                w.u32(*timeout);
+            }
         }
         w.into_vec()
     }
@@ -912,7 +999,7 @@ impl ServerMessage {
                 for participant in &mut participants {
                     *participant = r.u64()?;
                 }
-                Self::GameReset { kind, seed, session, participants }
+                Self::GameReset { kind, seed, session, participants, activity: r.u64()? }
             }
             10 => Self::SyncPoint { round: r.varint_u32()? },
             11 => Self::AllPlayersComplete,
@@ -950,6 +1037,13 @@ impl ServerMessage {
                 Self::Lobbies((0..count).map(|_| LobbyInfo::read(&mut r)).collect::<DecodeResult<_>>()?)
             }
             25 => Self::ChallengeLeave { user_id: r.u64()? },
+            26 => {
+                let kind = r.u8()?;
+                if kind > proposal::MISSED {
+                    return Err(DecodeError("proposal type"));
+                }
+                Self::GameProposal { kind, activity: r.u64()?, user_id: r.u64()?, timeout: r.u32()? }
+            }
             _ => return Err(DecodeError("unknown server message")),
         };
         r.finish()?;
@@ -1007,6 +1101,11 @@ mod tests {
             ClientMessage::ListLobbies,
             ClientMessage::JoinLobby { game: 41 },
             ClientMessage::LeaveChallenge,
+            ClientMessage::GameProposal { kind: proposal::PROPOSE, activity: 0x433d_b94f_fbfa_c4a9 },
+            ClientMessage::GameProposal { kind: proposal::ACCEPT, activity: 7 },
+            ClientMessage::Content(vec![0x433d_b94f_fbfa_c4a9, 7]),
+            ClientMessage::Content(Vec::new()),
+            ClientMessage::Stalled { user_id: 0x1234_5678_9abc_def0, tick: (3 << 20) + 77 },
         ];
         for message in messages {
             assert_eq!(ClientMessage::decode(&message.encode()).unwrap(), message);
@@ -1027,7 +1126,8 @@ mod tests {
             ServerMessage::PlayerJoin(player),
             ServerMessage::PlayerLeave { user_id: 5, reason: leave::LOST_CONNECTION },
             ServerMessage::Recipe { user_id: 5, data: vec![0; 2000] },
-            ServerMessage::GameReset { kind: reset::CHALLENGE, seed: 99, session: 4, participants: [1, 2, 0, 0, 0, 0, 0, 0] },
+            ServerMessage::GameReset { kind: reset::CHALLENGE, seed: 99, session: 4, participants: [1, 2, 0, 0, 0, 0, 0, 0], activity: 0 },
+            ServerMessage::GameReset { kind: reset::LOAD_CHALLENGE, seed: 3, session: 5, participants: [9, 8, 7, 0, 0, 0, 0, 0], activity: 0x71fa_483a_08de_e1b7 },
             ServerMessage::SyncPoint { round: 1 },
             ServerMessage::AllPlayersComplete,
             ServerMessage::FinalResults(vec![PlayerStats { user_id: 1, cash: 300, exp: 1.5, wager: -1, ..Default::default() }]),
@@ -1048,10 +1148,21 @@ mod tests {
                 LobbyInfo { game: 9, challenge_type: challenge::ONLINE_FREE_SKATE, challenge_key: 0x66, players: 8, max_players: 8, phase: Phase::Challenge },
             ]),
             ServerMessage::ChallengeLeave { user_id: 6 },
+            ServerMessage::GameProposal { kind: proposal::BROADCAST, activity: 0x34, user_id: 6, timeout: 15_000 },
+            ServerMessage::GameProposal { kind: proposal::MISSED, activity: 0x34, user_id: 0, timeout: 0 },
         ];
         for message in messages {
             assert_eq!(ServerMessage::decode(&message.encode()).unwrap(), message);
         }
+    }
+
+    #[test]
+    fn a_proposal_carries_only_the_types_its_side_sends() {
+        let client = |kind| ClientMessage::GameProposal { kind, activity: 1 }.encode();
+        assert!(ClientMessage::decode(&client(proposal::BROADCAST)).is_err(), "only the server broadcasts");
+        assert!(ClientMessage::decode(&client(proposal::MISSED)).is_err());
+        let server = ServerMessage::GameProposal { kind: proposal::MISSED + 1, activity: 1, user_id: 1, timeout: 0 }.encode();
+        assert!(ServerMessage::decode(&server).is_err());
     }
 
     #[test]

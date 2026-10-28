@@ -80,6 +80,25 @@ A Hermes message kind is `stringhash32(class name)` (lookup2, seed `0xABCDEF00`,
 * Attribute arrays are userdata (`LuaAttribArrayInfoMetaTable`): `arr[i]` (1-based)
   and `arr.Count`.
 
+## Session marker around challenges
+
+* `cChallengeTeleportManager::TeleportPlayer` (`0x82dad8e0`) with `repositionMarker` sends
+  `cMsgSetSessionMarker` at the location's spawn point as the local player arrives
+  (`TeleportPlayerNow` `0x82da6a00`). Scripts ask for it through
+  `Teleport.TeleportLocalPlayerToLocationName` and `AI.RepositionAI`; Create-a-Spot's
+  `TeleportToSpawnPoint` always does. The sign-post, map-select, presentation and chase
+  teleports never do. `SessionMarker.SetSessionMarker` (`0x82da92d0`) puts the marker at the
+  local skater's respawn transform. `PlayerUI::ReceiveSetSessionMarkerMsg` (`0x828aab38`)
+  forces both, on the board.
+* A new game (`GameModule::ResetGame` `0x8273a680` with `newGame`) makes a new marker, and
+  `PlayerUI::ResetPlayer` (`0x828ad280`) puts it at the spawn while it is not valid.
+* `cMsgClearSessionMarker` clears it. It is sent by `MapBackEndManager::TeleportToChallenge`
+  (`0x8256dc10`) after its teleport, `cTeleportManager::TeleportLocalPlayer` (`0x828a9f40`)
+  behind a load screen outside a network game, `TeleportLocalToWorldLocation` (`0x828a9cf0`)
+  with an additional-world operation, and `SessionMarker.ClearSessionMarker` (`0x82da9350`).
+  `cChallengeSimManager::CompleteChallenge` (`0x82da78e8`) also sends it for a main challenge
+  other than a Flow (type 44) whose `challenge_local_data.ClearSessionMarkerOnExit` is set.
+
 ## Saving (`SKATER.P`)
 
 `MemcardProfile::GenerateSaveData` (`0x82569f48`) writes, under `MEMCARD_ROOT`, the save

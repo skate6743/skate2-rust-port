@@ -4,8 +4,8 @@ use crate::client::{ClientCore, ClientEvent, Disconnect};
 use crate::crypto::{Build, Handshake, Session};
 use crate::frames::{HEADER_WORDS, INTERVAL, NetFrame};
 use crate::protocol::{
-    ClientMessage, FactsNotes, GameAttributes, GameResult, LobbyInfo, MAX_PLAYERS, Phase, PlayNow, PlayNowMode, ServerMessage, challenge, leave, play_now, refuse,
-    request, reset,
+    ClientMessage, FactsNotes, GameAttributes, GameResult, LobbyInfo, MAX_PLAYERS, Phase, PlayNow, PlayNowMode, ServerMessage, challenge, leave, play_now,
+    proposal, refuse, request, reset,
 };
 use crate::moderation::BanList;
 use crate::panel::{Action, Request};
@@ -375,15 +375,15 @@ fn the_host_and_a_player_who_left_are_never_dropped_for_host_requests() {
 
 #[test]
 fn a_nickname_the_prompt_cannot_make_drops_the_connection() {
-    let longest = "y".repeat(24);
+    let longest = "y".repeat(crate::protocol::NICKNAME_CHARACTERS);
     let mut net = Net::new();
     let fits = net.add(&longest);
-    let bad: Vec<usize> = ["x".repeat(25), String::new(), " Padded".into(), "Tab\tName".into(), "Caf\u{e9}".into(), "Rob!".into(), "---".into()]
+    let bad: Vec<usize> = ["x".repeat(crate::protocol::NICKNAME_CHARACTERS + 1), String::new(), " Padded".into(), "Tab\tName".into(), "Caf\u{e9}".into(), "Rob!".into(), "---".into()]
         .iter()
         .map(|name| net.add(name))
         .collect();
     net.run(300);
-    assert!(net.events(fits).iter().any(|event| matches!(event, ClientEvent::SignedIn { .. })), "24 characters sign in");
+    assert!(net.events(fits).iter().any(|event| matches!(event, ClientEvent::SignedIn { .. })), "the longest nickname signs in");
     for client in bad {
         assert_eq!(net.events(client), vec![ClientEvent::Disconnected(Disconnect::Closed(leave::KICKED_FOR_NICKNAME))]);
     }
@@ -819,6 +819,109 @@ fn a_challenge_every_participant_left_goes_back_to_lobby_skate() {
     assert!(frames_heard(&mut net, guest) > 0, "back in lobby skate the two see each other");
 }
 
+/// `lobby`'s players in a game of `challenge_type`, each with the user id it signed in as.
+fn lobby_with_ids(net: &mut Net, names: &[&str], challenge_type: u8) -> Vec<(usize, u64)> {
+    let clients: Vec<usize> = names.iter().map(|name| net.add(name)).collect();
+    net.run(100);
+    let ids: Vec<u64> = clients
+        .iter()
+        .map(|&client| {
+            net.events(client)
+                .into_iter()
+                .find_map(|event| match event {
+                    ClientEvent::SignedIn { user_id } => Some(user_id),
+                    _ => None,
+                })
+                .expect("signed in")
+        })
+        .collect();
+    let search = |create| match play(PlayNowMode::Custom, create, None) {
+        ClientMessage::PlayNow(request) => ClientMessage::PlayNow(PlayNow { challenge_type, ..request }),
+        message => message,
+    };
+    net.send(clients[0], &search(true));
+    net.run(100);
+    for &client in &clients[1..] {
+        net.send(client, &search(false));
+        net.run(100);
+    }
+    for &client in &clients {
+        net.events(client);
+    }
+    clients.into_iter().zip(ids).collect()
+}
+
+#[test]
+fn every_other_skate_player_waiting_on_one_takes_that_player_out_of_the_challenge() {
+    let mut net = Net::new();
+    let players = lobby_with_ids(&mut net, &["Host", "Guest", "Third", "Modded"], challenge::SKATE);
+    let clients: Vec<usize> = players.iter().map(|&(client, _)| client).collect();
+    challenge(&mut net, &clients);
+    let (modded, modded_id) = players[3];
+    let left = |messages: &[ServerMessage]| messages.iter().any(|message| matches!(message, ServerMessage::ChallengeLeave { user_id } if *user_id == modded_id));
+    // Two of the three waiting is not every one of them, nor are reports of different ticks.
+    for &(client, _) in &players[..2] {
+        net.send(client, &ClientMessage::Stalled { user_id: modded_id, tick: 500 });
+    }
+    net.send(players[2].0, &ClientMessage::Stalled { user_id: modded_id, tick: 499 });
+    net.run(100);
+    assert!(!left(&net.messages(players[0].0)), "the players do not agree yet");
+    net.send(players[2].0, &ClientMessage::Stalled { user_id: modded_id, tick: 500 });
+    net.run(100);
+    for &(client, _) in &players[..3] {
+        assert!(left(&net.messages(client)), "every other player hears the player go");
+    }
+    assert!(left(&net.messages(modded)), "the player hears it too");
+    // Its facts no longer reach the challenge.
+    net.send(modded, &ClientMessage::Facts { tick: 500, stint: 1, notes: FactsNotes::default(), data: vec![1] });
+    net.run(100);
+    assert!(!net.messages(players[0].0).iter().any(|message| matches!(message, ServerMessage::Facts { .. })));
+}
+
+#[test]
+fn one_waiting_player_takes_no_one_out() {
+    let mut net = Net::new();
+    let players = lobby_with_ids(&mut net, &["Host", "Guest"], challenge::SKATE);
+    let clients: Vec<usize> = players.iter().map(|&(client, _)| client).collect();
+    challenge(&mut net, &clients);
+    net.send(players[0].0, &ClientMessage::Stalled { user_id: players[1].1, tick: 40 });
+    net.run(100);
+    assert!(!net.messages(players[1].0).iter().any(|message| matches!(message, ServerMessage::ChallengeLeave { .. })), "a lone report proves nothing");
+}
+
+#[test]
+fn an_old_report_counts_for_nothing() {
+    let mut net = Net::new();
+    let players = lobby_with_ids(&mut net, &["Host", "Guest", "Third"], challenge::SKATE);
+    let clients: Vec<usize> = players.iter().map(|&(client, _)| client).collect();
+    challenge(&mut net, &clients);
+    let (third, third_id) = players[2];
+    let left = |messages: &[ServerMessage]| messages.iter().any(|message| matches!(message, ServerMessage::ChallengeLeave { .. }));
+    // The host's round waited, then ran on: its report, seconds old, joins no later one.
+    net.send(players[0].0, &ClientMessage::Stalled { user_id: third_id, tick: 70 });
+    net.run(4_000);
+    net.send(players[1].0, &ClientMessage::Stalled { user_id: third_id, tick: 70 });
+    net.run(100);
+    assert!(!left(&net.messages(third)), "a report from a wait that ended");
+    // A round still waiting reports again, and the two agree.
+    net.send(players[0].0, &ClientMessage::Stalled { user_id: third_id, tick: 70 });
+    net.run(100);
+    assert!(left(&net.messages(third)));
+}
+
+#[test]
+fn a_spot_battle_takes_no_one_out_for_a_wait() {
+    let mut net = Net::new();
+    let players = lobby_with_ids(&mut net, &["Host", "Guest", "Third"], challenge::OWN_THE_SPOT);
+    let clients: Vec<usize> = players.iter().map(|&(client, _)| client).collect();
+    challenge(&mut net, &clients);
+    for &(client, _) in &players[..2] {
+        net.send(client, &ClientMessage::Stalled { user_id: players[2].1, tick: 90 });
+    }
+    net.run(100);
+    assert!(!net.messages(players[2].0).iter().any(|message| matches!(message, ServerMessage::ChallengeLeave { .. })), "only S.K.A.T.E.'s turns follow its tricks");
+}
+
 #[test]
 fn a_challenge_takes_only_the_members_in_the_world() {
     let mut net = Net::new();
@@ -841,6 +944,29 @@ fn a_challenge_takes_only_the_members_in_the_world() {
         })
         .expect("the challenge loads");
     assert_eq!(participants.iter().filter(|&&participant| participant != 0).count(), 2, "the member still coming in stays out");
+}
+
+#[test]
+fn spot_battle_and_hall_of_meat_start_with_one_player() {
+    for (challenge_type, alone) in [(challenge::OWN_THE_SPOT, true), (challenge::HALL_OF_MEAT, true), (challenge::SKATE, false)] {
+        let mut net = Net::new();
+        let host = lobby_with_ids(&mut net, &["Host"], challenge_type)[0].0;
+        enter(&mut net, host);
+        net.events(host);
+        net.send(host, &ClientMessage::GameRequest { request: request::START_GAME, value: 0 });
+        net.run(100);
+        let loads = net.messages(host).iter().any(|message| matches!(message, ServerMessage::GameReset { kind: reset::LOAD_CHALLENGE, .. }));
+        assert_eq!(loads, alone, "challenge type {challenge_type}");
+        if !alone {
+            continue;
+        }
+        net.send(host, &ClientMessage::ChallengeLoaded);
+        net.run(100);
+        assert!(
+            net.messages(host).iter().any(|message| matches!(message, ServerMessage::GameReset { kind: reset::CHALLENGE, .. })),
+            "challenge type {challenge_type}: the challenge starts once its one player loaded"
+        );
+    }
 }
 
 #[test]
@@ -962,8 +1088,35 @@ fn frames_past_the_game_s_rate_are_not_relayed() {
     assert!(frames_heard(&mut net, clients[1]) >= 55);
 }
 
+fn recipes_heard(messages: Vec<ServerMessage>) -> Vec<Vec<u8>> {
+    messages.into_iter().filter_map(|message| match message {
+        ServerMessage::Recipe { data, .. } => Some(data),
+        _ => None,
+    }).collect()
+}
+
+/// The pre-game Edit Skater's new look (PC port addition) replaces the member's recipe for every
+/// member and for the players who join later.
 #[test]
-fn a_second_recipe_and_an_unchanged_privacy_reach_no_one() {
+fn a_changed_skater_reaches_every_member_and_later_joiners() {
+    let mut net = Net::new();
+    let clients = lobby(&mut net, &["Host", "Guest"]);
+    let (host, guest) = (clients[0], clients[1]);
+    net.send(guest, &ClientMessage::Recipe(vec![1; 64]));
+    net.run(2100);
+    net.send(guest, &ClientMessage::Recipe(vec![2; 64]));
+    net.run(100);
+    assert_eq!(recipes_heard(net.messages(host)), vec![vec![1; 64], vec![2; 64]]);
+    let late = net.add("Late");
+    net.run(100);
+    net.send(late, &play(PlayNowMode::Custom, false, None));
+    net.run(100);
+    assert_eq!(recipes_heard(net.messages(late)), vec![vec![2; 64]]);
+}
+
+/// A recipe within two seconds of the member's last reaches no one.
+#[test]
+fn a_recipe_soon_after_the_last_and_an_unchanged_privacy_reach_no_one() {
     let mut net = Net::new();
     let clients = lobby(&mut net, &["Host", "Guest"]);
     net.send(clients[1], &ClientMessage::Recipe(vec![1; 64]));
@@ -1031,6 +1184,34 @@ fn joined_game(messages: &[ServerMessage]) -> Option<(u32, usize)> {
         ServerMessage::GameJoined { game, players, .. } => Some((*game, players.len())),
         _ => None,
     })
+}
+
+/// A player whose build lacks a game's challenge (`Content`, PC port addition) is never offered
+/// the game: the lobby browser leaves it out, quick match passes it over and the browser's join
+/// refuses it. Once the build has the challenge, quick match finds it.
+#[test]
+fn a_game_at_a_challenge_the_build_lacks_is_never_offered() {
+    let mut net = Net::new();
+    lobby(&mut net, &["Host"]);
+    let player = net.add("Player");
+    net.run(100);
+    net.events(player);
+    net.send(player, &ClientMessage::ListLobbies);
+    net.run(100);
+    let game = listing(&net.messages(player)).and_then(|listed| listed.first().copied()).expect("the host's game");
+    net.send(player, &ClientMessage::Content(vec![0x123]));
+    net.send(player, &ClientMessage::ListLobbies);
+    net.send(player, &play(PlayNowMode::Quick, false, None));
+    net.send(player, &ClientMessage::JoinLobby { game: game.game });
+    net.run(100);
+    let seen = net.messages(player);
+    assert_eq!(listing(&seen), Some(Vec::new()));
+    assert_eq!(seen.iter().filter(|message| **message == ServerMessage::PlayNowResult { result: play_now::NO_MATCH }).count(), 2);
+    assert_eq!(joined_game(&seen), None);
+    net.send(player, &ClientMessage::Content(vec![0x123, game.challenge_key]));
+    net.send(player, &play(PlayNowMode::Quick, false, None));
+    net.run(100);
+    assert_eq!(joined_game(&net.messages(player)).map(|(id, _)| id), Some(game.game));
 }
 
 #[test]
@@ -1415,4 +1596,185 @@ fn a_change_asked_during_a_challenge_changes_nothing() {
     }
     net.run(100);
     assert!(net.messages(guest).contains(&ServerMessage::AllPlayersComplete));
+}
+
+/// A freeskate activity of the tests' location.
+const ACTIVITY: u64 = 0x433d_b94f_fbfa_c4a9;
+
+/// Signs every name in and puts them in one online free skate, the first its host, each in the
+/// game's world.
+fn free_skate_lobby(net: &mut Net, names: &[&str]) -> Vec<usize> {
+    let clients: Vec<usize> = names.iter().map(|name| net.add(name)).collect();
+    net.run(100);
+    net.send(clients[0], &free_skate(true, Some(0x77)));
+    net.run(100);
+    for &client in &clients[1..] {
+        net.send(client, &free_skate(false, Some(0x77)));
+        net.run(100);
+    }
+    for &client in &clients {
+        enter(net, client);
+    }
+    for &client in &clients {
+        net.events(client);
+    }
+    clients
+}
+
+fn proposals(messages: &[ServerMessage]) -> Vec<(u8, u64, u64)> {
+    messages
+        .iter()
+        .filter_map(|message| match *message {
+            ServerMessage::GameProposal { kind, activity, user_id, .. } => Some((kind, activity, user_id)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn activity_reset(messages: &[ServerMessage], wanted: u8) -> Option<Vec<u64>> {
+    messages.iter().find_map(|message| match message {
+        ServerMessage::GameReset { kind, participants, activity: ACTIVITY, .. } if *kind == wanted => {
+            Some(participants.iter().copied().filter(|&participant| participant != 0).collect())
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn an_activity_every_member_accepts_loads_for_everyone_and_hides_the_game() {
+    let mut net = Net::new();
+    let clients = free_skate_lobby(&mut net, &["Host", "Guest", "Third"]);
+    let (host, guest, third) = (clients[0], clients[1], clients[2]);
+    net.send(guest, &ClientMessage::GameProposal { kind: proposal::PROPOSE, activity: ACTIVITY });
+    net.run(100);
+    let mut proposer = None;
+    for &client in &clients {
+        let heard = net.messages(client);
+        let broadcast = heard.iter().find_map(|message| match *message {
+            ServerMessage::GameProposal { kind: proposal::BROADCAST, activity: ACTIVITY, user_id, timeout } => Some((user_id, timeout)),
+            _ => None,
+        });
+        let (user_id, timeout) = broadcast.expect("every member hears the proposal");
+        assert!(timeout > 10_000, "with the time left to accept");
+        proposer = Some(user_id);
+    }
+    // No second proposal and no change of location while one is under way.
+    net.send(host, &ClientMessage::GameProposal { kind: proposal::PROPOSE, activity: 0x88 });
+    net.send(host, &ClientMessage::RequestChange { challenge_type: challenge::ONLINE_FREE_SKATE, challenge_key: 0x99 });
+    net.run(2_100);
+    let heard = net.messages(third);
+    assert!(proposals(&heard).is_empty(), "the second proposal is refused");
+    assert!(!heard.iter().any(|message| matches!(message, ServerMessage::GameChange { .. })), "the change waits for no proposal");
+    net.send(host, &ClientMessage::GameProposal { kind: proposal::ACCEPT, activity: ACTIVITY });
+    net.run(100);
+    let heard = net.messages(guest);
+    assert!(proposals(&heard).iter().any(|&(kind, _, user_id)| kind == proposal::ACCEPT && Some(user_id) != proposer), "everyone hears who accepted");
+    assert!(activity_reset(&heard, reset::LOAD_CHALLENGE).is_none(), "the third member has not accepted");
+    net.send(third, &ClientMessage::GameProposal { kind: proposal::ACCEPT, activity: ACTIVITY });
+    net.run(100);
+    for &client in &clients {
+        let participants = activity_reset(&net.messages(client), reset::LOAD_CHALLENGE).expect("the activity loads");
+        assert_eq!(participants.len(), 3);
+    }
+    // Neither the lobby browser nor matchmaking offers the game while the activity runs.
+    let browser = net.add("Browser");
+    net.run(100);
+    net.send(browser, &ClientMessage::ListLobbies);
+    net.run(100);
+    assert_eq!(listing(&net.messages(browser)), Some(Vec::new()));
+    net.send(browser, &free_skate(false, Some(0x77)));
+    net.run(100);
+    assert_eq!(joined_game(&net.messages(browser)).map(|(_, players)| players), Some(1), "a game of its own");
+    for &client in &clients {
+        net.send(client, &ClientMessage::ChallengeLoaded);
+    }
+    net.run(100);
+    for &client in &clients {
+        assert!(activity_reset(&net.messages(client), reset::CHALLENGE).is_some(), "the challenge is the activity");
+    }
+}
+
+#[test]
+fn an_activity_not_every_member_accepts_times_out() {
+    let mut net = Net::new();
+    let clients = free_skate_lobby(&mut net, &["Host", "Guest"]);
+    let (host, guest) = (clients[0], clients[1]);
+    net.send(host, &ClientMessage::GameProposal { kind: proposal::PROPOSE, activity: ACTIVITY });
+    net.run(15_100);
+    for &client in &clients {
+        let heard = net.messages(client);
+        assert!(proposals(&heard).iter().any(|&(kind, activity, _)| kind == proposal::TIMEOUT && activity == ACTIVITY));
+        assert!(activity_reset(&heard, reset::LOAD_CHALLENGE).is_none());
+    }
+    // A new activity may now be proposed.
+    net.send(guest, &ClientMessage::GameProposal { kind: proposal::PROPOSE, activity: ACTIVITY });
+    net.run(100);
+    assert!(proposals(&net.messages(host)).iter().any(|&(kind, ..)| kind == proposal::BROADCAST));
+}
+
+#[test]
+fn a_proposal_needs_an_online_free_skate_and_two_members_in_its_world() {
+    let mut net = Net::new();
+    let clients = lobby(&mut net, &["Host", "Guest"]);
+    for &client in &clients {
+        enter(&mut net, client);
+    }
+    net.events(clients[1]);
+    net.send(clients[0], &ClientMessage::GameProposal { kind: proposal::PROPOSE, activity: ACTIVITY });
+    net.run(100);
+    assert!(proposals(&net.messages(clients[1])).is_empty(), "a challenge game has no activities");
+    assert_eq!(proposals(&net.messages(clients[0])), vec![(proposal::TIMEOUT, ACTIVITY, 0)], "the proposer hears it went nowhere");
+    let mut net = Net::new();
+    let alone = net.add("Alone");
+    net.run(100);
+    net.send(alone, &free_skate(true, Some(0x77)));
+    net.run(100);
+    enter(&mut net, alone);
+    net.events(alone);
+    net.send(alone, &ClientMessage::GameProposal { kind: proposal::PROPOSE, activity: ACTIVITY });
+    net.run(100);
+    assert_eq!(proposals(&net.messages(alone)), vec![(proposal::TIMEOUT, ACTIVITY, 0)], "no one to propose it to");
+}
+
+#[test]
+fn a_member_joining_during_the_proposal_hears_it_and_takes_part() {
+    let mut net = Net::new();
+    let clients = free_skate_lobby(&mut net, &["Host", "Guest"]);
+    let (host, guest) = (clients[0], clients[1]);
+    net.send(host, &ClientMessage::GameProposal { kind: proposal::PROPOSE, activity: ACTIVITY });
+    net.run(100);
+    let late = net.add("Late");
+    net.run(100);
+    net.send(late, &free_skate(false, Some(0x77)));
+    net.run(100);
+    let heard = proposals(&net.messages(late));
+    assert!(heard.iter().any(|&(kind, activity, _)| kind == proposal::BROADCAST && activity == ACTIVITY), "the joiner sees the proposal");
+    enter(&mut net, late);
+    net.send(guest, &ClientMessage::GameProposal { kind: proposal::ACCEPT, activity: ACTIVITY });
+    net.run(100);
+    for client in [host, guest, late] {
+        let participants = activity_reset(&net.messages(client), reset::LOAD_CHALLENGE).expect("the two invited accepted");
+        assert_eq!(participants.len(), 3, "the joiner takes part");
+    }
+}
+
+#[test]
+fn an_accepted_activity_waits_a_little_for_a_member_on_its_way_in() {
+    let mut net = Net::new();
+    let clients = free_skate_lobby(&mut net, &["Host", "Guest"]);
+    let (host, guest) = (clients[0], clients[1]);
+    net.send(host, &ClientMessage::GameProposal { kind: proposal::PROPOSE, activity: ACTIVITY });
+    net.run(100);
+    let late = net.add("Late");
+    net.run(100);
+    net.send(late, &free_skate(false, Some(0x77)));
+    net.run(100);
+    net.events(late);
+    net.send(guest, &ClientMessage::GameProposal { kind: proposal::ACCEPT, activity: ACTIVITY });
+    net.run(1_000);
+    assert!(activity_reset(&net.messages(host), reset::LOAD_CHALLENGE).is_none(), "the start waits for the joiner");
+    net.run(5_000);
+    let participants = activity_reset(&net.messages(host), reset::LOAD_CHALLENGE).expect("then starts without it");
+    assert_eq!(participants.len(), 2);
+    assert!(proposals(&net.messages(late)).iter().any(|&(kind, ..)| kind == proposal::MISSED), "the joiner missed it");
 }

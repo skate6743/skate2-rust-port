@@ -38,6 +38,7 @@ mod skate_profile_movie;
 mod letterbox;
 mod main_movie;
 mod extras_movie;
+mod dlc_movie;
 mod replay_editor_movie;
 mod trick_guide_movie;
 mod contacts_movie;
@@ -65,6 +66,9 @@ mod online_match_movie;
 mod lobby_browser_movie;
 mod online_hub_movie;
 mod online_results_movie;
+mod spectator_movie;
+mod activity_overlay_movie;
+mod activity_signup_movie;
 pub(crate) mod online_names;
 mod end_challenge_movie;
 mod results_list;
@@ -73,6 +77,7 @@ mod challenge_failed_small_movie;
 mod end_challenge_small_movie;
 mod party_play_change_movie;
 mod settings_movie;
+mod stick_preview;
 mod screen_manager;
 mod edit_skater_movie;
 use crate::gpu_renderer::{
@@ -188,6 +193,8 @@ pub(crate) struct MarkerUi {
     dimmer: Dimmer,
     main: Option<main_movie::MainMovie>,
     extras: extras_movie::ExtrasMovie,
+    /// PC: FE state 25's screen, the linked downloadable content.
+    dlc: dlc_movie::DlcMovie,
     replay_editor: replay_editor_movie::ReplayEditorMovie,
     trick_guide:trick_guide_movie::TrickGuideMovie,
     contacts:contacts_movie::ContactsMovie,
@@ -263,6 +270,14 @@ pub(crate) struct MarkerUi {
     /// `HUD2_OnlineEventLog`, loaded with the online HUD group while an online game runs.
     online_event_log: online_eventlog_movie::OnlineEventLogMovie,
     online_event_log_open: bool,
+    /// The skate.TV overlay while a free skate's Spectate watches another player (PC port addition).
+    spectator: spectator_movie::SpectatorMovie,
+    /// `FreeskateActivityOverlayHUD` while a freeskate activity is proposed, and FE state 67's
+    /// sign-up screen.
+    activity_overlay: activity_overlay_movie::ActivityOverlayMovie,
+    activity_signup: activity_signup_movie::ActivitySignUpMovie,
+    /// `SetOnlineHudsVisible(false)`: the activity overlay hides the event log.
+    online_event_log_hidden: bool,
     /// FE states 69 and 68's screens, which replace the Online options.
     online_custom: online_match_movie::OnlineMatchMovie,
     online_freeskate: online_match_movie::OnlineMatchMovie,
@@ -334,6 +349,10 @@ pub(crate) struct MarkerUi {
 impl MarkerUi {
     pub(crate) fn set_free_skate_settings(&mut self, settings: Option<(bool, bool)>) {
         self.free_skate_settings = settings;
+    }
+    /// The Stick Settings pages' boxes: the playing controller's sticks as its pad reports them.
+    pub(crate) fn set_stick_preview(&mut self, sticks: Option<[i16; 4]>) {
+        self.settings.set_stick_preview(sticks);
     }
     pub(crate) fn set_options_menu(&mut self, state: skate2_core::ui::options::Snapshot) -> RenderResult<()> {
         use skate2_core::ui::options::Page;
@@ -420,6 +439,52 @@ impl MarkerUi {
         Ok(())
     }
 
+    /// The skate.TV overlay naming the player a free skate's Spectate watches, while it does (PC
+    /// port addition).
+    pub(crate) fn update_online_spectator(&mut self, name: Option<&str>) -> RenderResult<()> {
+        self.spectator.update(&self.assets, name)
+    }
+
+    /// The freeskate activity overlay while a proposal shows it, with its type's icon loaded; FE
+    /// state 67's screen while it is up, with the location's small image; and whether the overlay
+    /// hides the event log. Whether the screen's intro completed.
+    pub(crate) fn update_online_activities(
+        &mut self,
+        renderer: &GpuRenderer,
+        overlay: Option<&skate2_core::online::activities::OverlayView>,
+        sign_up: Option<&skate2_core::online::activities::SignUpView>,
+        log_hidden: bool,
+    ) -> RenderResult<bool> {
+        self.activity_overlay.update(&self.assets, overlay)?;
+        if let Some(name) = self.activity_overlay.icon_request.take() {
+            let texture = match self.assets.ensure_dpo_icon(&name) {
+                Ok((key, loaded)) => {
+                    if loaded {
+                        self.textures.extend(renderer.upload_ui_textures(self.assets.textures.get(&key).into_iter())?);
+                    }
+                    Some(key)
+                }
+                Err(_) => None,
+            };
+            self.activity_overlay.set_icon(texture)?;
+        }
+        self.activity_signup.update(&self.assets, sign_up)?;
+        if let Some(image) = self.activity_signup.image_request.take() {
+            let texture = match self.assets.ensure_location_texture(&image) {
+                Ok((key, loaded)) => {
+                    if loaded {
+                        self.textures.extend(renderer.upload_ui_textures(self.assets.textures.get(&key).into_iter())?);
+                    }
+                    Some(key)
+                }
+                Err(_) => None,
+            };
+            self.activity_signup.set_image(texture)?;
+        }
+        self.online_event_log_hidden = log_hidden;
+        Ok(self.activity_signup.take_intro_complete())
+    }
+
     /// The lobby skate HUD's leaderboard ("lobbyhud"): its screen states on the challenge HUD's
     /// leaderboard movie, titled by `Mission.GetTitle()` in lobby skate.
     pub(crate) fn update_online_lobby_hud(&mut self, states: &[(i32, skate2_core::challenge::turn_hud::TurnHudView)],
@@ -477,8 +542,15 @@ impl MarkerUi {
             return self.chat_popup.update(&self.assets, Some(&dialog), Some(&["#Enter: Confirm".to_owned(), "#Esc: Cancel".to_owned()]));
         }
         let dialog = prompt.map(|prompt| {
-            let mut field = prompt.text.clone();
-            field.insert(prompt.cursor, '|');
+            // Ctrl+A's selection shows the line on the selection's blue, with no cursor.
+            let field = if prompt.selected {
+                let mark = |unit: u16| char::from_u32(u32::from(unit)).unwrap_or(' ');
+                format!("{}{}{}", mark(TEXT_HIGHLIGHT_START), prompt.text, mark(TEXT_HIGHLIGHT_END))
+            } else {
+                let mut field = prompt.text.clone();
+                field.insert(prompt.cursor, '|');
+                field
+            };
             let limit = skate2_net::protocol::CHAT_CHARACTERS;
             ("#Lobby Chat".to_owned(), format!("#{field}\n\n{}/{limit}", prompt.text.len()), 0)
         });
@@ -580,6 +652,10 @@ impl MarkerUi {
         self.countdown = hud_countdown_movie::CountdownMovie::new(assets)?;
         self.voting = hud_voting_movie::VotingMovie::new(assets)?;
         self.online_event_log = online_eventlog_movie::OnlineEventLogMovie::new(assets)?;
+        self.spectator = spectator_movie::SpectatorMovie::new(assets)?;
+        self.activity_overlay = activity_overlay_movie::ActivityOverlayMovie::new(assets)?;
+        self.activity_signup = activity_signup_movie::ActivitySignUpMovie::default();
+        self.online_event_log_hidden = false;
         self.online_custom = online_match_movie::OnlineMatchMovie::new(assets, online_match_movie::CUSTOM)?;
         self.online_freeskate = online_match_movie::OnlineMatchMovie::new(assets, online_match_movie::FREESKATE)?;
         self.lobby_browser = lobby_browser_movie::LobbyBrowserMovie::new(assets)?;
@@ -612,12 +688,14 @@ impl MarkerUi {
         let Some(mut main)=self.main.take() else { return Ok(()) };
         self.screens.cancel(Screen::MainMenu);
         self.screens.cancel(Screen::Extras);
+        self.screens.cancel(Screen::Dlc);
         for screen in [Screen::OnlineOptions,Screen::SkateReelGeneral,Screen::SkateReelPhoto] {self.screens.cancel(screen);}
         self.pending_sounds.append(&mut main.letterbox.sounds);
         self.pending_sounds.append(&mut self.freeskate.sounds);
         self.freeskate=freeskate_movie::FreeskateMovie::new(&self.assets)?;
         self.party_play=party_play_movie::PartyPlayMovie::new(&self.assets)?;
         self.extras=extras_movie::ExtrasMovie::new(&self.assets)?;
+        self.dlc=dlc_movie::DlcMovie::new(&self.assets)?;
         self.skate_reel=[skate_reel_movie::Movie::new(&self.assets,97)?,skate_reel_movie::Movie::new(&self.assets,98)?,skate_reel_movie::Movie::new(&self.assets,99)?];
         Ok(())
     }
@@ -648,6 +726,9 @@ impl MarkerUi {
         let pending=self.extras.pending();
         self.extras.update(&self.assets,frame.extras.as_ref(),&mut main.letterbox)?;
         self.screens.track(Screen::Extras,pending,self.extras.pending());
+        let pending=self.dlc.pending();
+        self.dlc.update(&self.assets,frame.dlc.as_ref())?;
+        self.screens.track(Screen::Dlc,pending,self.dlc.pending());
         // OnMenuSelect (0x82674b58) takes the letterbox away (EnableLetterBox(0)) before
         // GoToCustomFreeSkate pushes FE state 68; the Online options bring it back when entered.
         let freeskate=frame.online_match.as_ref().is_some_and(|screen|screen.freeskate);
@@ -675,10 +756,8 @@ impl MarkerUi {
             vec!["#Enter: Confirm".into(),"#Esc: Cancel".into()]
         } else {vec!["#Enter: Confirm".into()]};
         self.name_popup.update(&self.assets,name_dialog.as_ref(),Some(&name_buttons))?;
-        let [title,description,ok]=skate2_core::ui::main_menu::DLC_NOTICE;
-        let notice=frame.dlc_notice.then(||(title.to_owned(),description.to_owned(),0));
-        let ok=[ok.to_owned()];
-        self.dlc_popup.update(&self.assets,notice.as_ref(),Some(ok.as_slice()))?;
+        let dlc_popup=dlc_movie::DlcMovie::popup(frame.dlc.as_ref());
+        self.dlc_popup.update(&self.assets,dlc_popup.as_ref().map(|(dialog,_)|dialog),dlc_popup.as_ref().map(|(_,options)|options.as_slice()))?;
         self.update_popup.show(&self.assets,frame.update_prompt.as_ref().map(skate2_core::ui::update_prompt::UpdatePrompt::dialog))?;
         self.freeskate.update(&self.assets,frame.freeskate.as_ref(),freeskate_states,&mut main.letterbox)?;
         // LoadRX2Texture: the location's large image, once the screen asks for it.
@@ -739,13 +818,14 @@ impl MarkerUi {
         };
         renderer.update_world_ui(scene,&self.textures,batches,quad,secondary)?;
         // The dimmer (mainmisc.swf's _level8) under Options in main.swf's gScreenManager (depth 12),
-        // then gLetterBox (14) and gChyron (15).
+        // then gLetterBox (14) and gChyron (15). The DLC screen's template entry (0x82fdb3f8) is
+        // placement 0 as Options' is, not the wall's 1.
         let mut overlay=Vec::new();
         if self.movie_open {
             // main.swf's gSubtitle precedes loaded screen layers.
             flatten_projected(&self.assets,&self.subtitle.root,IDENTITY,Colour::default(),renderer.dimensions(),&mut overlay,true,None)?;
         }
-        for clip in [&self.dimmer.clip,&self.settings.root] {
+        for clip in [&self.dimmer.clip,&self.settings.root,&self.dlc.root] {
             flatten_projected(&self.assets,clip,IDENTITY,Colour::default(),renderer.dimensions(),&mut overlay,true,None)?;
         }
         let mut reel_screens=[(Screen::SkateReelGeneral,&self.skate_reel[1].root,&self.skate_reel[1].popup),
@@ -787,6 +867,10 @@ impl MarkerUi {
         Ok((intro,freeskate_intro,party_play_intro))
     }
     pub fn take_extras_events(&mut self) -> (bool, bool, bool) { self.extras.take_events() }
+    /// The Downloadable Content screen's `IntroComplete` since the last call.
+    pub fn take_dlc_intro(&mut self) -> bool { self.dlc.take_intro() }
+    /// The mounted downloadable content's strings join the screens' (the game's own first).
+    pub fn add_dlc_strings(&mut self, mounts: &MountSet) { self.assets.add_dlc_strings(mounts); }
     pub fn take_jacked_request(&mut self)->bool{std::mem::take(&mut self.jacked_request)}
     /// The sign-up poster screen's `IntroComplete` since the last call.
     pub fn take_poster_intro_complete(&mut self) -> bool {
@@ -892,6 +976,8 @@ impl MarkerUi {
         let dpo = hud_dpo_movie::DpoMovie::new(&assets)?;
         let voting = hud_voting_movie::VotingMovie::new(&assets)?;
         let online_event_log = online_eventlog_movie::OnlineEventLogMovie::new(&assets)?;
+        let spectator = spectator_movie::SpectatorMovie::new(&assets)?;
+        let activity_overlay = activity_overlay_movie::ActivityOverlayMovie::new(&assets)?;
         let online_custom = online_match_movie::OnlineMatchMovie::new(&assets, online_match_movie::CUSTOM)?;
         let online_freeskate = online_match_movie::OnlineMatchMovie::new(&assets, online_match_movie::FREESKATE)?;
         let lobby_browser = lobby_browser_movie::LobbyBrowserMovie::new(&assets)?;
@@ -914,6 +1000,7 @@ impl MarkerUi {
             dimmer: Dimmer::new(&assets)?,
             main:None,
             extras: extras_movie::ExtrasMovie::new(&assets)?,
+            dlc: dlc_movie::DlcMovie::new(&assets)?,
             replay_editor: replay_editor_movie::ReplayEditorMovie::new(&assets)?,
             trick_guide:trick_guide_movie::TrickGuideMovie::new(&assets)?,
             contacts:contacts_movie::ContactsMovie::new(&assets)?,can_show_phone_options:false,
@@ -970,6 +1057,10 @@ impl MarkerUi {
             voting,
             online_event_log,
             online_event_log_open: false,
+            spectator,
+            activity_overlay,
+            activity_signup: activity_signup_movie::ActivitySignUpMovie::default(),
+            online_event_log_hidden: false,
             online_custom,
             online_freeskate,
             lobby_browser,
@@ -1132,9 +1223,11 @@ impl MarkerUi {
                 }
             }
         }
+        // An online game's B Spectate takes the options row the career's Contacts has (PC port
+        // addition).
         let context = HudContext {
             can_show_marker: facts.permissions.is_some(),
-            can_show_options: self.can_show_phone_options,
+            can_show_options: self.can_show_phone_options || facts.spectate,
             marker: facts.permissions,
         };
         let mut commands = Vec::new();
@@ -1159,6 +1252,14 @@ impl MarkerUi {
                 &mut commands,
             );
         }
+        // The Spectate row comes or goes while the menu is up: the menu takes its layout anew.
+        if self.hud.active() && facts.spectate != self.previous.spectate {
+            commands.push(HudCommand::SetScreenState(if context.can_show_options {
+                ScreenState::MaximizedWithOptions
+            } else {
+                ScreenState::MaximizedMarkerOnly
+            }));
+        }
         if facts.successful_sets != self.previous.successful_sets {
             self.data.marker_set_succeeded();
         }
@@ -1176,7 +1277,7 @@ impl MarkerUi {
         for command in commands {
             match command {
                 HudCommand::SetScreenState(state) => {
-                    self.set_state(state, facts.permissions.unwrap_or_default())?
+                    self.set_state(state, facts.permissions.unwrap_or_default(), facts.spectate && !self.can_show_phone_options)?
                 }
                 HudCommand::CentralHudForceOutro=>self.central.force_outro(&self.assets)?,
                 // Frontend audio is retained by its respective movie owner.
@@ -1741,6 +1842,10 @@ impl MarkerUi {
                     self.screens.destroy();
                 }
                 self.extras.tick(&self.assets, &mut main.letterbox)?;
+                self.dlc.tick(&self.assets, &mut main.letterbox)?;
+                if self.dlc.take_outro_complete() {
+                    self.screens.destroy();
+                }
                 for reel in &mut self.skate_reel {
                     reel.tick(&self.assets,&mut main.letterbox)?;
                     if reel.take_outro() {self.screens.destroy();}
@@ -1797,6 +1902,9 @@ impl MarkerUi {
             if self.online_event_log_open {
                 self.online_event_log.tick(&self.assets)?;
             }
+            self.spectator.tick(&self.assets)?;
+            self.activity_overlay.tick(&self.assets)?;
+            self.activity_signup.tick(&self.assets)?;
             self.subtitle.root.tick(&self.assets)?;
             self.chyron.tick(&self.assets)?;
             for screen in self.nis_screens.values_mut() {
@@ -1842,6 +1950,11 @@ impl MarkerUi {
                     Screen::Extras => {
                         if let Some(main)=self.main.as_mut() {
                             self.extras.link(&self.assets,&mut main.letterbox)?;
+                        }
+                    }
+                    Screen::Dlc => {
+                        if let Some(main)=self.main.as_mut() {
+                            self.dlc.link(&self.assets,&mut main.letterbox)?;
                         }
                     }
                 }
@@ -2009,9 +2122,13 @@ impl MarkerUi {
         // ABDHUD's template (0x82fdb878) places hudabd in HUD layer 5, as the score.
         flatten(&self.assets, &self.abd.root, hud_matrix, Colour::default(), renderer.dimensions(), &mut batches)?;
         // HUD2_OnlineEventLog's template (0x82fdb8b8) is placement 5 too.
-        if self.online_event_log_open {
+        if self.online_event_log_open && !self.online_event_log_hidden {
             flatten(&self.assets, &self.online_event_log.root, hud_matrix, Colour::default(), renderer.dimensions(), &mut batches)?;
         }
+        // OnlineSpectatorOverlay's skate.TV overlay, in HUD layer 5 as the event log.
+        flatten(&self.assets, &self.spectator.root, hud_matrix, Colour::default(), renderer.dimensions(), &mut batches)?;
+        // FreeskateActivityOverlayHUD's template (0x82fdb8e8) is placement 5 as well.
+        flatten(&self.assets, &self.activity_overlay.root, hud_matrix, Colour::default(), renderer.dimensions(), &mut batches)?;
         flatten(&self.assets,&self.central.root,IDENTITY,Colour::default(),renderer.dimensions(),&mut batches)?;
         // SignUpHUD's template places actionoverlay2 at placement 0, as hudcentral.
         flatten(&self.assets,&self.action_overlay.root,IDENTITY,Colour::default(),renderer.dimensions(),&mut batches)?;
@@ -2051,6 +2168,10 @@ impl MarkerUi {
             for clip in [&self.online_custom.root, &self.online_freeskate.root] {
                 flatten_projected(&self.assets, clip, IDENTITY, Colour::default(), renderer.dimensions(), &mut batches, true, None)?;
             }
+        }
+        // FreeskateActivity_SignUp's template entry (0x82fdba18) is placement 0.
+        if let Some(root) = &self.activity_signup.root {
+            flatten_projected(&self.assets, root, IDENTITY, Colour::default(), renderer.dimensions(), &mut batches, true, None)?;
         }
         // PhoneList template13 (82fdb428) is type2/g3dFocusLeft, just like
         // StartHub. The authored menu and its intro/outro retain their APT matrices.
@@ -2234,6 +2355,7 @@ impl MarkerUi {
         &mut self,
         state: ScreenState,
         permissions: MarkerPermissions,
+        spectate: bool,
     ) -> RenderResult<()> {
         let minimized = self.data.minimized_menu(self.alert_facts);
         let quick = self.root.named(&["mcQuickMenu"])?;
@@ -2250,9 +2372,9 @@ impl MarkerUi {
                         "main2"
                     },
                 )?;
-                self.refresh(permissions)?;
+                self.refresh(permissions, spectate)?;
             }
-            ScreenState::RefreshMarkerPermissions => self.refresh(permissions)?,
+            ScreenState::RefreshMarkerPermissions => self.refresh(permissions, spectate)?,
             ScreenState::TrySetMarker => quick
                 .named(&["mQuickOpen", "mTextHelp1"])?
                 .goto(&self.assets, "pulse")?,
@@ -2260,7 +2382,12 @@ impl MarkerUi {
         }
         Ok(())
     }
-    fn refresh(&mut self, p: MarkerPermissions) -> RenderResult<()> {
+    /// The quick menu's rows; with `spectate`, the options row is an online game's B Spectate
+    /// (PC port addition): its text, and its button (the unnamed one at depth 28 of `main`) B in
+    /// place of the placement's own.
+    fn refresh(&mut self, p: MarkerPermissions, spectate: bool) -> RenderResult<()> {
+        /// `main`'s button beside the options row.
+        const OPTIONS_BUTTON_DEPTH: i32 = 28;
         let menu = self.root.named(&["mcQuickMenu", "mQuickOpen"])?;
         for (help, allowed, label) in [
             ("mTextHelp0", p.use_allowed, "ID_PHONELIST_GOTO_MARKER"),
@@ -2271,7 +2398,17 @@ impl MarkerUi {
             if help != "mTextHelp2" {
                 text.goto(&self.assets, if allowed { "enabled" } else { "disabled" })?;
             }
-            text.named(&["labelText"])?.text = Some(self.assets.strings[label].clone());
+            text.named(&["labelText"])?.text = Some(if help == "mTextHelp2" && spectate {
+                "Spectate".encode_utf16().collect()
+            } else {
+                self.assets.strings[label].clone()
+            });
+        }
+        if let Some(button) = menu.children.get_mut(&OPTIONS_BUTTON_DEPTH) {
+            let image = if spectate { Some("B".to_owned()) } else { button.clip.properties.get("mButtonImage").cloned() };
+            if let Some(image) = image {
+                button.clip.named(&["mButtonRender"])?.properties.insert("_test".into(), image);
+            }
         }
         for name in ["labelText", "labelText_glow"] {
             menu.named(&["mcTextHeader", name])?.text =
@@ -2536,6 +2673,11 @@ fn flatten_masked(
         mask.occlude(&mut out[start..],size);
         return Ok(());
     }
+    if clip.properties.get("_type").map(String::as_str) == Some(stick_preview::TYPE) {
+        stick_preview::draw(clip, m, colour, size, out, flat)?;
+        mask.occlude(&mut out[start..], size);
+        return Ok(());
+    }
     if clip.properties.get("_type").map(String::as_str) == Some("MapRenderComponent") {
         render_map_component(assets, clip, m, size, out, flat, map)?;
         mask.occlude(&mut out[start..], size);
@@ -2670,6 +2812,10 @@ fn flatten_masked(
             let lines = native_text_lines(units, multiline, width, |c| {
                 font.metrics.mapped_glyph(c).map_or(0., |g| g.advance * scale[0])
             });
+            // PC: the text between the highlight marks (a prompt's Ctrl+A) sits on a selection's
+            // blue, in white; the marks draw nothing.
+            let mut highlighting = false;
+            let mut highlights = Vec::new();
             for (line_index, line) in lines.into_iter().enumerate() {
                 let extent = line
                     .iter()
@@ -2687,9 +2833,39 @@ fn flatten_masked(
                 };
                 // AllocateString82601fe0 supplies line offsets0,0 and scale1.
                 let y = top + line_index as f32 * font.metrics.line_height * scale[1];
-                for (bounds, uv) in glyph_quads(font, t, line, scale, [left + align, y]) {
-                    vertices.extend(quad(m, bounds, uv, c, size, flat));
+                let mut pen = left + align;
+                let mut span: Option<[f32; 2]> = None;
+                let mut lit = Vec::with_capacity(line.len());
+                for &unit in line {
+                    match unit {
+                        TEXT_HIGHLIGHT_START => highlighting = true,
+                        TEXT_HIGHLIGHT_END => highlighting = false,
+                        _ => {
+                            let Some(glyph) = font.metrics.mapped_glyph(unit) else { continue };
+                            let advance = glyph.advance * scale[0];
+                            if highlighting {
+                                span = Some(span.map_or([pen, pen + advance], |[from, _]| [from, pen + advance]));
+                            }
+                            pen += advance;
+                            lit.push(highlighting);
+                        }
+                    }
                 }
+                if let Some([from, to]) = span {
+                    highlights.push([from, y, to, font.metrics.line_height.mul_add(scale[1], y)]);
+                }
+                let white = colour.apply([1.0; 4]);
+                for ((bounds, uv), lit) in glyph_quads(font, t, line, scale, [left + align, y]).zip(lit.into_iter().chain(std::iter::repeat(false))) {
+                    vertices.extend(quad(m, bounds, uv, if lit { white } else { c }, size, flat));
+                }
+            }
+            if !highlights.is_empty() {
+                let blue = colour.apply(TEXT_HIGHLIGHT_COLOUR);
+                out.push(Batch {
+                    texture: None,
+                    wrapped: false,
+                    vertices: highlights.into_iter().flat_map(|bounds| quad(m, bounds, [0.0; 4], blue, size, flat)).collect(),
+                });
             }
             out.push(Batch {
                 texture: Some(t.name.clone()),
@@ -2928,6 +3104,12 @@ fn clip_polygon(polygon: &[[f32; 10]], axis: usize, bound: f32, below: bool) -> 
 /// SkateAptString82a70b28 wraps multiline fields at the last space and treats
 /// '^' as an authored forced break. An unbroken word is never split. Explicit
 /// newlines are retained for the existing host-generated multiline controls.
+/// The marks a text puts around what it shows selected (PC: the lobby chat's Ctrl+A), private
+/// use characters no font draws, and the selection's colour, a Windows selection's blue.
+pub(super) const TEXT_HIGHLIGHT_START: u16 = 0xE000;
+pub(super) const TEXT_HIGHLIGHT_END: u16 = 0xE001;
+const TEXT_HIGHLIGHT_COLOUR: [f32; 4] = [0.0, 0.471, 0.843, 1.0];
+
 fn native_text_lines<'a>(units: &'a [u16], multiline: bool, width: f32,
     advance: impl Fn(u16) -> f32) -> Vec<&'a [u16]> {
     let mut lines = Vec::new();

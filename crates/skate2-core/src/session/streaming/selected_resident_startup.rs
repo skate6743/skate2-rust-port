@@ -376,6 +376,17 @@ impl SelectedResidentStartup {
     pub(crate) fn was_requested(&self, id: CollectionId) -> bool {
         self.requested.contains(&id)
     }
+    /// The collection's parent (`mParentCollectionMap`, from its XSM entry) when that is a
+    /// collection of its own, as the global collection holding an additional world's arenas is
+    /// for its empty cells.
+    pub(crate) fn parent(&self, id: CollectionId) -> Result<Option<CollectionId>, SelectedResidencyError> {
+        let Some(collection) = self.catalog.collection(id.0).map_err(report)? else { return Ok(None) };
+        let parent = CollectionId(collection.parent_id);
+        if parent == crate::collection_parent_manager::INVALID_PARENT_COLLECTION_ID {
+            return Ok(None);
+        }
+        Ok(self.catalog.collection(parent.0).map_err(report)?.map(|_| parent))
+    }
     pub(crate) fn selected(&self) -> Option<CollectionId> {
         self.selected
     }

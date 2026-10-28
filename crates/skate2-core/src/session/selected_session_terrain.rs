@@ -159,6 +159,8 @@ pub(crate) struct SelectedSessionTerrain<Effects: WorldStreamEffects> {
     /// The dynamic hull manager's own hull loader (`cChallengeDynamicHullManager::HullLoader`),
     /// made at its first hull.
     dynamic_hulls: Option<crate::selected_hull_loader::SelectedHullLoader>,
+    /// `GameModule::mAdditionalStreamHandle`'s world.
+    additional: Option<additional::AdditionalWorld>,
 }
 
 /// `GameModule::GameLoad`'s network branch: the simulation focus locked at the game's challenge
@@ -201,6 +203,7 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
             area: None,
             hulls: None,
             dynamic_hulls: None,
+            additional: None,
         }
     }
 
@@ -649,19 +652,49 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
     pub(crate) fn try_area_loaded(&self, position: [f32; 3], radius: f32) -> Result<bool, SelectedSessionTerrainError> {
         use SelectedSessionTerrainError as E;
         let space = self.focus_space.as_ref().ok_or(E::Focus("simulation XSS missing"))?;
+        let additional = self.additional.as_ref().and_then(additional::AdditionalWorld::selectable);
         let terrain = self.terrain.as_ref().ok_or(E::Pending)?;
+        let known = |id| {
+            std::iter::once(&**space).chain(additional).any(|space| space.collections.iter().any(|entry| entry.lod == 0 && entry.id == id))
+        };
         crate::streaming::area_loaded::is_area_loaded(
             position,
             radius,
             crate::game_stream::StreamKind::Simulation,
-            |id| Ok(!space.collections.iter().any(|entry| entry.lod == 0 && entry.id == id) || terrain.collection_registered(id)),
+            |id| Ok(!known(id) || terrain.collection_registered(id)),
             |at| Ok(self.focus_selection(at)?.iter().map(|collection| collection.id).collect()),
         )
     }
 
+    /// `FindCollections` without a focus stream XML: each Sim file's `cStreamFile::FindCollections`
+    /// (`0x824df068`), BAM's first, then a loaded additional world's merged in, nearest first, at
+    /// most `cap`. `xml` is BAM's stream XML when `kEnableStreamXml` has its file select through
+    /// it; the additional worlds ship none (no `data\stream\<world>_Sim.xml`), so theirs is the
+    /// radius query.
+    fn spatial_selection(
+        &self,
+        space: &skate2_formats::stream::CollectionSpace,
+        xml: Option<&skate2_formats::stream_xml::StreamXml>,
+        position: [f32; 3],
+        radius: f32,
+        cap: usize,
+    ) -> Vec<skate2_formats::stream::FocusCollection> {
+        use skate2_formats::stream::{MAX_FOCUS_ENTRIES, merge_focus_collections};
+        let first = match xml {
+            Some(xml) => xml.focus_collections(space, position, radius, MAX_FOCUS_ENTRIES),
+            None => space.focus_collections(position, radius, MAX_FOCUS_ENTRIES),
+        };
+        let mut selected = match self.additional.as_ref().and_then(additional::AdditionalWorld::selectable) {
+            Some(more) => merge_focus_collections([first, more.focus_collections(position, radius, MAX_FOCUS_ENTRIES)]),
+            None => first,
+        };
+        selected.truncate(cap);
+        selected
+    }
+
     /// `cAssetStreamSystem::FindCollections` (`0x824dfea8`) for the simulation focus at
-    /// `position`: its XSS, or with `kEnableStreamXml` the challenge's stream XML, within the
-    /// focus radius, at most `kSimMaxFocusCollections`.
+    /// `position`: every Sim file's selection, BAM's through its stream XML with
+    /// `kEnableStreamXml`, within the focus radius, at most `kSimMaxFocusCollections`.
     fn focus_selection(&self, position: [f32; 3]) -> Result<Vec<skate2_formats::stream::FocusCollection>, SelectedSessionTerrainError> {
         use SelectedSessionTerrainError as E;
         let cap = self
@@ -682,18 +715,14 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
                     selected.sort_by(|a, b| a.distance_xz.total_cmp(&b.distance_xz));
                     selected
                 }
-                None => space.focus_collections(position, radius, 16),
+                None => self.spatial_selection(space, None, position, radius, 16),
             });
         }
-        Ok(if let Some(xml) = self.focus_xml.as_ref() {
-            if self.source.cvars.try_enable_stream_xml().map_err(E::Cvar)? {
-                xml.focus_collections(space, position, radius, cap.min(16))
-            } else {
-                space.focus_collections(position, radius, cap.min(16))
-            }
-        } else {
-            space.focus_collections(position, radius, cap.min(16))
-        })
+        let xml = match self.focus_xml.as_ref() {
+            Some(xml) if self.source.cvars.try_enable_stream_xml().map_err(E::Cvar)? => Some(xml),
+            _ => None,
+        };
+        Ok(self.spatial_selection(space, xml, position, radius, cap.min(16)))
     }
 
     fn try_update_focus_inner(
@@ -752,6 +781,9 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
             .try_stream_collections_with_props(&selected, self.userdata, props.as_mut())
     }
 }
+
+#[path = "selected_session_terrain_additional.rs"]
+mod additional;
 
 #[cfg(test)]
 #[path = "selected_session_terrain_tests.rs"]

@@ -291,3 +291,7 @@ impl<N: fmt::Debug, D: fmt::Debug> fmt::Display for InputPadConversionError<N, D
 pub(crate) mod device;
 #[path = "../input_device_manager.rs"]
 pub(crate) mod device_manager;
+#[path = "../input_vibration.rs"]
+pub(crate) mod vibration;
+#[path = "../input_rumble_manager.rs"]
+pub(crate) mod rumble;

@@ -27,6 +27,33 @@ pub(crate) struct NearbySkater {
     pub lower_body: SkeletonRootVector,
     pub unique_id: u32,
 }
+/// Another online player's skater as the local skater's scoring collects it: its game slot and
+/// the world positions of its head, hips and feet, from the pose its replay frames show (PC
+/// port: the original simulated every player's skater and read its skeleton output).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RemoteScoringSkater {
+    pub slot: u8,
+    pub head: [f32; 3],
+    pub hips: [f32; 3],
+    pub left_foot: [f32; 3],
+    pub right_foot: [f32; 3],
+}
+impl RemoteScoringSkater {
+    /// `CollectNearbyEntitiesForScoring`'s body points of a skater: the upper body halfway from
+    /// the hips to the head, the lower body the hips' and feet's mean with the hips counted
+    /// twice.
+    #[must_use]
+    pub fn nearby(&self, unique_id: u32) -> NearbySkater {
+        NearbySkater {
+            upper_body: SkeletonRootVector { xyz: std::array::from_fn(|i| (self.head[i] + self.hips[i]) * 0.5), w: None },
+            lower_body: SkeletonRootVector {
+                xyz: std::array::from_fn(|i| ((self.hips[i] + self.hips[i]) + self.left_foot[i] + self.right_foot[i]) * 0.25),
+                w: None,
+            },
+            unique_id,
+        }
+    }
+}
 #[derive(Clone)]
 pub(crate) struct NearbyDmo {
     pub transform: SkeletonRootMatrix,

@@ -39,9 +39,16 @@ pub(super) struct Hub {
     popup: Option<Popup>,
 }
 
+impl Hub {
+    /// A sound of the online front end from outside the hub's screens.
+    pub(super) fn play(&mut self, sound: FeSoundRequest) {
+        self.sounds.push(sound);
+    }
+}
+
 impl<T, C> SelectedLiveSession<T, C> {
     /// The session as the hub's menus read it.
-    fn online_hub_lobby(&self) -> Option<Lobby> {
+    pub(super) fn online_hub_lobby(&self) -> Option<Lobby> {
         let game = self.online.game.as_ref()?;
         let local = self.online.user_id?;
         let in_round = self.online.round.is_some();
@@ -58,6 +65,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             changing_location: self.online.changing_location.is_some(),
             players: game.players.iter().filter(|player| player.user_id != local).map(|player| (player.user_id, player.name.clone())).collect(),
             participants: game.players.len(),
+            min_participants: challenge::min_participants(game.attributes.challenge_type),
+            spectatable: game.remotes.keys().copied().filter(|&user_id| self.online_can_spectate(user_id)).collect(),
+            activities: self.online_hub_activities(),
+            proposal: self.online_proposal_pending(),
         })
     }
 
@@ -105,11 +116,27 @@ impl<T, C> SelectedLiveSession<T, C> {
             self.close_online_hub()?;
             return Ok(input);
         };
+        // FE state 67, over the hub or up on its own from the activity overlay, holds the front
+        // end's pause as the hub does (`gFEStateInfo[67].mbPause`).
+        if self.online.activity.sign_up.is_some() {
+            self.set_online_hub_paused(true)?;
+            if focused {
+                self.update_online_activity_signup(input)?;
+            }
+            if !self.online_hub_open() {
+                self.set_online_hub_paused(false)?;
+            }
+            return Ok(PauseMenuInput::default());
+        }
         if self.online.hub.screen.is_some() {
             if focused {
                 self.update_online_hub_screen(input)?;
             }
             return Ok(PauseMenuInput::default());
+        }
+        // FE state 67 can close on its own (its time out, its proposal's end): its pause goes.
+        if !self.online_hub_open() {
+            self.set_online_hub_paused(false)?;
         }
         let Some(hub) = self.online.hub.menu.as_mut() else {
             if focused && can_open && input.back && !self.skater_being_jacked()? {
@@ -137,18 +164,19 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
 
     /// `OnEnter` 0x8268a3c0: the root menu anew.
-    fn reopen_online_hub(&mut self, lobby: Lobby) {
+    pub(super) fn reopen_online_hub(&mut self, lobby: Lobby) {
         let mut hub = Controller::open(lobby);
         self.online.hub.calls = hub.take_calls();
         self.online.hub.menu = Some(hub);
         self.online.hub.opened = true;
     }
 
-    /// `OnlineFeManager::Exit` 0x8266c418: every online front-end state pops.
+    /// `OnlineFeManager::Exit` 0x8266c418: every online front-end state pops, FE state 67's too.
     pub(super) fn close_online_hub(&mut self) -> Result<(), SelectedLiveError> {
         if self.online.hub.menu.take().is_some() || self.online.hub.screen.take().is_some() {
             trace(format_args!("online hub closes"));
         }
+        self.online_close_activity_signup();
         self.online.hub.calls.clear();
         self.set_online_hub_paused(false)
     }
@@ -343,6 +371,11 @@ impl<T, C> SelectedLiveSession<T, C> {
                 self.online.hub.central_messages.push(CentralMessage { hal_id: "ID_CENTRALMESSAGE_PLAYERKICKED".to_owned(), colour: 0, args: Default::default(), audio_hook: 0 });
                 self.close_online_hub()?;
             }
+            Action::Spectate(user_id) => {
+                self.close_online_hub()?;
+                self.online_start_spectating(user_id)?;
+            }
+            Action::ActivitySignUp(key) => self.online_open_activity_signup(key),
         }
         Ok(())
     }
@@ -376,10 +409,11 @@ impl<T, C> SelectedLiveSession<T, C> {
         Ok(())
     }
 
-    /// Whether the hub or a screen over it is up (FE state 44, 68 or 69 on the stack).
+    /// Whether the hub or a screen over it is up (FE state 44, 68 or 69 on the stack), or FE
+    /// state 67.
     #[must_use]
     pub fn online_hub_open(&self) -> bool {
-        self.online.hub.menu.is_some() || self.online.hub.screen.is_some()
+        self.online.hub.menu.is_some() || self.online.hub.screen.is_some() || self.online.activity.sign_up.is_some()
     }
 
     /// Whether the sign-in's popup or a notice is up over the single player game.
@@ -396,7 +430,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// The popup over the game, the hub or a screen over it, for the hub's movie.
     #[must_use]
     pub fn online_hub_popup(&self) -> Option<Popup> {
-        self.online.hub.popup.clone().or_else(|| self.online.hub.menu.as_ref().and_then(Controller::popup).cloned())
+        self.online.hub.popup.clone().or_else(|| self.online_activity_popup()).or_else(|| self.online.hub.menu.as_ref().and_then(Controller::popup).cloned())
     }
 
     /// The hub's screen opened since the last call, and its `SetScreenState` calls since then.

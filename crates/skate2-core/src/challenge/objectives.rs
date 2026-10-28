@@ -798,7 +798,12 @@ fn activation_mode(db: &AttribDb, key: u64) -> i32 {
 /// `GetAllCurrentlyCollidingTriggers` (`0x82d4e268`): both lists become the
 /// challenge-group triggers the player collides with, global then local id.
 fn take_colliding_triggers(world: &mut World, group: u32, index: usize) {
-    let colliding = world.player.colliding_triggers.clone();
+    let player = world.objectives.group_index(group).map(|gi| world.objectives.groups[gi].player);
+    let colliding = player
+        .and_then(|player| world.player_states.iter().find(|(state_player, _)| *state_player == player))
+        .map_or(&world.player, |(_, state)| state)
+        .colliding_triggers
+        .clone();
     let Some(g) = group_mut(world, group) else { return };
     let o = &mut g.objectives[index];
     o.trigger_volumes.clear();

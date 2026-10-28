@@ -37,6 +37,13 @@ pub(crate) fn install() {
     std::panic::set_hook(Box::new(move |info| {
         let thread = std::thread::current();
         let thread_name = thread.name().unwrap_or("<unnamed>");
+        // The game stops with the SIM or window thread: so do the pads' motors, which keep
+        // their last command after the process.
+        if matches!(thread_name, "sk8 SIM" | "main") {
+            crate::sdl_pads::silence();
+            #[cfg(windows)]
+            crate::windows_pad_platform::silence_xinput();
+        }
         let reason = info.to_string();
         let report = format!(
             "Skate 2 PC panic\nVersion: {}\nExecutable: {}\nGPU: {}\nThread: {thread_name} ({:?})\n\n{reason}\n\nBacktrace (captured automatically):\n{}\n",

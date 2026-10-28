@@ -1,18 +1,72 @@
 //! Windows API boundary only; native mapping, polling cadence and caches live in core.
-use crate::sdl_pads::SdlPads;
+use crate::{pad_sticks::PadSticks, sdl_pads::SdlPads};
 use skate2_core::{
     PadCapabilitiesResult, PadPlatform, PadStateResult, PadVibration, XboxPadSample,
 };
+
+const STILL: PadVibration = PadVibration { left: 0, right: 0 };
 
 pub(crate) struct WindowsPadPlatform {
     /// Explicit diagnostic replay sample for controller zero; None reads XInput.
     pub(crate) demo_sample: Option<XboxPadSample>,
     /// Pads XInput does not list, in the slots it leaves empty.
     sdl: Option<SdlPads>,
+    /// The vibration the game last set on each slot.
+    requested: [PadVibration; 4],
+    /// PC: the window has the focus. Without it the game takes no pad input and its motors stay
+    /// still.
+    focused: bool,
+    /// PC: the stick settings on each sample, and each slot's sample as its pad reported it.
+    sticks: PadSticks,
 }
 impl WindowsPadPlatform {
     pub(crate) fn new(demo_sample: Option<XboxPadSample>, sdl: Option<SdlPads>) -> Self {
-        Self { demo_sample, sdl }
+        Self { demo_sample, sdl, requested: [STILL; 4], focused: false, sticks: PadSticks::default() }
+    }
+    /// The stick settings the next samples take.
+    pub(crate) fn set_stick_settings(&mut self, settings: skate2_core::stick_settings::ControllerSettings) {
+        self.sticks.set_settings(settings);
+    }
+    /// A slot's sticks as its pad last reported them: left x and y, then right.
+    pub(crate) fn raw_sticks(&self, slot: usize) -> Option<[i16; 4]> {
+        self.sticks.raw(slot)
+    }
+    /// The window gained or lost the focus: the motors stop, or take what the game last set.
+    pub(crate) fn set_focused(&mut self, focused: bool) {
+        if self.focused == focused {
+            return;
+        }
+        self.focused = focused;
+        for (index, vibration) in (0u32..).zip(self.requested) {
+            if vibration != STILL {
+                self.send(index, if focused { vibration } else { STILL });
+            }
+        }
+    }
+    fn send(&mut self, index: u32, vibration: PadVibration) -> u32 {
+        match xinput::set_state(index, [vibration.left, vibration.right]) {
+            Ok(()) => 0,
+            Err(_) if self.sdl.as_mut().is_some_and(|sdl| sdl.vibrate(index, vibration)) => 0,
+            Err(error) => error.kind().to_u32(),
+        }
+    }
+}
+impl Drop for WindowsPadPlatform {
+    /// XInput's motors keep their last speed after the game: leave every slot still.
+    fn drop(&mut self) {
+        silence_xinput();
+        if let Some(sdl) = self.sdl.as_mut() {
+            for index in 0..4 {
+                sdl.vibrate(index, STILL);
+            }
+        }
+    }
+}
+/// Every XInput slot still; the panic hook's too, as the process may end without dropping the
+/// pads' owner.
+pub(crate) fn silence_xinput() {
+    for index in 0..4 {
+        let _ = xinput::set_state(index, [0, 0]);
     }
 }
 #[derive(Debug)]
@@ -60,16 +114,17 @@ impl PadPlatform for WindowsPadPlatform {
                         state.packet_number
                     );
                 }
-                (state.packet_number, sample)
+                (state.packet_number, self.sticks.apply(index, sample))
             }
             Err(error) => match self.sdl.as_mut().and_then(|sdl| sdl.claim(index)) {
                 Some((packet, sample)) => {
                     if index == 0 && std::env::var_os("SKATE2_TRACE_XINPUT").is_some() {
                         eprintln!("sdl slot=0 packet={packet} sample={sample:?}");
                     }
-                    (packet, sample)
+                    (packet, self.sticks.apply(index, sample))
                 }
                 None => {
+                    self.sticks.clear(index);
                     return Ok(PadStateResult {
                         status: error.kind().to_u32(),
                         state: None,
@@ -137,20 +192,10 @@ impl PadPlatform for WindowsPadPlatform {
         Ok(caps)
     }
     fn set_state(&mut self, index: u32, vibration: PadVibration) -> Result<u32, Self::Error> {
-        Ok(
-            match xinput::set_state(index, [vibration.left, vibration.right]) {
-                Ok(()) => 0,
-                Err(_)
-                    if self
-                        .sdl
-                        .as_mut()
-                        .is_some_and(|sdl| sdl.vibrate(index, vibration)) =>
-                {
-                    0
-                }
-                Err(error) => error.kind().to_u32(),
-            },
-        )
+        if let Some(requested) = usize::try_from(index).ok().and_then(|slot| self.requested.get_mut(slot)) {
+            *requested = vibration;
+        }
+        Ok(self.send(index, if self.focused { vibration } else { STILL }))
     }
 }
 

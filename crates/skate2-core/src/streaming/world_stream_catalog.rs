@@ -424,6 +424,31 @@ impl WorldStreamCatalog {
             }))
     }
 
+    /// The registered file of `kind` with these paths: a stream's own file of that kind, found
+    /// from the paths its basename derives (`StreamPaths::derive`), as the native finds a game
+    /// stream's `cStreamFile` through its handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CatalogError::Poisoned`] if a prior panic poisoned the shared
+    /// host-policy lock.
+    pub fn file_with_paths(
+        &self,
+        kind: StreamKind,
+        paths: &StreamPaths,
+    ) -> Result<Option<FileRegistrationSnapshot>, CatalogError> {
+        let id = self
+            .lock()?
+            .files
+            .iter()
+            .find(|(_, file)| file.kind == kind && file.paths.as_ref() == paths)
+            .map(|(id, _)| id.clone());
+        match id {
+            Some(id) => self.file(&id),
+            None => Ok(None),
+        }
+    }
+
     /// Returns coherent catalog counts from one lock acquisition.
     ///
     /// # Errors

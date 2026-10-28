@@ -132,6 +132,12 @@ mod field {
     pub const CHALLENGE_TYPE: u64 = 0x02b8_28cc_db47_85e4;
     pub const LOCATION: u64 = 0xf1c6_d5fa_4a23_951e;
     pub const ICON_LOCATION: u64 = 0x0717_c5a8_5c96_fd90;
+    /// `challenge_global_data`'s world location, the `fe_locations` RefSpec
+    /// `TeleportLocalPlayerStartChallenge` (`0x828a9678`) reads.
+    pub const WORLD_LOCATION: u64 = 0x6c81_4db5_9f16_ebd2;
+    /// `fe_locations.WorldFile` and `IsDLC`.
+    pub const WORLD_FILE: u64 = 0x116c_a244_49c4_ce44;
+    pub const IS_DLC: u64 = 0xd0cc_ffee_3455_65a4;
     /// The `challenge_local_data` challenges that must all be complete before
     /// `PopulateMenuItemsVector` lists a challenge.
     pub const MENU_PREREQUISITES: u64 = 0xecec_13ce_a289_9d81;
@@ -385,9 +391,8 @@ impl StuffMenu {
         self.populate_menus(world);
     }
 
-    /// `PopulateMenus` (`0x8263e170`). Without `CreateASpotDataManager` light data and without
-    /// `sGameInfo.additionalWorldLocation`, the Create-a-Spot and downloaded career lists stay
-    /// empty.
+    /// `PopulateMenus` (`0x8263e170`). Without `CreateASpotDataManager` light data the
+    /// Create-a-Spot list stays empty.
     pub fn populate_menus(&mut self, world: &World) {
         let active = self.populate_active;
         self.populate_challenges(world);
@@ -429,7 +434,7 @@ impl StuffMenu {
             }
         }
         self.populate_dlc_spawn_points(world);
-        self.clear(cat::DLC_CAREER);
+        self.populate_dlc_career(world);
         self.populate_property(world);
     }
 
@@ -578,6 +583,48 @@ impl StuffMenu {
                 .unwrap_or_default()
                 .to_owned();
             self.push(cat::DLC_SPAWN_POINTS, hal_id, location);
+        }
+    }
+
+    /// `PopulateMenuItemsVector_DlcCareer` (`0x82632fe0`) out of free skate, with `PopulateMenus`'
+    /// flags (1 for the available challenges, 2 for the completed): with an additional world
+    /// location (`sGameInfo.additionalWorldLocation`) that is downloadable content's (`IsDLC`),
+    /// its challenges (`cChallengeDLCManager::GetDLCChallenges` 0x825a8d18: the activities whose
+    /// world location it is), available or complete, a completed Goto left out, whose
+    /// `ChallengeIcon` shows on the map.
+    fn populate_dlc_career(&mut self, world: &World) {
+        self.clear(cat::DLC_CAREER);
+        let Some(location) = world.additional_world_location else { return };
+        let is_dlc = world.db.attribute(class::FE_LOCATIONS, location, field::IS_DLC).and_then(|a| a.bool(0)) == Some(true);
+        if !is_dlc {
+            return;
+        }
+        let flags = if self.populate_active { 1 } else { 2 };
+        let challenges: Vec<u64> = world
+            .activities
+            .activities
+            .iter()
+            .filter(|activity| activity_world_location(world, activity) == Some(location))
+            .map(|activity| activity.key)
+            .collect();
+        for challenge in challenges {
+            let available = map_icons::is_active(world, challenge) && flags & 1 == 1;
+            let completed = map_icons::is_complete(world, challenge) && flags & 2 == 2;
+            if !available && !completed {
+                continue;
+            }
+            let Some(activity) = world.activities.find(challenge) else { continue };
+            if completed && global_i32(world, activity, field::CHALLENGE_TYPE) == TYPE_UNLISTED_COMPLETED {
+                continue;
+            }
+            let icon = world.activities.activities[activity]
+                .global_data
+                .and_then(|(c, k)| world.db.attribute(c, k, field::CHALLENGE_ICON))
+                .and_then(|a| a.ref_spec(0))
+                .map_or(0, |(_, key)| key);
+            if world.db.layout_byte(class::MAP_ICON, icon, DISPLAY_ON_FE_MAP_BYTE) == 1 {
+                self.push(cat::DLC_CAREER, title(world, challenge), challenge);
+            }
         }
     }
 
@@ -1442,6 +1489,36 @@ fn map_icons_view(icons: &[MapIcon]) -> Vec<MapIconView> {
 pub fn challenge_location(world: &World, challenge: u64) -> Option<String> {
     let activity = world.activities.find(challenge)?;
     global_text(world, activity, field::LOCATION).filter(|name| !name.is_empty())
+}
+
+/// The challenge's world location (an `fe_locations` key), which
+/// `TeleportLocalPlayerStartChallenge` (`0x828a9678`) teleports into.
+#[must_use]
+pub fn challenge_world_location(world: &World, challenge: u64) -> Option<u64> {
+    let activity = world.activities.find(challenge)?;
+    activity_world_location(world, &world.activities.activities[activity])
+}
+
+fn activity_world_location(world: &World, activity: &super::activity::Activity) -> Option<u64> {
+    let (class, key) = activity.global_data?;
+    world.db.attribute(class, key, field::WORLD_LOCATION)?.ref_spec(0).map(|(_, location)| location)
+}
+
+/// An `fe_locations` world location's `WorldFile`; none where `IsMainWorldLocation`
+/// (`0x828a95b8`) holds for the invalid key or a missing collection.
+#[must_use]
+pub fn location_world_file(world: &World, location: u64) -> Option<String> {
+    if location == u64::MAX || !world.db.has_collection(class::FE_LOCATIONS, location) {
+        return None;
+    }
+    world.db.attribute(class::FE_LOCATIONS, location, field::WORLD_FILE)?.text(0).map(str::to_owned)
+}
+
+/// An `fe_locations` collection's start location (layout text 1), which
+/// `MapBackEndManager::TeleportToFELocation` (`0x82565350`) teleports to.
+#[must_use]
+pub fn location_spawn(world: &World, location: u64) -> Option<String> {
+    world.db.layout_text(class::FE_LOCATIONS, location, 1).map(str::to_owned).filter(|name| !name.is_empty())
 }
 
 #[cfg(test)]

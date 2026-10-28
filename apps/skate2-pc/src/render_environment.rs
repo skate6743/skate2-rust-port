@@ -46,6 +46,7 @@ use skate2_formats::{
     render::GPU_BUFFER_RESOURCE_TYPE_ID,
     rw4::Arena as Rw4Arena,
 };
+use skate2_core::challenge::attrib_db::{AttribDb, Attribute};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// `GetWorldRenderLocation` default when neither a location nor the marquee
@@ -54,6 +55,8 @@ const WORLD_LOCATION_KEY: u64 = 0xec76_3034_105b_866b;
 const SUN_VECTOR_KEY: u64 = 0x1c70_4903_08c5_34f2;
 /// Layout byte 3: `UpdateRenderParams` then asks `SunLightMan` for the sun.
 const SUN_MAP_FLAG_KEY: u64 = 0x9b49_7535_feaf_c4b5;
+/// `default_sh_probe`: nine float3 coefficients.
+const DEFAULT_SH_PROBE_KEY: u64 = 0xf45d_fcab_6ec1_95cd;
 const FOG_COLOUR_KEY: u64 = 0x6168_551a_6d8b_1750;
 const FOG_POWER_KEY: u64 = 0x9807_5c22_d130_b9b1;
 const FOG_START_KEY: u64 = 0xff6a_0d91_f34f_f75a;
@@ -292,8 +295,13 @@ pub(crate) struct EnvironmentLighting {
     /// Every `material_sky` collection's two `m_params` elements.
     pub(crate) skies: BTreeMap<u64, [[f32; 4]; 2]>,
     material_params: BTreeMap<(u64, u64), Vec<[f32; 4]>>,
+    /// The classes whose definitions declare `m_params`.
+    m_params_classes: Vec<u64>,
     pub(crate) character_attributes: Vec<[f32; 4]>,
     pub(crate) use_world_sh_probes: bool,
+    /// `use_worldpainter`, the location's layout byte 0: `UpdateWorldPainterAttribs` 0x82848c08
+    /// takes the WorldPainter keys only when it is set, else the location's references.
+    pub(crate) use_worldpainter: bool,
     pub(crate) default_irradiance: [[f32; 4]; 9],
     pub(crate) vehicle_lod_squared: [f32; 3],
     /// Materials whose `m_params` resolve to `material_sky/default`'s storage,
@@ -431,6 +439,12 @@ impl VaultReader<'_> {
     }
 }
 
+/// Element `index` of a database attribute as big-endian floats; `None` when it is shorter.
+pub(crate) fn attribute_floats<const N: usize>(attribute: &Attribute<'_>, index: usize) -> Option<[f32; N]> {
+    let bytes = attribute.value_bytes(index)?;
+    (bytes.len() >= N * 4).then(|| std::array::from_fn(|lane| f32::from_be_bytes(bytes[lane * 4..lane * 4 + 4].try_into().expect("four bytes"))))
+}
+
 pub(crate) fn with_vault<T>(
     mounts: &MountSet,
     read: impl FnOnce(&VaultReader<'_>) -> RenderResult<T>,
@@ -512,6 +526,7 @@ impl EnvironmentLighting {
 
             let location_class = string_hash64("render_locations");
             let use_world_sh_probes = reader.bytes(location_class, location_key, string_hash64("use_world_sh_probes"), 1)?[0] != 0;
+            let use_worldpainter = reader.bytes(location_class, location_key, string_hash64("use_worldpainter"), 1)?[0] != 0;
             let probe = reader.bytes(
                 location_class,
                 location_key,
@@ -712,6 +727,7 @@ impl EnvironmentLighting {
                     .any(|definition| definition.key == m_params);
                 declares_m_params.insert(class_id, declared);
             }
+            let m_params_classes = declares_m_params.iter().filter(|(_, declared)| **declared).map(|(&class, _)| class).collect();
             let sky_storage = reader.location(sky_class, DEFAULT_COLLECTION_KEY, m_params)?;
             let mut material_params = BTreeMap::new();
             let mut sky_blended = BTreeSet::new();
@@ -732,6 +748,7 @@ impl EnvironmentLighting {
                 postfx,
                 envattributes,
                 use_world_sh_probes,
+                use_worldpainter,
                 default_irradiance,
                 sun_vector,
                 view_light_direction,
@@ -749,11 +766,120 @@ impl EnvironmentLighting {
                 fogs,
                 skies,
                 material_params,
+                m_params_classes,
                 character_attributes,
                 vehicle_lod_squared,
                 sky_blended,
             })
         })
+    }
+
+    /// The fog, sky, bloom, auto-exposure and colour cube collections of every vault `db` holds
+    /// that the game's own lack: the downloadable content's (`cVaultManager::StartDLCLoad`
+    /// 0x82ab8b50 adds them to their classes), which its locations' references name.
+    pub(crate) fn with_vault_collections(&self, mounts: &MountSet, db: &AttribDb) -> RenderResult<Self> {
+        let mut environment = self.clone();
+        let fog_class = string_hash64("material_fog");
+        for &key in db.collections(fog_class) {
+            if environment.fogs.contains_key(&key) {
+                continue;
+            }
+            let float = |attribute| db.attribute(fog_class, key, attribute).and_then(|value| value.f32(0));
+            let colour = db.attribute(fog_class, key, FOG_COLOUR_KEY).and_then(|value| attribute_floats::<4>(&value, 0));
+            if let (Some(colour), Some(power), Some(start), Some(strength), Some(end)) =
+                (colour, float(FOG_POWER_KEY), float(FOG_START_KEY), float(FOG_STRENGTH_KEY), float(FOG_END_KEY))
+            {
+                environment.fogs.insert(key, FogAttributes { colour, power, start, strength, end });
+            }
+        }
+        let sky_class = string_hash64("material_sky");
+        for &key in db.collections(sky_class) {
+            if environment.skies.contains_key(&key) {
+                continue;
+            }
+            // `ChangeCollection` 0x8283c038 reads elements 0 and 1; a missing one is zeroes.
+            let params = db.attribute(sky_class, key, string_hash64("m_params"));
+            let element = |index| params.as_ref().and_then(|params| attribute_floats::<4>(params, index)).unwrap_or([0.0; 4]);
+            environment.skies.insert(key, [element(0), element(1)]);
+        }
+        // The content's world materials' `m_params` (`cMaterialScope::Resolve` 0x82e17a98), and
+        // whether each resolves to `material_sky/default`'s storage, which the sky blend writes.
+        let m_params = string_hash64("m_params");
+        let sky_storage = db.attribute(sky_class, DEFAULT_COLLECTION_KEY, m_params).and_then(|params| params.data(0));
+        for &class in &self.m_params_classes {
+            for &key in db.collections(class) {
+                if environment.material_params.contains_key(&(class, key)) {
+                    continue;
+                }
+                let Some(params) = db.attribute(class, key, m_params) else { continue };
+                let values: Vec<[f32; 4]> = (0..params.len()).filter_map(|index| attribute_floats::<4>(&params, index)).collect();
+                if values.is_empty() {
+                    continue;
+                }
+                if class == sky_class && sky_storage.is_some() && params.data(0) == sky_storage {
+                    environment.sky_blended.insert((class, key));
+                }
+                environment.material_params.insert((class, key), values);
+            }
+        }
+        let mut postfx = (*environment.postfx).clone();
+        postfx.add_vault_collections(mounts, db)?;
+        environment.postfx = std::sync::Arc::new(postfx);
+        Ok(environment)
+    }
+
+    /// `cMsgSetWorldRenderLocation` (`LooseWorldPresentation::SetWorldRenderLocation` 0x827d53a8)
+    /// with a world location's key: its `render_locations` collection, which
+    /// `RenderMan::UpdateRenderParams` 0x82852780 changes to (and then
+    /// `SHLightingMan::UpdateDefaultLightProbe`): the sun vector and sun-map flag, the default SH
+    /// probe, the probe, shadow and WorldPainter flags, and the fog, sky, auto-exposure, bloom and
+    /// colour cube references. Only downloadable content defines world locations' collections
+    /// (`dlc_parkade`, ...); without one, `GetWorldRenderLocation` 0x827d0cc8 keeps the default
+    /// location: `None`.
+    pub(crate) fn with_world_render_location(&self, db: &AttribDb, key: u64) -> RenderResult<Option<Self>> {
+        let class = string_hash64("render_locations");
+        if !db.has_collection(class, key) {
+            return Ok(None);
+        }
+        let value = |attribute: u64| {
+            db.attribute(class, key, attribute)
+                .ok_or_else(|| format!("render location {key:016x}: attribute {attribute:016x} absent"))
+        };
+        let flag = |name: &str| -> RenderResult<bool> {
+            value(string_hash64(name))?.bool(0).ok_or_else(|| format!("render location {key:016x}: {name} unreadable").into())
+        };
+        let mut environment = self.clone();
+        environment.sun_vector = attribute_floats::<3>(&value(SUN_VECTOR_KEY)?, 0)
+            .ok_or_else(|| format!("render location {key:016x}: sun vector unreadable"))?;
+        environment.sun_direction_map_requested =
+            value(SUN_MAP_FLAG_KEY)?.bool(0).ok_or_else(|| format!("render location {key:016x}: sun map flag unreadable"))?;
+        environment.use_worldpainter = flag("use_worldpainter")?;
+        environment.use_world_sh_probes = flag("use_world_sh_probes")?;
+        environment.world_shadow.enabled = flag("use_world_onto_object_shadow")?;
+        let probe = value(DEFAULT_SH_PROBE_KEY)?;
+        if probe.len() != 9 {
+            return Err(format!("render location {key:016x}: the default probe must contain nine float3 coefficients").into());
+        }
+        for (index, row) in environment.default_irradiance.iter_mut().enumerate() {
+            let [r, g, b] = attribute_floats::<3>(&probe, index)
+                .ok_or_else(|| format!("render location {key:016x}: default probe coefficient {index} unreadable"))?;
+            *row = [r, g, b, 0.0];
+        }
+        // A missing reference reads `Attrib::DefaultDataArea` (zeroes): key 0, which blends back to
+        // the defaults.
+        let reference = |attribute: u64| {
+            db.attribute(class, key, attribute).and_then(|value| value.ref_spec(0)).map_or(0, |(_, collection)| collection)
+        };
+        environment.location_fog_key = reference(string_hash64("material_fog"));
+        environment.location_sky_key = reference(string_hash64("material_sky"));
+        let mut postfx = (*environment.postfx).clone();
+        postfx.location = [
+            reference(string_hash64("colour_cube")),
+            reference(crate::render_postfx::DEFAULT_EXPOSURE),
+            reference(crate::render_postfx::DEFAULT_BLOOM),
+        ];
+        environment.postfx = std::sync::Arc::new(postfx);
+        Ok(Some(environment))
     }
 
     /// `m_params[0]` bound by `cMaterialScope::Resolve` for this material key.
@@ -902,6 +1028,7 @@ mod tests {
                 bloom_sample_offset: 0., hom: Default::default(), watermark_position: [0.;2], deck_ao: [0.; 4],
             }),
             use_world_sh_probes: true,
+            use_worldpainter: true,
             default_irradiance:[[0.;4];9],
             envattributes,
             sun_vector: [-0.41, 0.4, 0.8],
@@ -936,6 +1063,7 @@ mod tests {
             fogs: BTreeMap::from([(DEFAULT_COLLECTION_KEY, default_fog())]),
             skies: BTreeMap::new(),
             material_params: BTreeMap::new(),
+            m_params_classes: Vec::new(),
             character_attributes: Vec::new(),
             vehicle_lod_squared: [0.; 3],
             sky_blended: BTreeSet::new(),
@@ -1014,5 +1142,47 @@ mod tests {
         assert_eq!(light.view_dot_light([0., 0., 20.]), [1.5, 0.1, 0.2, 0.]);
         assert_eq!(light.view_dot_light([0., 0., -20.]), [0.5, 0.1, 0.2, 0.]);
         assert_eq!(light.view_dot_light([20., 0., 0.]), [1.0, 0.1, 0.2, 0.]);
+    }
+
+    /// The downloadable content's render locations on the shipped vaults: the Parkade's own sun
+    /// with the sun map and the WorldPainter off and its references among the content's
+    /// collections, Maloof without one (the default location stays), and the city's default
+    /// location keeping both on.
+    #[test]
+    #[ignore = "requires external SKATE2_GAME_ROOT and SKATE2_DLC_DIR"]
+    fn downloadable_content_render_locations() {
+        use skate2_formats::{mount::{ArchiveSource, MountedBig, SKATE2_ARCHIVES}, stfs::StfsPackage};
+        let game = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
+        let mut mounts = MountSet::new();
+        for spec in SKATE2_ARCHIVES.iter() {
+            mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
+        }
+        for path in std::fs::read_dir(std::env::var_os("SKATE2_DLC_DIR").unwrap()).unwrap().flatten().map(|entry| entry.path()) {
+            let Ok(package) = StfsPackage::open(&path) else { continue };
+            for entry in package.root_files() {
+                mounts.push_dlc(MountedBig::open_source(ArchiveSource::Package(package.file(entry).unwrap())).unwrap());
+            }
+        }
+        let city = EnvironmentLighting::load(&mounts).unwrap();
+        assert!(city.use_worldpainter && city.sun_direction_map_requested);
+        let vaults = skate2_core::dlc::vaults(&mounts);
+        let paths: Vec<&str> = std::iter::once("data\\db\\skater.vlt").chain(vaults.iter().map(String::as_str)).collect();
+        let db = AttribDb::load(&mounts, &paths).unwrap();
+        let extended = city.with_vault_collections(&mounts, &db).unwrap();
+        let parkade = extended.with_world_render_location(&db, string_hash64("dlc_parkade")).unwrap().unwrap();
+        assert_eq!(parkade.sun_vector, [0x3ed0_9a24, 0x3f12_f976, 0x3f35_cfff].map(f32::from_bits));
+        assert!(!parkade.sun_direction_map_requested && !parkade.use_worldpainter);
+        assert!(parkade.use_world_sh_probes && parkade.world_shadow.enabled);
+        assert_eq!(parkade.location_fog_key, 0xbe87_1da5_89aa_e0e9);
+        assert!(parkade.fogs.contains_key(&parkade.location_fog_key), "the content's fog joins the blends");
+        assert!(parkade.skies.contains_key(&parkade.location_sky_key));
+        assert!(parkade.postfx.exposures.contains_key(&parkade.postfx.location[1]));
+        assert!(parkade.postfx.blooms.contains_key(&parkade.postfx.location[2]));
+        // dlc_default's probe, which the Parkade inherits across the vaults.
+        assert_eq!(parkade.default_irradiance[0][0], f32::from_bits(0x3dcc_cccd));
+        assert!(extended.with_world_render_location(&db, string_hash64("dlc_maloof_money_cup")).unwrap().is_none());
+        for name in ["dlc_elementary_school", "dlc_community_center", "dlc_rob_fantasy_park"] {
+            assert!(extended.with_world_render_location(&db, string_hash64(name)).unwrap().is_some(), "{name}");
+        }
     }
 }

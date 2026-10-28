@@ -1001,12 +1001,16 @@ impl<'a> Reader<'a> {
 }
 
 /// Whether `SaveProgressionOrientation` (`0x825c7448`) asks the local
-/// skater's breadcrumbs: a career (`GameTypeFlags & 4`) with completed
+/// skater's breadcrumbs: a career (`GameTypeFlags & 4`) in the main world
+/// (`sGameInfo.additionalWorldLocation` -1, 0x825c74b4) with completed
 /// challenges, unless `QuittingOverride` (the start hub's Quit Game) set the
-/// orientation. The port has no additional world location.
+/// orientation. In an additional world the saved orientation stays as it was.
 #[must_use]
-pub fn asks_progression_orientation(world: &World) -> bool {
-    world.signpost.game_type_flags & 4 == 4 && !world.signpost.progress.use_override_because_quitting && !world.signpost.completed.is_empty()
+pub fn asks_progression_orientation(world: &World, in_additional_world: bool) -> bool {
+    world.signpost.game_type_flags & 4 == 4
+        && !in_additional_world
+        && !world.signpost.progress.use_override_because_quitting
+        && !world.signpost.completed.is_empty()
 }
 
 /// `SaveProgressionOrientation`: the suggested respawn crumb's transform

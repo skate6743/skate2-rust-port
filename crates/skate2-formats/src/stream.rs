@@ -363,6 +363,31 @@ impl CollectionSpace {
     }
 }
 
+/// `tStreamFocusInfo::tFocusInfo::mEntries`: the collections a focus selection holds.
+pub const MAX_FOCUS_ENTRIES: usize = 16;
+
+/// `cAssetStreamSystem::FindCollections` (`0x824dfea8`) over every stream file of one type,
+/// without stream XML: the first file's selection, then each later file's entries, one the
+/// selection already holds taking its place and a new one joining while fewer than
+/// [`MAX_FOCUS_ENTRIES`] are held, then the whole sorted by distance (`FocusLODDistanceCompare`
+/// over the octrees' level-0 collections). The caller applies the type's cap.
+#[must_use]
+pub fn merge_focus_collections(files: impl IntoIterator<Item = Vec<FocusCollection>>) -> Vec<FocusCollection> {
+    let mut files = files.into_iter();
+    let mut selected = files.next().unwrap_or_default();
+    for file in files {
+        for entry in file {
+            if let Some(held) = selected.iter_mut().find(|held| held.id == entry.id) {
+                *held = entry;
+            } else if selected.len() < MAX_FOCUS_ENTRIES {
+                selected.push(entry);
+            }
+        }
+    }
+    selected.sort_by(|left, right| left.distance_xz.total_cmp(&right.distance_xz));
+    selected
+}
+
 /// Reconstructs `tOctreeInfo::mStreamOrder` as initialized by
 /// `cStreamFile::Update` at `0x824e0ba8`.
 #[must_use]

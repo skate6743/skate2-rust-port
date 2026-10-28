@@ -291,8 +291,9 @@ pub enum Output {
     /// `FrontEnd.ClosePopup`: `FrontEndManager::ClosePopup` of the popup with this id.
     ClosePopup { id: i32 },
     /// `Teleport.ToWorldFileLocation`: `cTeleportManager::TeleportLocalToWorldLocation` to the
-    /// location; `world_file` is the `fe_locations` world's file, none for the main world.
-    TeleportLocalToWorldLocation { world_file: Option<String>, location: String },
+    /// location; `world_location` is the `fe_locations` key and `world_file` its world's file,
+    /// none for the main world.
+    TeleportLocalToWorldLocation { world_location: u64, world_file: Option<String>, location: String },
     /// `SignUpHUD`: the D-pad-up prompt's challenges (names), empty when it
     /// hides.
     SignUpPrompt { challenges: Vec<String> },
@@ -501,6 +502,10 @@ pub struct World {
     pub objective_vars_cleared: Vec<u64>,
     /// The local player's state for the objective natives, set each frame.
     pub player: PlayerState,
+    /// Every player's state, by player index, where each player's objectives read their own
+    /// player's (an online freeskate activity's, from every player's facts; PC port: the original
+    /// read each skater's own output); none otherwise.
+    pub player_states: Vec<(i32, PlayerState)>,
     /// `kIsHoMChallengeEnabled` (default true).
     pub hom_enabled: bool,
     /// `kObjectiveNotificationWindow` seconds (default 1).
@@ -529,6 +534,9 @@ pub struct World {
     pub boot_flow_executed: bool,
     /// `CommonBackEnd::sGameInfo.gameMode`, set by the session.
     pub game_mode: i32,
+    /// `CommonBackEnd::sGameInfo.additionalWorldLocation`, the world location (`fe_locations`
+    /// key) of the additional world loaded, set by the session.
+    pub additional_world_location: Option<u64>,
     /// The players back end, installed by the session.
     pub players: Option<Arc<dyn PlayersBackEnd>>,
     /// The network game an online challenge runs in, installed by the session.
@@ -644,6 +652,11 @@ pub(crate) fn complete_challenge_sub_controllers(world: &mut World, activity: us
     world.replaying_challenge = false;
     follow_the_leader::complete_challenge(world, is_main);
     signup::complete_challenge(world);
+    // cChallengeSimManager::CompleteChallenge 0x82da78e8: a main challenge other than a Flow
+    // (type 44) whose local data has ClearSessionMarkerOnExit clears the session marker.
+    if is_main && signup::challenge_type(world, activity) != 44 && clears_session_marker_on_exit(world, activity) {
+        world.output(Output::ClearSessionMarker);
+    }
     living_world::complete_challenge(world, is_main);
     map_icons::complete_challenge(world);
     teleport::complete_challenge(world, activity);
@@ -665,6 +678,17 @@ pub(crate) fn complete_challenge_sub_controllers(world: &mut World, activity: us
             assets::unload(world, activity);
         }
     }
+}
+
+/// `challenge_local_data.ClearSessionMarkerOnExit`.
+const CLEAR_SESSION_MARKER_ON_EXIT: u64 = 0x533b_aabd_fe3b_8a70;
+
+fn clears_session_marker_on_exit(world: &World, activity: usize) -> bool {
+    world.activities.activities[activity]
+        .local_data
+        .and_then(|(class, key)| world.db.attribute(class, key, CLEAR_SESSION_MARKER_ON_EXIT))
+        .and_then(|attribute| attribute.bool(0))
+        .unwrap_or(false)
 }
 
 /// `IActivitySubController::ShutdownActivity` of the ported sub-controllers.
@@ -821,6 +845,7 @@ impl ChallengeSystem {
                 objective_closure: None,
                 objective_vars_cleared: Vec::new(),
                 player: PlayerState::default(),
+                player_states: Vec::new(),
                 hom_enabled: true,
                 objective_notification_window: 1.0,
                 stop_threshold: 1.2,
@@ -836,6 +861,7 @@ impl ChallengeSystem {
                 dynamic_hulls: DynamicHulls::default(),
                 boot_flow_executed: false,
                 game_mode: players::GM_SINGLE_PLAYER,
+                additional_world_location: None,
                 players: None,
                 skaters: Vec::new(),
                 skate: SkateChallengeManager::default(),

@@ -150,6 +150,29 @@ mod quit_tests {
         let state=menu.update(PauseMenuInput{select:true,..Default::default()},true);
         assert_eq!(state.popup,None);
     }
+    #[test]
+    fn edit_skater_sits_above_game_settings_while_the_online_game_offers_it() {
+        let mut menu=PauseMenuController::default();
+        menu.set_hub(StartHub::OnlineFreeSkate);
+        assert_eq!(menu.options(),[PauseMenuOption::SaveReplay,PauseMenuOption::EditSkater,PauseMenuOption::Settings,PauseMenuOption::Quit]);
+        // Not offered (a round loading, a travel): the hub opens on Game Settings and up wraps
+        // past both disabled rows to Quit Game.
+        menu.update(PauseMenuInput{start:true,..Default::default()},true);
+        menu.acknowledge_intro();
+        assert_eq!(menu.selected_option(),PauseMenuOption::Settings);
+        menu.update(PauseMenuInput{up:true,..Default::default()},true);
+        assert_eq!(menu.selected_option(),PauseMenuOption::Quit);
+        menu.update(PauseMenuInput{start:true,..Default::default()},true);
+        // Offered: the hub opens on it, and A on it opens no popup (the runtime opens the editor).
+        menu.set_edit_skater(true);
+        menu.update(PauseMenuInput{start:true,..Default::default()},true);
+        menu.acknowledge_intro();
+        assert_eq!(menu.selected_option(),PauseMenuOption::EditSkater);
+        let state=menu.update(PauseMenuInput{select:true,..Default::default()},true);
+        assert!(state.visible && state.popup.is_none() && state.item_enabled(PauseMenuOption::EditSkater));
+        menu.set_edit_skater(false);
+        assert!(!menu.snapshot().item_enabled(PauseMenuOption::EditSkater));
+    }
 }
 
 impl PauseMenuOption {
@@ -272,9 +295,9 @@ pub const CREATE_A_SPOT_SETUP_WITH_SCORE_OPTIONS: [PauseMenuOption; 4] = [
 ];
 
 /// `StartHubState_Online_FreeSkate::m_eMenuOptions` (`0x8208e2e4`, four rows). Its debug Debug
-/// row is left out.
-pub const ONLINE_FREESKATE_OPTIONS: [PauseMenuOption; 3] =
-    [PauseMenuOption::SaveReplay, PauseMenuOption::Settings, PauseMenuOption::Quit];
+/// row is left out; Edit Skater above Game Settings is a PC port addition.
+pub const ONLINE_FREESKATE_OPTIONS: [PauseMenuOption; 4] =
+    [PauseMenuOption::SaveReplay, PauseMenuOption::EditSkater, PauseMenuOption::Settings, PauseMenuOption::Quit];
 
 /// `StartHubState_Online_Challenge::m_eMenuOptions` (`0x8208e2f4`, three rows). Its debug Debug
 /// row is left out; Leave Challenge above Quit Game is a PC port addition.
@@ -391,6 +414,10 @@ pub struct PauseMenuInput {
     /// triggers let go.
     pub left_shift_released: bool,
     pub right_shift_released: bool,
+    /// `AptDUp` and `AptDDown` (`LoadInputMap` states 150 and 151): the D-pad alone, without the
+    /// stick navigation `AptUp` and `AptDown` take (PC port: the Stick Settings pages).
+    pub dpad_up: bool,
+    pub dpad_down: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -414,6 +441,9 @@ pub struct PauseMenuSnapshot {
     /// Leave Challenge is offered: the local player plays an online challenge's round and has
     /// not finished it (PC port addition).
     pub leave_challenge: bool,
+    /// Edit Skater is offered in an online game: the local player is in its pre-game lobby, with
+    /// no round, travel or activity start coming (PC port addition).
+    pub edit_skater: bool,
 }
 
 impl PauseMenuSnapshot {
@@ -463,8 +493,8 @@ impl PauseMenuSnapshot {
     /// Challenge with the main challenge's flag), Offline_FreeSkate (`0x826444e0`), PartyPlay
     /// (`0x82644570`), Create_A_Spot (`0x826446a8`), Create_A_Spot_Setup (`0x82644710`),
     /// Create_A_Spot_Setup_WithScore (`0x82644770`), Online_FreeSkate (`0x8265e928`, Save Replay
-    /// only online) and Online_Challenge (`0x826447d0`). Replay needs `mbReplayAvailable`, which
-    /// is sampled when the hub opens.
+    /// only online; Edit Skater while the game offers it, a PC port addition) and Online_Challenge
+    /// (`0x826447d0`). Replay needs `mbReplayAvailable`, which is sampled when the hub opens.
     #[must_use]
     pub fn item_enabled(self, option: PauseMenuOption) -> bool {
         use PauseMenuOption as O;
@@ -488,7 +518,9 @@ impl PauseMenuSnapshot {
             StartHub::CreateASpotSetupWithScore => {
                 matches!(option, O::CreateASpotSpotInfo | O::QuitChallenge | O::Settings | O::TrickGuide)
             }
-            StartHub::OnlineFreeSkate => matches!(option, O::Map | O::Settings | O::Quit),
+            StartHub::OnlineFreeSkate => {
+                matches!(option, O::Map | O::Settings | O::Quit) || (option == O::EditSkater && self.edit_skater)
+            }
             StartHub::OnlineChallenge => {
                 matches!(option, O::QuitChallenge | O::Settings | O::Quit) || (option == O::LeaveChallenge && self.leave_challenge)
             }
@@ -572,6 +604,11 @@ impl PauseMenuController {
     /// Whether Leave Challenge is offered (PC port addition).
     pub fn set_leave_challenge(&mut self, offered: bool) {
         self.state.leave_challenge = offered;
+    }
+
+    /// Whether the online game offers Edit Skater (PC port addition).
+    pub fn set_edit_skater(&mut self, offered: bool) {
+        self.state.edit_skater = offered;
     }
 
     /// Leave Challenge's yes, which also pops the hub: the runtime leaves the round for the

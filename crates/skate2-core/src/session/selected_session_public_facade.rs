@@ -509,6 +509,16 @@ pub struct SelectedLiveSession<T, C> {
     exit_to_desktop: bool,
     /// PC: what the main menu asked of the app's updater, not yet taken.
     update_request: Option<crate::ui::update_prompt::UpdateRequest>,
+    /// PC: the downloadable content linked, and the Downloadable Content screen's Link DLCs not
+    /// yet taken by the host.
+    linked_dlc: Vec<crate::ui::dlc_menu::Pack>,
+    dlc_link_request: bool,
+    /// What the pending travel does with the worlds, and the additional world the
+    /// presentation's streams hold collections of.
+    map_travel_world: world_travel::TravelWorld,
+    presentation_additional_world: Option<String>,
+    /// `sGameInfo.additionalWorldLocation`: the world location of the additional world loaded.
+    additional_location: Option<u64>,
     map_menu: crate::ui::map_menu::MapMenuController,
     editor: Option<crate::edit_skater_session::EditSkaterSession>,
     /// The sound requests Edit Skater left when it closed.
@@ -579,6 +589,8 @@ pub struct SelectedLiveSession<T, C> {
     presentation_area: Option<crate::streaming::area_loaded::PresentationStreamArea>,
     /// The connection to the dedicated server and the online game.
     online: online_session::Online,
+    /// The pads' rumble.
+    vibration: vibration_session::VibrationSession,
 }
 
 #[cfg(test)]
@@ -653,6 +665,11 @@ impl<T, C> SelectedLiveSession<T, C> {
             main_menu_pending: false,
             exit_to_desktop: false,
             update_request: None,
+            linked_dlc: Vec::new(),
+            dlc_link_request: false,
+            map_travel_world: world_travel::TravelWorld::Keep,
+            presentation_additional_world: None,
+            additional_location: None,
             map_menu: crate::ui::map_menu::MapMenuController::default(),
             editor: None,
             editor_sounds: Vec::new(),
@@ -697,6 +714,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             movie: Default::default(),
             presentation_area: None,
             online: Default::default(),
+            vibration: Default::default(),
         }
     }
 
@@ -1340,7 +1358,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             .map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?;
         self.options_menu.load(profile.load_display_settings()
             .map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?);
-        self.options_menu.load_lobby_chat(crate::ui::online_config::OnlineConfig::load().show_lobby_chat);
+        let online = crate::ui::online_config::OnlineConfig::load();
+        self.options_menu.load_lobby_chat(online.show_lobby_chat);
+        self.options_menu.load_ghost_players(online.show_ghost_players);
+        self.options_menu.load_sticks(crate::ui::controller_config::load());
         self.audio.settings = profile.load_settings().map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?;
         self.audio.new_profile = profile.is_new_profile().map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?;
         let SelectedControlledBootPolicy {
@@ -1969,6 +1990,12 @@ impl<T, C> SelectedLiveSession<T, C> {
             let stage = SelectedLiveStage::PreupdateInput;
             result = Err(SelectedLiveError::failed(stage, e));
         }
+        // Sk8AppMan::PreUpdate (0x8272c478) ends every frame with InputManager::UpdateVibration.
+        if result.is_ok()
+            && let Err(e) = self.try_update_vibration(pad)
+        {
+            result = Err(e);
+        }
         if let Err(SelectedLiveError::Failed { stage, .. }) = &result {
             // Any reached device/preupdate/tick write is monotonic. A failed
             // owner is retained for inspection and cannot replay that frame.
@@ -2057,6 +2084,9 @@ impl<T, C> SelectedLiveSession<T, C> {
             .map_err(|e| SelectedLiveError::failed(Stage::PreupdateInput, e))?;
         let phone_requested=input.try_phone_options_input::<P>()
             .map_err(|e|SelectedLiveError::failed(Stage::PreupdateInput,e))?;
+        let (spectate_bumper, spectate_cycle) = input.try_spectate_cycle_input::<P>()
+            .map_err(|e| SelectedLiveError::failed(Stage::PreupdateInput, e))?;
+        self.online.spectate_bumper = spectate_bumper;
         let hud_dpad = input.try_hud_dpad_input::<P>()
             .map_err(|e| SelectedLiveError::failed(Stage::PreupdateInput, e))?;
         if self.replay_file_pending.is_some() {
@@ -2196,7 +2226,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 let assets=self.main_menu_assets.as_ref().expect("main menu assets admitted");
                 let selection = menu.update(assets,policy.dt,frontend_input,policy.has_focus);
                 if policy.has_focus && menu.settled && menu.intro_complete && !menu.leaving
-                    && menu.extras.is_none() && menu.name_prompt.is_none()
+                    && menu.extras.is_none() && menu.dlc.is_none() && menu.name_prompt.is_none()
                     && menu.screen == crate::ui::main_menu::Screen::MainMenu
                     && frontend_input.select && menu.selected == 5 {
                     self.options_menu.open(false, crate::ui::options::VideoScreen::MainMenu, &self.audio.settings);
@@ -2222,6 +2252,8 @@ impl<T, C> SelectedLiveSession<T, C> {
                     }
                     crate::ui::main_menu::Selection::None => {}
                     crate::ui::main_menu::Selection::OpenExtras => self.open_extras()?,
+                    crate::ui::main_menu::Selection::OpenDlc => self.open_dlc(),
+                    crate::ui::main_menu::Selection::LinkDlc => self.dlc_link_request = true,
                     // PC: the fade covers, then the host closes the window (`exit_to_desktop_ready`).
                     crate::ui::main_menu::Selection::ExitToDesktop => {
                         menu.leaving=true;
@@ -2261,27 +2293,44 @@ impl<T, C> SelectedLiveSession<T, C> {
         if self.apply_pending_character()? {
             return Ok(SelectedQueuedFrameOutcome::Frontend);
         }
+        // PC port: an online game simulates under its pre-game Edit Skater as under the pause menu
+        // beneath it (Net::ResumeGame): the skater, without PlayerUI's focus, brakes to a stop and
+        // idles in the lobby, and its replay frames keep going out. The editor takes the input.
+        let under_editor = self.online.edit_skater && self.online.network_resumed;
         if self.editor_enter_pending {
             if self.frontend_fade.covered() {
                 self.open_edit_skater()?;
                 self.editor_enter_pending = false;
                 self.frontend_reveal_pending = true;
             }
-            return Ok(SelectedQueuedFrameOutcome::Frontend);
-        }
-        if self.editor.is_some() {
+            if !under_editor {
+                return Ok(SelectedQueuedFrameOutcome::Frontend);
+            }
+        } else if self.editor.is_some() {
             self.update_edit_skater(frontend_input,policy.has_focus,policy.dt)?;
-            return Ok(SelectedQueuedFrameOutcome::Frontend);
+            // The new look loads before the next tick, as the single-player game's does.
+            if !under_editor || self.editor.is_none() {
+                return Ok(SelectedQueuedFrameOutcome::Frontend);
+            }
         }
+        let (frontend_input, phone_requested, hud_dpad, spectate_cycle) = if under_editor {
+            (Default::default(), false, Default::default(), false)
+        } else {
+            (frontend_input, phone_requested, hud_dpad, spectate_cycle)
+        };
         if let Some(transform) = self.map_travel.filter(|_| !self.map_travel_dispatched) {
             if !self.frontend_fade.covered() {
                 trace_travel(&mut self.map_travel_gate, "the fade");
                 return Ok(SelectedQueuedFrameOutcome::Frontend);
             }
             let mut transform = transform;
-            let terrain = self.inner.terrain.as_mut().expect("ready terrain");
-            terrain.try_advance_asset_release()
+            self.inner.terrain.as_mut().expect("ready terrain").try_advance_asset_release()
                 .map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
+            if !self.try_prepare_travel_world([transform[12], transform[13], transform[14]])? {
+                trace_travel(&mut self.map_travel_gate, "the additional world");
+                return Ok(SelectedQueuedFrameOutcome::Frontend);
+            }
+            let terrain = self.inner.terrain.as_mut().expect("ready terrain");
             // A destination the simulation stream holds nothing at cannot be landed on (no number,
             // or another world's location, such as the training facility's, which the port does not
             // load): the travel ends where the skater is, which the focus holds.
@@ -2378,6 +2427,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 input.try_set_frontend_pause(false)
                     .map_err(|e| SelectedLiveError::failed(Stage::PreupdateInput, e))?;
                 self.map_travel_dispatched = true;
+                self.map_travel_world = world_travel::TravelWorld::Keep;
             }
             return Ok(SelectedQueuedFrameOutcome::Frontend);
         }
@@ -2406,6 +2456,16 @@ impl<T, C> SelectedLiveSession<T, C> {
                     self.apply_career_living_world()?;
                 }
                 let career = self.career.as_mut().expect("career map owner");
+                // TeleportToChallenge and TeleportToFELocation (0x82565350) teleport into the world
+                // of the challenge's or the location's world location.
+                let world_location = match action {
+                    MapAction::TeleportChallenge(key) | MapAction::RetryChallenge(key) => {
+                        crate::challenge::stuff_menu::challenge_world_location(career.system.world(), key)
+                    }
+                    MapAction::TeleportLocation(key) => Some(key),
+                    MapAction::None | MapAction::Close => None,
+                };
+                let world_file = world_location.and_then(|location| crate::challenge::stuff_menu::location_world_file(career.system.world(), location));
                 let destination = match action {
                     MapAction::None => return Ok(SelectedQueuedFrameOutcome::Frontend),
                     MapAction::Close => {
@@ -2416,20 +2476,22 @@ impl<T, C> SelectedLiveSession<T, C> {
                     }
                     MapAction::TeleportChallenge(key) => career.prepare_challenge_map_travel(key, false),
                     MapAction::RetryChallenge(key) => career.prepare_challenge_map_travel(key, true),
-                    MapAction::TeleportLocation(key) => self
-                        .inner
-                        .assets
-                        .as_ref()
-                        .expect("ready assets")
-                        .map_catalog
-                        .transform(key),
+                    MapAction::TeleportLocation(key) => {
+                        let assets = self.inner.assets.as_ref().expect("ready assets");
+                        match assets.map_catalog.transform(key) {
+                            Some(transform) => Some(transform),
+                            // An additional world's location (a downloadable content spawn point):
+                            // its start location's spawn point for the local player.
+                            None => match (crate::challenge::stuff_menu::location_spawn(career.system.world(), key), world_file.as_deref()) {
+                                (Some(spawn), Some(world)) => Some(career.world_spawn_point(&assets.mounts, world, &spawn)?),
+                                _ => None,
+                            },
+                        }
+                    }
                 };
                 if let Some(transform) = destination {
-                    self.frontend_fade.cover();
-                    self.map_travel = Some(transform);
-                    self.map_travel_presentation_ready = false;
-                    self.map_travel_dispatched = false;
-                    self.map_travel_on_board = false;
+                    let world = self.world_operation(world_location.unwrap_or(u64::MAX), world_file.as_deref()).unwrap_or_default();
+                    self.start_world_travel(world, transform, false);
                 } else {
                     // DoTeleport (0x8265f280) pops to the start hub's state 7 without a destination.
                     career.close_challenge_map();
@@ -2453,12 +2515,11 @@ impl<T, C> SelectedLiveSession<T, C> {
                         self.pause_menu.reenter();
                     }
                     crate::ui::map_menu::MapMenuAction::Teleport(key) => {
-                        self.frontend_fade.cover();
-                        self.map_travel = Some(assets.map_catalog.transform(key).ok_or_else(||
-                            SelectedLiveError::failed(Stage::SessionMarker, "Map destination transform absent"))?);
-                        self.map_travel_presentation_ready = false;
-                        self.map_travel_dispatched = false;
-                        self.map_travel_on_board = false;
+                        let transform = assets.map_catalog.transform(key).ok_or_else(||
+                            SelectedLiveError::failed(Stage::SessionMarker, "Map destination transform absent"))?;
+                        // The Map's destinations are the main world's.
+                        let world = self.world_operation(u64::MAX, None).unwrap_or_default();
+                        self.start_world_travel(world, transform, false);
                     },
                 }
             }
@@ -2636,6 +2697,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 return Ok(SelectedQueuedFrameOutcome::Frontend);
             }
         }
+        let edit_skater_offered = self.online_can_edit_skater();
         let input = self.inner.bound_input.as_mut().expect("ready input");
         if career_overlay_was_open && self.pause_menu.snapshot().visible {
             // ReceiveInput82656af8 delivers the key to the top state once.
@@ -2668,6 +2730,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         );
         self.pause_menu.set_main_challenge(self.career.as_ref().and_then(career::CareerSession::start_hub_main_challenge));
         self.pause_menu.set_leave_challenge(self.online.can_leave_challenge());
+        self.pause_menu.set_edit_skater(edit_skater_offered);
         // StateManagerFrontEnd::ReceiveInput 0x82656af8: nothing reaches the StartHub before its
         // screen's IntroComplete, and a front-end state over the game takes the input itself.
         let frontend_input = if self.pause_menu.awaiting_intro() || career_overlay_open {
@@ -2685,7 +2748,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             && self.pause_menu.selected_option() == crate::ui::pause_menu::PauseMenuOption::Map {
             self.map_menu.open();
             if let Some(career) = self.career.as_mut() {
-                career.open_challenge_map();
+                career.open_challenge_map(self.additional_location);
             }
         }
         if was_paused && pause.visible && !pause.jacked && policy.has_focus && frontend_input.select
@@ -2776,7 +2839,12 @@ impl<T, C> SelectedLiveSession<T, C> {
                 self.career_restart_main_challenge();
             }
             if was_paused && pause.visible && !pause.jacked && policy.has_focus && frontend_input.select
-                && self.pause_menu.selected_option() == crate::ui::pause_menu::PauseMenuOption::EditSkater {
+                && self.pause_menu.selected_option() == crate::ui::pause_menu::PauseMenuOption::EditSkater
+                && pause.item_enabled(crate::ui::pause_menu::PauseMenuOption::EditSkater) {
+                // PC port: an online game's pre-game Edit Skater.
+                if self.online.game.is_some() {
+                    self.online_open_edit_skater()?;
+                }
                 self.editor_enter_pending = true;
                 self.frontend_fade.cover();
             }
@@ -2792,13 +2860,28 @@ impl<T, C> SelectedLiveSession<T, C> {
             return Ok(SelectedQueuedFrameOutcome::Frontend);
         }
         // ChallengeLoadState's kPAUSE_STATE_ONLINE: the round loads with the simulation paused.
+        // The asset stream manager updates whatever pauses the simulation, so the terrain's
+        // stream pass runs here as the gameplay path would: a hull the lobby never loaded (a
+        // freeskate activity's) registers its collections through it, and the round's load
+        // waits for that hull.
         if self.online_round_loading() {
+            let position = local_skater_position(
+                self.inner.world.as_ref().map(|world| &world.world),
+                self.inner.player.as_ref().expect("ready player").selected.actor.as_deref().expect("ready Actor"),
+            )?;
+            let terrain = self.inner.terrain.as_mut().ok_or_else(|| SelectedLiveError::failed(Stage::TerrainResident, "terrain absent"))?;
+            terrain.try_advance_asset_release().map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
+            terrain.try_update_focus(position).map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
             return Ok(SelectedQueuedFrameOutcome::Frontend);
         }
         let frontend_input = if was_paused || pause.visible { Default::default() } else { frontend_input };
         let hud_dpad = if was_paused || pause.visible || hub_open || online_popup { Default::default() } else { hud_dpad };
+        let spectate_cycle = spectate_cycle && !(was_paused || pause.visible || hub_open || online_popup);
         if policy.has_focus && !map_challenge_loading {
             self.online_vote_input(frontend_input);
+            self.online_spectate_input(frontend_input, spectate_cycle)?;
+            // The activity overlay's D-pad up comes before the other HUD components'.
+            let hud_dpad = self.online_activity_input(hud_dpad);
             self.career_input(frontend_input, hud_dpad);
             if self.career.is_none() {self.queue_prop_input(hud_dpad);}
         }
@@ -2929,6 +3012,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let online_boundaries = self.online_held_boundaries();
         let offboard_stick = self.offboard_stick_frames();
         let mut boundary_teleport = false;
+        let spectating = self.online_spectating();
         let input = self.inner.bound_input.as_mut().expect("ready input");
         let selected = &self.inner.player.as_ref().expect("ready player").selected;
         // PlayerUI::Update samples for its mPlayerIndex, which PartyPlayUI moves.
@@ -2947,8 +3031,9 @@ impl<T, C> SelectedLiveSession<T, C> {
         if has_sim_input {
             let challenge = self.career.as_ref().map(career::CareerSession::session_marker_rules);
             // GameModule::DoGameUpdate (0x82730418): PlayerUI has the focus only while no popup is
-            // open and PauseMan's top state lets the front end open (CheckForPauseState).
-            let game_focus = policy.has_focus && !map_challenge_loading
+            // open and PauseMan's top state lets the front end open (CheckForPauseState); a free
+            // skate's Spectate keeps it while the console watches another player (PC port addition).
+            let game_focus = policy.has_focus && !map_challenge_loading && !spectating
                 && !self.career.as_ref().is_some_and(career::CareerSession::popup_open)
                 && input.try_can_open_frontend().map_err(|e| SelectedLiveError::failed(Stage::PreupdateInput, e))?;
             let marker = self
@@ -3420,6 +3505,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 self.inner
                     .try_dispatch_ai_messages()
                     .map_err(|e| SelectedLiveError::failed(Stage::ControlledPlayer, e))?;
+                self.try_update_rumble_events()?;
                 self.completed_frames = self.completed_frames.saturating_add(1);
                 if std::mem::take(&mut self.career_start_pending) {
                     self.start_career(true)?;
@@ -3576,6 +3662,8 @@ impl<T, C> SelectedLiveSession<T, C> {
             Some(State::START_HUB)
         } else if let Some(screen) = self.online_hub_match_snapshot() {
             Some(if screen.freeskate { State::UNRANKED_FREESKATE } else { State::UNRANKED_CUSTOM_MATCH })
+        } else if self.online_activity_signup().is_some() {
+            Some(State::FREESKATE_ACTIVITY_SIGN_UP)
         } else if self.online_hub_open() {
             Some(State::ONLINE_HUB)
         } else {
@@ -3713,6 +3801,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             sounds.extend(menu.take_sounds().into_iter().map(FeSoundRequest::Play));
         }
         sounds.extend(self.options_menu.take_sounds().into_iter().map(FeSoundRequest::Play));
+        sounds.extend(self.options_menu.take_sound_requests());
         sounds.extend(self.skate_profile.take_sounds().into_iter().map(FeSoundRequest::Play));
         sounds.extend(self.audio.menu.take_sounds().into_iter().map(FeSoundRequest::Play));
         sounds.append(&mut self.editor_sounds);
@@ -3763,8 +3852,10 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.map_travel.filter(|_| !self.map_travel_dispatched && self.frontend_fade.covered())
             .map(|m| [m[12], m[13], m[14]])
     }
-    pub fn acknowledge_map_travel_presentation_ready(&mut self) {
-        if self.map_travel.is_some() { self.map_travel_presentation_ready = true; }
+    /// The presentation streamed the travel's destination; `world` is the additional world it
+    /// selected from, which must be the travel's.
+    pub fn acknowledge_map_travel_presentation_ready(&mut self, world: Option<&str>) {
+        if self.map_travel.is_some() && self.travel_world_presented(world) { self.map_travel_presentation_ready = true; }
     }
     /// The renderer's presentation stream after its last streaming update.
     pub fn set_presentation_stream_area(&mut self, area: crate::streaming::area_loaded::PresentationStreamArea) {
@@ -4464,12 +4555,22 @@ impl<T, C> SelectedLiveSession<T, C> {
             scoring_hud_tuning: cvars.try_trick_display_tuning()
                 .map_err(|e| SelectedLiveError::failed(Stage::Visual, e))?,
             out_of_boundary_amount: self.out_of_boundary_amount,
-            marker_hud: self
-                .inner
-                .session_marker
-                .as_ref()
-                .expect("ready marker")
-                .hud,
+            marker_hud: {
+                let hud = self.inner.session_marker.as_ref().expect("ready marker").hud;
+                let spectate = self.online_spectate_offered();
+                // While the console watches another player its skater takes no input (PC port
+                // addition): LB's quick menu follows the front end's LB, its markers unusable.
+                if self.online_spectating() {
+                    crate::ui::phonelist::MarkerHudSnapshot {
+                        bumper_held: self.online.spectate_bumper,
+                        permissions: hud.permissions.map(|_| crate::ui::phonelist::MarkerPermissions::default()),
+                        spectate,
+                        ..hud
+                    }
+                } else {
+                    crate::ui::phonelist::MarkerHudSnapshot { spectate, ..hud }
+                }
+            },
             simulation_tick: self.completed_frames,
             stream_focus_position: frozen_focus
                 .or_else(|| self.map_travel.map(|matrix| [matrix[12], matrix[13], matrix[14]]))
@@ -4780,3 +4881,10 @@ mod props;
 
 #[path = "selected_session_extras.rs"]
 mod extras_session;
+#[path = "selected_session_dlc.rs"]
+mod dlc_session;
+#[path = "selected_session_world_travel.rs"]
+mod world_travel;
+
+#[path = "selected_session_vibration.rs"]
+mod vibration_session;

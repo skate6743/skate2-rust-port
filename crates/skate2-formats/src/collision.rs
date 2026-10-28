@@ -1288,8 +1288,46 @@ impl ClusteredMesh {
             20
         };
         let mask = (1_u32 << shift) - 1;
-        let cluster_index = usize::try_from(range.encoded_start >> shift)
+        let mut cluster_index = usize::try_from(range.encoded_start >> shift)
             .map_err(|_| CollisionError::IntegerOverflow)?;
+        let mut unit_offset = usize::try_from(range.encoded_start & mask)
+            .map_err(|_| CollisionError::IntegerOverflow)?;
+
+        for _ in 0..range.unit_count {
+            let cluster = self.leaf_cluster(mesh_bytes, memo, cluster_index)?;
+            let remaining = cluster.unit_data.get(unit_offset..).ok_or(
+                CollisionError::EncodedUnitOffsetNotFound {
+                    cluster: cluster_index,
+                    offset: unit_offset,
+                },
+            )?;
+            let (unit, encoded_size) = parse_unit(remaining, unit_offset, self)?;
+            if let ControlFlow::Break(value) = visitor(cluster_index, cluster, &unit) {
+                return Ok(ControlFlow::Break(value));
+            }
+            unit_offset = unit_offset
+                .checked_add(encoded_size)
+                .ok_or(CollisionError::IntegerOverflow)?;
+            // A range can run on past its cluster's unit data (two coalesced sibling leaves). The
+            // RenderWare queries go on at the next cluster's first unit
+            // (`BBoxOverlapQueryThis` 0x82ada530); `RipTriangles` 0x827cd7c8 instead reads on
+            // into whatever follows the cluster. PC port: the ripper goes on as the queries do.
+            if unit_offset >= cluster.unit_data.len() {
+                cluster_index += 1;
+                unit_offset = 0;
+            }
+        }
+
+        Ok(ControlFlow::Continue(()))
+    }
+
+    /// The memo's decoded cluster `cluster_index`, decoded into it when it holds another.
+    fn leaf_cluster<'m>(
+        &self,
+        mesh_bytes: &[u8],
+        memo: &'m mut LeafClusterMemo<'_>,
+        cluster_index: usize,
+    ) -> Result<&'m MeshCluster, CollisionError> {
         let cluster_count =
             usize::try_from(self.cluster_count).map_err(|_| CollisionError::IntegerOverflow)?;
         if cluster_index >= cluster_count {
@@ -1298,19 +1336,18 @@ impl ClusteredMesh {
                 cluster_count,
             });
         }
-
-        let table_start = usize::try_from(self.cluster_data_offset)
-            .map_err(|_| CollisionError::IntegerOverflow)?;
-        let table_entry = cluster_index
-            .checked_mul(4)
-            .and_then(|offset| table_start.checked_add(offset))
-            .ok_or(CollisionError::IntegerOverflow)?;
-        let cluster_offset = be_u32(mesh_bytes, table_entry)?;
         if memo
             .cluster
             .as_ref()
             .is_none_or(|(index, _)| *index != cluster_index)
         {
+            let table_start = usize::try_from(self.cluster_data_offset)
+                .map_err(|_| CollisionError::IntegerOverflow)?;
+            let table_entry = cluster_index
+                .checked_mul(4)
+                .and_then(|offset| table_start.checked_add(offset))
+                .ok_or(CollisionError::IntegerOverflow)?;
+            let cluster_offset = be_u32(mesh_bytes, table_entry)?;
             memo.cluster = Some((
                 cluster_index,
                 match memo.cache {
@@ -1327,30 +1364,10 @@ impl ClusteredMesh {
         let Some((_, cluster)) = &memo.cluster else {
             unreachable!("the cluster was decoded above")
         };
-        let cluster = match cluster {
+        Ok(match cluster {
             DecodedLeafCluster::Local(cluster) => cluster,
             DecodedLeafCluster::Shared(cluster) => cluster.as_ref(),
-        };
-        let mut unit_offset = usize::try_from(range.encoded_start & mask)
-            .map_err(|_| CollisionError::IntegerOverflow)?;
-
-        for _ in 0..range.unit_count {
-            let remaining = cluster.unit_data.get(unit_offset..).ok_or(
-                CollisionError::EncodedUnitOffsetNotFound {
-                    cluster: cluster_index,
-                    offset: unit_offset,
-                },
-            )?;
-            let (unit, encoded_size) = parse_unit(remaining, unit_offset, self)?;
-            if let ControlFlow::Break(value) = visitor(cluster_index, &cluster, &unit) {
-                return Ok(ControlFlow::Break(value));
-            }
-            unit_offset = unit_offset
-                .checked_add(encoded_size)
-                .ok_or(CollisionError::IntegerOverflow)?;
-        }
-
-        Ok(ControlFlow::Continue(()))
+        })
     }
 
     /// Expands KD leaf ranges into owned collision triangles.
@@ -2374,42 +2391,51 @@ fn append_leaf_triangles(
     mask: u32,
     triangles: &mut Vec<MeshTriangle>,
 ) -> Result<(), CollisionError> {
-    let cluster_index = usize::try_from(range.encoded_start >> shift)
+    let mut next_cluster = usize::try_from(range.encoded_start >> shift)
         .map_err(|_| CollisionError::IntegerOverflow)?;
     let unit_offset =
         usize::try_from(range.encoded_start & mask).map_err(|_| CollisionError::IntegerOverflow)?;
-    let cluster = clusters
-        .get(cluster_index)
-        .ok_or(CollisionError::EncodedClusterOutsideMesh {
-            index: cluster_index,
-            cluster_count: clusters.len(),
-        })?;
-    let units =
-        decoded_units
+    let cluster_units = |cluster_index: usize| {
+        let cluster = clusters
+            .get(cluster_index)
+            .ok_or(CollisionError::EncodedClusterOutsideMesh {
+                index: cluster_index,
+                cluster_count: clusters.len(),
+            })?;
+        let units = decoded_units
             .get(cluster_index)
             .ok_or(CollisionError::EncodedClusterOutsideMesh {
                 index: cluster_index,
                 cluster_count: decoded_units.len(),
             })?;
-    let first = units
+        Ok::<_, CollisionError>((cluster, units))
+    };
+    let (_, units) = cluster_units(next_cluster)?;
+    let mut unit_index = units
         .binary_search_by_key(&unit_offset, |unit| unit.stream_offset)
         .map_err(|_| CollisionError::EncodedUnitOffsetNotFound {
-            cluster: cluster_index,
+            cluster: next_cluster,
             offset: unit_offset,
         })?;
     let count = usize::try_from(range.unit_count).map_err(|_| CollisionError::IntegerOverflow)?;
-    let end = first
-        .checked_add(count)
-        .ok_or(CollisionError::IntegerOverflow)?;
-    let selected = units
-        .get(first..end)
-        .ok_or(CollisionError::EncodedUnitRangeOutsideCluster {
-            cluster: cluster_index,
-            first,
-            end,
-            unit_count: units.len(),
-        })?;
-    for unit in selected {
+    for _ in 0..count {
+        let cluster_index = next_cluster;
+        let (cluster, units) = cluster_units(cluster_index)?;
+        let unit = units
+            .get(unit_index)
+            .ok_or(CollisionError::EncodedUnitRangeOutsideCluster {
+                cluster: cluster_index,
+                first: unit_index,
+                end: unit_index + 1,
+                unit_count: units.len(),
+            })?;
+        // `ClusteredMesh::BBoxOverlapQueryThis` 0x82ada530: past a cluster's unit data the range
+        // goes on at the next cluster's first unit (two coalesced sibling leaves can span both).
+        unit_index += 1;
+        if unit_index >= units.len() {
+            next_cluster += 1;
+            unit_index = 0;
+        }
         for indices in unit.triangle_indices() {
             let vertices = indices
                 .map(|index| cluster.vertices.get(usize::from(index)))
@@ -4235,18 +4261,39 @@ mod tests {
             })
         );
 
+        // Past the last cluster's unit data the range goes on at a cluster the mesh lacks.
         let mut offsets = Vec::new();
         assert_eq!(
             mesh.visit_leaf_range_units(&bytes, selected_unit_range(21, 2), |_, _, unit| {
                 offsets.push(unit.stream_offset);
                 ControlFlow::<()>::Continue(())
             }),
-            Err(CollisionError::Truncated {
-                required: 1,
-                actual: 0,
+            Err(CollisionError::EncodedClusterOutsideMesh {
+                index: 2,
+                cluster_count: 2,
             })
         );
         assert_eq!(offsets, [21]);
+    }
+
+    /// `ClusteredMesh::BBoxOverlapQueryThis` 0x82ada530: a range running past its cluster's unit
+    /// data goes on at the next cluster's first unit.
+    #[test]
+    fn selected_leaf_unit_visitor_goes_on_at_the_next_cluster() {
+        let (_, mut bytes) = clustered_mesh_for_selected_unit_visits();
+        bytes[64..68].copy_from_slice(&3_u32.to_be_bytes());
+        bytes[68..72].copy_from_slice(&3_u32.to_be_bytes());
+        bytes[0x68..0x6c].copy_from_slice(&0x80_u32.to_be_bytes());
+        let mesh = ClusteredMesh::parse(&bytes).unwrap();
+        let mut visited = Vec::new();
+        assert_eq!(
+            mesh.visit_leaf_range_units(&bytes, selected_unit_range(14, 3), |cluster, _, unit| {
+                visited.push((cluster, unit.stream_offset));
+                ControlFlow::<()>::Continue(())
+            }),
+            Ok(ControlFlow::Continue(()))
+        );
+        assert_eq!(visited, [(1, 14), (1, 21), (2, 0)]);
     }
 
     #[test]

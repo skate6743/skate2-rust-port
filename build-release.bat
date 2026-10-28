@@ -29,6 +29,15 @@ if defined SKATE2_UPDATE_REPOSITORY (
     echo No release-repository.txt: this build does not look for updates.
 )
 
+rem release-server.txt (host:port, kept out of the repository) is the server a player's game
+rem connects to when their file names none; SKATE2_DEFAULT_SERVER set by the caller wins.
+if not defined SKATE2_DEFAULT_SERVER if exist "release-server.txt" set /p SKATE2_DEFAULT_SERVER=<"release-server.txt"
+if defined SKATE2_DEFAULT_SERVER (
+    echo Default server: %SKATE2_DEFAULT_SERVER%
+) else (
+    echo No release-server.txt: the default server is this machine's.
+)
+
 rem Release binaries embed their dependencies' source paths. These name the profile folder, and
 rem with it the Windows user name, so the build writes ~ in its place. The rustflags join the
 rem ones in .cargo\config.toml, which RUSTFLAGS would replace.

@@ -254,6 +254,9 @@ pub(crate) fn run(root: &std::path::Path) -> RenderResult<()> {
         return Err("--live-hold requires --live-completions".into());
     }
     let mounts = Arc::new(crate::mount_reference_archives(root)?);
+    // PC: the linked downloadable content mounts after the game's archives, before anything
+    // reads them.
+    let dlc = crate::dlc_link::DlcLinks::mount_linked(&mounts);
     let terrain_catalog = WorldStreamCatalog::new();
     // `SyncLoadProxyWorldStream`'s order and proxy map precede the world
     // stream, whose `AddHighCollection` calls fill the high-to-proxy map.
@@ -288,6 +291,7 @@ pub(crate) fn run(root: &std::path::Path) -> RenderResult<()> {
     // address before moving the window client into winit's event callback.
     let mut session = Box::new(PcSession::new(Arc::clone(&mounts), root));
     session.set_career_calendar(crate::local_calendar::now);
+    session.set_linked_dlc(dlc.packs());
     let first_test = SelectedControlledBootPolicy {
         spawn_policy: SelectedSpawnPolicy::AuthoredSelectedLocation,
         marquee: DEFAULT_MARQUEE_ID,
@@ -358,6 +362,8 @@ pub(crate) fn run(root: &std::path::Path) -> RenderResult<()> {
         no_command_reported: false,
         // Wait for the window's actual focus event before admitting focus-gain input.
         focused: false,
+        ctrl_held: false,
+        alt_held: false,
         ollie_demo,
         ollie_pattern,
         ollie_hold,
@@ -369,6 +375,7 @@ pub(crate) fn run(root: &std::path::Path) -> RenderResult<()> {
         frontend_demo_ticks: 0,
         replay_probe:std::env::var_os("SKATE2_DIAGNOSTIC_REPLAY_ENTRY").map(|_|replay_entry_probe::Probe::default()),
         update: crate::game_update::GameUpdate::start(),
+        dlc,
         trick_guide_previous:None,
         pedestrian_approach_stick: [0, i16::MAX],
         ollie_tweak_left,
@@ -446,6 +453,9 @@ struct LiveSkatingClient {
     presented_completion_counter: Arc<AtomicU64>,
     no_command_reported: bool,
     focused: bool,
+    /// The keyboard's Ctrl and Alt, for the text prompts' Ctrl+A (AltGr reads as both).
+    ctrl_held: bool,
+    alt_held: bool,
     ollie_demo: bool,
     ollie_pattern: String,
     ollie_spin_left: bool,
@@ -455,6 +465,8 @@ struct LiveSkatingClient {
     replay_probe:Option<replay_entry_probe::Probe>,
     /// PC: a release build's updater (`game_update`).
     update: Option<crate::game_update::GameUpdate>,
+    /// PC: the linked downloadable content and the Downloadable Content screen's file picker.
+    dlc: crate::dlc_link::DlcLinks,
     trick_guide_previous:Option<Instant>,
     pedestrian_approach_stick: [i16; 2],
     ollie_hold: u64,
@@ -934,13 +946,21 @@ impl LiveSkatingClient {
     }
 
     fn window_event(&mut self, event: &WindowEvent) -> RenderResult<()> {
+        if let WindowEvent::ModifiersChanged(modifiers) = event {
+            self.ctrl_held = modifiers.state().control_key();
+            self.alt_held = modifiers.state().alt_key();
+        }
         if self.focused && self.session.extras_text_entry_active()
             && let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == winit::event::ElementState::Pressed
         {
             use skate2_core::ui::extras::TextInput;
             use winit::keyboard::{Key, NamedKey};
+            // Ctrl without Alt (AltGr types characters) types nothing; Ctrl+A selects the line
+            // where the prompt takes a selection.
+            let control = self.ctrl_held && !self.alt_held;
             let input = match &event.logical_key {
+                Key::Character(text) if control => text.eq_ignore_ascii_case("a").then_some(TextInput::SelectAll),
                 Key::Named(NamedKey::Enter) if !event.repeat => Some(TextInput::Accept),
                 Key::Named(NamedKey::Escape) if !event.repeat => Some(TextInput::Cancel),
                 Key::Named(NamedKey::Backspace) => Some(TextInput::Backspace),
@@ -966,6 +986,12 @@ impl LiveSkatingClient {
         }
         if let WindowEvent::Focused(focused) = event {
             self.focused = *focused;
+            self.pad.set_focused(*focused);
+            // A key let go while the window had no focus sends no release.
+            if !*focused {
+                self.ctrl_held = false;
+                self.alt_held = false;
+            }
             if std::env::var_os("SKATE2_PROFILE_REDRAW").is_some() {
                 eprintln!(
                     "diagnostic live focus: focused={focused} completed_frames={}",
@@ -2657,10 +2683,17 @@ impl LiveSkatingClient {
         renderer.set_display_settings(options_menu.values);
         renderer.set_cutscene_postfx(self.session.cutscene_postfx_active());
         view.set_options_menu(options_menu)?;
+        // PC port: the pads' next samples take the stick settings as the Stick Settings rows have
+        // them, whose pages show the playing controller's sticks as its pad reports them.
+        self.pad.set_stick_settings(options_menu.sticks);
+        view.set_stick_preview(self.session.controller_slot().and_then(|slot| self.pad.raw_sticks(slot)))?;
         view.set_free_skate_settings(self.session.free_skate_hud_settings());
         view.set_music_player(self.session.music_player_snapshot())?;
         view.set_skate_profile(self.session.skate_profile_view())?;
-        if self.session.edit_skater_view()?.is_none() {
+        // PC port: an online game ticks under its pre-game Edit Skater, whose room holds the
+        // visible scene; the world's is kept for when the editor closes.
+        let editor_open = self.session.edit_skater_view()?.is_some();
+        if !editor_open {
             view.close_editor(scene);
         }
         if self.session.trick_guide_snapshot().is_none(){view.close_trick_guide(scene);}
@@ -2679,6 +2712,12 @@ impl LiveSkatingClient {
         view.update_chyron(self.session.chyron_state(), &chyron)?;
         view.update_online_event_log(self.session.online_hud_active(), self.session.take_online_event_log())?;
         view.update_online_chat(self.session.online_chat_prompt().as_ref(), self.session.online_nickname_prompt().as_ref())?;
+        view.update_online_spectator(self.session.online_spectated_name().as_deref())?;
+        let overlay = self.session.online_activity_overlay();
+        let sign_up = self.session.online_activity_signup();
+        if view.update_online_activities(renderer, overlay.as_ref(), sign_up.as_ref(), self.session.online_event_log_hidden())? {
+            self.session.online_activity_signup_ready();
+        }
         let (lobby_states, lobby_title) = self.session.take_online_lobby_hud();
         view.update_online_lobby_hud(&lobby_states, &lobby_title)?;
         let (hub_opened, hub_calls) = self.session.take_online_hub_calls();
@@ -2826,8 +2865,10 @@ impl LiveSkatingClient {
                 self.frame_timings.position = visual.stream_focus_position;
                 let view_start = Instant::now();
                 let vehicle_visuals = visual.vehicles.len();
-                view.update(renderer, scene, now, &mut visual,
-                    &pause, &map, &locations, player_pose, career.as_ref(), restorer.as_deref(), None)?;
+                if !editor_open {
+                    view.update(renderer, scene, now, &mut visual,
+                        &pause, &map, &locations, player_pose, career.as_ref(), restorer.as_deref(), None)?;
+                }
                 self.frame_timings.view += view_start.elapsed();
                 if skate2_core::diagnostics::frame_profile::enabled() {
                     for (total, value) in self
@@ -3060,6 +3101,21 @@ impl LiveSkatingClient {
                 update.request(request);
             }
         }
+        // PC: the Downloadable Content screen's Link DLCs: the file picker, the picked files read
+        // under ID_DLC_REGISTERING, then the new packs' strings join the screens'.
+        if self.session.take_dlc_link_request() {
+            self.dlc.open_picker();
+        }
+        match self.dlc.poll() {
+            Some(crate::dlc_link::LinkProgress::Picked(any)) => self.session.dlc_picked(any),
+            Some(crate::dlc_link::LinkProgress::Linked(report, changed)) => {
+                if changed {
+                    view.add_dlc_strings();
+                }
+                self.session.dlc_linked(self.dlc.packs(), report, changed);
+            }
+            None => {}
+        }
         let replay_editor=self.session.replay_editor_snapshot();
         let replay_states=self.session.take_replay_editor_states();
         let reel=self.session.skate_reel_snapshot();
@@ -3127,6 +3183,9 @@ impl LiveSkatingClient {
             self.session.acknowledge_movie_screen_loaded(generation);
         }
         view.set_hull_presentations(self.session.hull_presentations());
+        view.set_additional_world(self.session.loaded_additional_world().map(str::to_owned));
+        view.set_world_render_location(self.session.world_render_location())?;
+        self.session.acknowledge_presentation_additional_world(view.additional_world_held());
         if let Some(area) = view.presentation_stream_area() {
             self.session.set_presentation_stream_area(area);
         }
@@ -3136,7 +3195,7 @@ impl LiveSkatingClient {
             changed = true;
             let (disabled, xml) = self.session.map_travel_stream_policy()?;
             if view.prepare_map_travel(renderer, scene, position, disabled, xml)? {
-                self.session.acknowledge_map_travel_presentation_ready();
+                self.session.acknowledge_map_travel_presentation_ready(view.additional_world_selected().as_deref());
             }
         }
         let guide_pause=self.session.pause_menu_snapshot();
@@ -3153,6 +3212,7 @@ impl LiveSkatingClient {
             self.session.acknowledge_main_menu(intro);
             let (extras, credits, done) = view.take_extras_events();
             self.session.acknowledge_extras(extras, credits, done);
+            self.session.acknowledge_dlc(view.take_dlc_intro());
             if freeskate_intro {
                 self.session.acknowledge_freeskate_intro();
             }
@@ -3718,7 +3778,8 @@ impl RenderWindowClient for LiveSkatingWindow {
     }
 
     fn window_event(&mut self, event: &WindowEvent) -> RenderResult<()> {
-        if !matches!(event, WindowEvent::Focused(_) | WindowEvent::KeyboardInput { .. }) {
+        // The modifiers too: Ctrl+A in a text prompt reads the client's held Ctrl and Alt.
+        if !matches!(event, WindowEvent::Focused(_) | WindowEvent::KeyboardInput { .. } | WindowEvent::ModifiersChanged(_)) {
             return Ok(());
         }
         if matches!(event, WindowEvent::Focused(_)) {

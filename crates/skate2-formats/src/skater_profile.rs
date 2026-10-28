@@ -326,7 +326,8 @@ impl Default for ProfileSettings {
             mini_map: true,
             hud: true,
             auto_save: true,
-            rumble: true,
+            // PC port: a new save's Vibration starts off (the original's default is on).
+            rumble: false,
             units: 1,
             silent_sign_in: true,
             volume_mode: 0,

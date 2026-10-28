@@ -81,10 +81,12 @@ fn rx2_locations(bytes: &[u8], locations: &mut Vec<Location>) -> Result<(), Stri
 
 impl LocationManager {
     /// `LoadGlobalLocations` (`0x82a8f3b0`): every global locator arena, in the
-    /// directory's order.
+    /// directory's order: the game's archives', then the downloadable content's
+    /// (`StateDLCFlow::LoadGlobalLocators` loads them again after a content refresh).
     pub(crate) fn with_global_locations(mounts: &MountSet) -> Result<Self, String> {
         let mut global = Vec::new();
-        for archive in mounts.archives() {
+        let dlc = mounts.dlc_archives();
+        for archive in mounts.archives().iter().chain(dlc.iter().map(AsRef::as_ref)) {
             for entry in &archive.archive().entries {
                 let BigEntryKey::Name(name) = &entry.key else { continue };
                 let lower = name.to_ascii_lowercase();

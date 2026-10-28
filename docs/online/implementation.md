@@ -10,7 +10,7 @@ the netcode and the Lobby Browser are the port's own.
 ## Running it
 
 - **Players** keep `online-config.json` in the save root: `nickname` (asked the first time
-  Online opens, or when the file's is not one the prompt could make; 1 to 24 letters, digits,
+  Online opens, or when the file's is not one the prompt could make; 1 to 16 letters, digits,
   spaces, `-`, `_` or `'`, at least one a letter or digit) and `server` (`host:port`, or a host
   name at the server's default port; empty or
   absent for the build's default, which the game writes back as empty). Main
@@ -21,8 +21,10 @@ the netcode and the Lobby Browser are the port's own.
   and skate.profile Online rows are left out, and the board behind the rows is drawn two rows
   shorter.
 - **The default server** is compiled in: build the release with
-  `SKATE2_DEFAULT_SERVER=<host:port>` (e.g. the VPS's address) and every player whose file names
-  no server connects there; without it the build's default is `127.0.0.1:32082`
+  `SKATE2_DEFAULT_SERVER=<host:port>` (e.g. the VPS's address), or put that `host:port` in
+  `release-server.txt` (ignored by git) for `build-release.bat` and `build-release.sh` to read,
+  and every player whose file names no server connects there; without it the build's default is
+  `127.0.0.1:32082`
   (`DEFAULT_SERVER` in `crates/skate2-core/src/ui/online_config.rs`). An `online-config.json`
   shipped beside the game with a `server` works too, but pins that address in players' files.
 - **Dedicated server**: `skate2-pc --server <ip:port>` (Windows or Linux) and `skate2-server`
@@ -56,8 +58,10 @@ the netcode and the Lobby Browser are the port's own.
 | Session: sign-in, games, frames, remote skaters | `crates/skate2-core/src/session/selected_session_online.rs`, `online/remote_skater.rs` |
 | Session: challenge rounds, results | `crates/skate2-core/src/session/online/online_challenge.rs` |
 | Session: Online options screens, Lobby Browser, in-game hub, lobby board | `crates/skate2-core/src/session/online/{online_menu,lobby_browser,online_hub,lobby_hud}.rs` |
+| Session: freeskate activities, spectating | `crates/skate2-core/src/session/online/{activity,spectate}.rs`, `crates/skate2-core/src/online/activities.rs` |
+| Server statistics | `crates/skate2-net/src/stats.rs`, `crates/skate2-net/data/challenge_names.json` |
 | Front-end controllers | `crates/skate2-core/src/ui/{skate_reel,online_match,lobby_browser,online_hub}.rs` |
-| Movies | `apps/skate2-pc/src/marker_ui/{online_eventlog,online_match,lobby_browser,online_hub,online_results}_movie.rs`, `results_list.rs` (`OnlineList`) |
+| Movies | `apps/skate2-pc/src/marker_ui/{online_eventlog,online_match,lobby_browser,online_hub,online_results,spectator,activity_overlay,activity_signup}_movie.rs`, `results_list.rs` (`OnlineList`) |
 
 ## The server
 
@@ -71,20 +75,23 @@ game's state:
   and then the older first, and finding none creates a public one there; Create makes a private
   game. A search must be of the version its player signed in with, a free skate is searched only
   as one and a challenge only as one, a free skate or private game is never ranked, a game with
-  no one in it is never offered, and no game is made without a location. Eight players at most
+  no one in it is never offered, and no game is made without a location. Nor is a game at a
+  challenge the player's build lacks: once signed in the game sends the server every online
+  challenge its data has (`Content`, protocol 14, a PC port addition, as the original's search
+  fits the console's own challenges), and quick and custom matches pass the others over. Eight players at most
   (`protocol::MAX_PLAYERS`, the original's unranked `MaxPlayerFilter`; its ranked games took 6,
   or 4 for 1-Up and S.K.A.T.E.). A private game takes no one new, one made private after players
   joined included: matchmaking never offers it, and joining refuses a private game that has
   members.
 - **Lobby list** (`ListLobbies`, answered with `Lobbies`): the public unranked games with
   members whose game version is the asker's, at the challenge a location change is taking them
-  to, those with room first, then the fuller, then the older, at most 64
+  to and one the asker's build has (`Content`), those with room first, then the fuller, then the older, at most 64
   (`protocol::MAX_LOBBIES`): each game's id, challenge type and key, players, most players and
   phase. `JoinLobby` joins a game the list would still show and that has room, as matchmaking
   does (`GameJoined`); otherwise `PlayNowResult` says `FULL` or `NO_MATCH` (ended, private, or
   another version's).
 - **Sign-in**: a connection's first message must be its `Hello`, on the reliable channel, with a
-  nickname the game's prompt makes (`protocol::valid_nickname`: 1 to 24 letters, digits, spaces,
+  nickname the game's prompt makes (`protocol::valid_nickname`: 1 to 16 letters, digits, spaces,
   `-`, `_` or `'`, at least one a letter or digit, no space at either end) and that holds no word
   of the server's list (below); the game sends nothing else until it is welcomed (it pings and
   acknowledges frames only once signed in). Any other message before it, another nickname, or no
@@ -132,6 +139,14 @@ game's state:
   which ask the server's loop for what they show and do. The panel speaks plain HTTP, so the key
   crosses the network unencrypted. Without the setting or a valid key the panel is off, and the
   server's console says why.
+- **Statistics** (PC port addition, `crates/skate2-net/src/stats.rs`): with the panel's port set,
+  `GET /serverstats` on it answers anyone, with no key, a JSON object: `players_online`, how many
+  connections are signed in (a count, no names), and `public_games`, every public game oldest
+  first, each with `challenge_type` and `challenge` by their English names (the challenges' from
+  `crates/skate2-net/data/challenge_names.json`, "Unknown" for one the list lacks), `activity`
+  (the freeskate activity it plays, else `null`), `in_progress` (its challenge or activity loads,
+  runs or shows its results) and `players`, its members' nicknames in join order. It names no
+  address and no private game, and is made at most once a second.
 - **The server's files**: `server-config.json`, `moderation-key.txt` and the two ban lists sit
   together in the folder of `server-config.json` (beside the server's executable or, when only it
   holds one, the working directory). Like `badwords.txt`, git ignores them, no release zip
@@ -157,12 +172,25 @@ game's state:
   loaded for 16 updates. `GameReset(Challenge)` then closes every front-end screen as
   `PopAllStates` does (the pause menu, Options and its music player, Skate Profile, the online
   hub), each with its `OnLeave` (Options saves nothing), and unpauses the simulation; the loading
-  screen comes down once the area has stayed loaded for 16 more updates.
+  screen comes down once the area has stayed loaded for 16 more updates. Its `ResetGame` puts
+  every player's skater at its spawn point of the challenge's location (`PlayerUI::ResetPlayer`
+  0x828ad280) under the loading screen, so an air or a bail from lobby skate does not carry into
+  the challenge's presentation (a bail there would draw the online challenge's Hall of Meat
+  treatment over the cutscene).
 - **Leave Challenge** (PC port addition): `LeaveChallenge` takes a participant out of the
   challenge as a leave of the game would (its barriers, completion and result no longer wait
   for it, and the board leaves it out), but it stays a member: `ChallengeLeave` tells every
   member, and it waits in lobby skate apart from the challenge until the lobby reset. One from a
   member not playing the challenge is ignored, as are its later barriers and facts.
+- **Out-of-sync removal** (PC port addition, S.K.A.T.E. only): `Stalled` (protocol 15) reports
+  that a participant's round has waited four seconds at a challenge tick for another
+  participant's facts. Once every other participant, at least two, has reported the same
+  participant at the same tick, the server sends `ChallengeLeave` for it and takes it out of the
+  challenge as `LeaveChallenge` does. A round sends its report again every second while the wait
+  goes on, and a report counts for three seconds after it arrives, so one from a wait that has
+  ended joins no later one. Each participant counts once (its last report), as the player its
+  connection signed in as. A lone report, reports of different players or ticks, and reports in
+  any other challenge type take no one out.
 - **Kicks** (PC port addition): a kick closes the game to the kicked player's IP address for as
   long as the game lasts. The lobby browser no longer lists it to that address, matchmaking
   passes over it, and joining it by its id gets `NO_MATCH`, whatever nickname the address comes
@@ -176,15 +204,26 @@ game's state:
   server's messages so far make it the first member, and the host changes only when the host
   leaves), so its connection is dropped (`leave::KICKED_FOR_HOST_REQUEST`). One that arrives
   after its sender left the game is ignored.
+- **Freeskate activities** (the original's game host peer held their proposals): a
+  `GameProposal(Propose)` in an online free skate's lobby skate, with no change of location
+  counting down, no other proposal open and at least two members in the game's world, the
+  proposer one of them, is broadcast to every member (`Broadcast`, with the 15 seconds left to
+  accept); any other is answered with `Timeout` to its proposer alone. Each `Accept` is broadcast.
+  A member who joins while it is open hears it with the time it has left; a member who leaves no
+  longer counts. It ends with `Timeout` when its time runs out unaccepted, its proposer leaves the
+  world or fewer than two members remain there. Once every member it was proposed to accepted, it
+  loads (`GameReset(LoadChallenge)` naming the activity) for every member in the world, waiting
+  up to 5 more seconds for one still on its way in; a member not in by then gets `Missed`. The
+  activity then runs as a challenge's round does. While a proposal is open the host cannot change
+  the location, and while an activity runs the game is in neither matchmaking nor the Lobby
+  Browser's list.
 - **Relays**: each player's replay frames (re-encoded for each receiver against the frames that
-  receiver acknowledged), challenge facts, recipes (appearance). From a challenge's load until
-  the game is back in lobby skate its participants see nothing of the members in lobby skate
-  (who joined during it, were not in the world at its start, did not load it, or left it), as
-  in the original: their frames reach no participant, and facts go only to participants. The
-  members in lobby skate do get the participants' frames and watch them as ghosts (PC port
-  addition; `GameJoined` names the participants to one who joins during the challenge). A
-  participant's frames reach those members from the lobby reset on, coded afresh (the receiver
-  holds none of the sender's recent ones). An acknowledgement counts only for a frame the server still
+  receiver acknowledged), challenge facts, recipes (appearance). From a challenge's load until the
+  game is back in lobby skate, its participants receive nothing of the members in lobby skate (who
+  joined during it, were not in the world at its start, did not load it, or left it), as the
+  original showed them nothing of lobby skate; those members receive the participants' frames and
+  watch them as ghosts (PC port addition). Facts go only to participants, and `GameJoined` names
+  the participants to one who joins during the challenge. An acknowledgement counts only for a frame the server still
   holds of the slot's member: one a receiver sent for the slot's member before (a player who
   left, acknowledged before the receiver heard so) would otherwise stand, its ticks far past the
   new member's, and every run to that receiver would go coded whole.
@@ -288,10 +327,15 @@ and eight-player games):
   server's console sees addresses (its connection lines).
 - **Nothing ends the session.** Another console's facts read any float that is no number as
   zero; replay frames are quantized, so their values are always numbers. A game at a challenge
-  this build's data lacks (another build, or a made-up key from a host or a game's creator) is
-  never loaded: joining it, or its location changing to it, leaves it with the disconnect notice
-  (`online_challenge_known`), and any other message the game cannot follow does the same rather
-  than ending the session (`online_unplayable`).
+  this build's data lacks (a downloaded location, another build, or a made-up key from a host or
+  a game's creator) is never loaded. The host's change of location to one reads "The Host has
+  chosen a downloaded location that you do not have." (`AddLocationChangeMessage` 0x82639e18);
+  as the game moves there, or on joining one, the console leaves it for the Online options with
+  the original's notice, "You do not currently have the location needed to perform this
+  action..." (`SetupGame` 0x82778530: `SER_GAME_DLC_REQUIRED`, which `ShowErrorDialog`
+  0x825735d0 opens as `eSk8FEPopup_Online_Error_DLC_Required`). Any other message the game
+  cannot follow leaves the game with the disconnect notice rather than ending the session
+  (`online_unplayable`).
 - **Server limits.** Eight connections an IP; replay frames past 90 a second (bursts of 60) are
   dropped unrelayed; reliable messages past 240 a second (bursts of 600) drop the connection
   (`leave::KICKED_FOR_FLOOD`); matchmaking requests and lobby joins past 1 a second (bursts of
@@ -499,6 +543,25 @@ search now stops at the last follower and the round goes on to `process_round`
 each player's lines from that player's facts and keeps the spot's top score, so the "score to
 beat" each player sees comes out of the shared run rather than a packet of its own.
 
+**Turn-based rounds** (PC port additions). In S.K.A.T.E. and Spot Battle a wipeout's automatic
+respawn begins at most five seconds into the wipeout (the game info's turn bail limit caps
+`MAX_AUTO_TIME`), so moves that keep the body going cannot hold the next player's turn. In every
+turn-based round each console notes where the challenge teleported each player; while another
+player's turn plays, a waiting player whose skater shows more than 4 m (x and z) from that spot,
+once it has been within 1.5 m of it or eight seconds have passed, is neither drawn nor heard on
+the other consoles, while its own console still shows it. In S.K.A.T.E. whose set trick a player
+copied decides whose turn comes next, so a console whose run of the script has parted from the
+others' waits on another turn than theirs, and at the handoff the others wait on its facts. A
+round with no tick ready that has waited 240 simulation ticks (four seconds) at its next tick for
+the same player's facts tells the server (`Stalled`, that player and the tick), and again every 60
+ticks while the wait goes on; the count runs in simulation ticks, not wall-clock time. Once every
+other participant's round reports the same player at the same tick, the server takes that player
+out of the challenge: the other
+consoles disconnect it from the challenge after its last facts, as a player who left, and read
+"<name> was removed from the challenge (out of sync).", and its own console leaves the round as
+Leave Challenge does and reads "You were removed from the challenge (out of sync)." A game of
+two players, where each console waits on the other, removes no one.
+
 **Contest rounds.** Best Trick and Jam start each round at a sync point
 (`Online.OnlineChallengeRoundSyncPoint`): every console stops its challenge there, at a tick of
 its own (each plays its own player's highlight first), pauses (`kPAUSE_STATE_ONLINE`,
@@ -560,7 +623,14 @@ to the lobby:
   `Simulation::IsNetworkGame`, which holds in an online game, so security and no-skate zones
   never forbid a marker there. In its place `VerifyLocalPlayerOkToSet` 0x828ab4a0 checks the
   local skater's respawn transform (`CalcRespawnTransform` 0x825f09a8) with
-  `BreadCrumbManager::IsPostionOk`.
+  `BreadCrumbManager::IsPostionOk`. `GameReset(Challenge)` makes the game's marker anew
+  (`ResetGame` with `newGame`; `CreateSessionMarker` 0x82729c28 makes none for Own the Spot,
+  S.K.A.T.E. and Death Race), and `PlayerUI::ResetPlayer` 0x828ad280 puts the new marker, not
+  yet valid, at the local player's spawn point of the challenge's location, a freeskate
+  activity's own (forced, on the board, then `cMsgSetMarker`), so the marker takes a player back
+  to the start. Every freeskate activity sets `challenge_local_data.ClearSessionMarkerOnExit`,
+  which clears the marker as it completes (`cChallengeSimManager::CompleteChallenge`
+  0x82da78e8).
 - **Lobby**: each player starts at the location's spawn point of its player index
   (`GetStreamerPosition`). The original's online challenges are for six players and their
   locations hold six spawn points, so a seventh or eighth player (PC port addition) starts at the
@@ -639,6 +709,26 @@ to the lobby:
   settings back, so what a challenge set ends with it: S.K.A.T.E.'s
   `ChallengeManager.SetManualsAreConnectors(false)`, under which landing in a manual ends the
   line, is undone by its script only in single player.
+- **Freeskate Activities** (an online free skate's hub): Freeskate Activities, enabled in a free
+  skate with another player, no challenge running, no proposal open and no change of location
+  under way, lists the location's activity types in the original's order (Gap, Accumulation,
+  Trick List, Simultaneous Trick, Survival, Tag), each enabled when the location has one of the
+  type; a type lists its activities (up to 17) by title, a completed one marked with the flash
+  glyph. Picking one opens the sign-up (FE state 67, `freeskateactivity_signup`) to propose it:
+  its title, description, type and the location's image; A proposes ("Activity Proposed!"; with
+  fewer than two players the "At least 2 skaters are required" popup), B goes back to the hub.
+  A proposal shows everyone the activity overlay (`hud_freeskateactivity_overlay`) with its type,
+  its proposer and the seconds left; every other player reads "<name> proposed an Activity.", and
+  up on the D-pad opens the sign-up to accept it (A accepts, B closes it while time is left).
+  Each acceptance reads "<name> has accepted the freeskate activity." The overlay hides under the
+  sign-up, the hub, the pause menu and a round. A proposal no one else took reads "The Freeskate
+  Activity has been declined." and "A new Activity may now be proposed."; a player who missed the
+  start reads "Activity in Progress". A challenge reset, a change of location, a kick or leaving
+  the game ends the proposal. The activity's round loads at the activity, every player spawning at
+  its location's spawn, runs with every player's facts (challenge type 42) and ends on the
+  activity's own board (a place by score, time or distance) with its status lines; finishing it
+  saves it in SKATER.P (`online` savable, `completed_fsa`). A remote skater's head, feet and hips
+  count for the local skater's "air over skater" goals as a local roster skater's do.
 
 ## Not implemented, or different
 
@@ -647,20 +737,50 @@ to the lobby:
   stay disabled; ranks, badges, EXP and cash rewards are not awarded.
 - **No Xbox LIVE**: Friends shows (0/0) and is disabled; Send Friend Request and View Gamercard
   are disabled; the results board omits the gamercard and player-review bumpers; no invites.
-- **Freeskate Activities** (proposals, voting, their stats panel on the freeskate screen),
-  spot leaderboards, Create-a-Spot online and Skate.Reel uploads are not ported.
+- **Spot leaderboards**, Create-a-Spot online, Skate.Reel uploads and the freeskate screen's
+  activity stats panel are not ported.
 - **HUD pieces**: the online timer (lock/start/hurry countdowns, the location-change countdown)
   and the "waiting for skaters" chyron.
 - **Joining a game mid-challenge**: the joiner skates in the lobby until the next challenge,
   apart from the challenge's players (see Relays above), whom it watches as ghosts (PC port
   addition): drawn with the ghost technique at no more than 40% opacity, with their names and
-  sounds and no deck shadow, while they never see it (a frame of a member not in their round
-  that still arrives is dropped). A remote skater whose frames stop for three seconds shows no
+  sounds and no deck shadow. They see nothing of it. Online Settings' Show Ghost Players in
+  pregame lobby (on unless `online-config.json`'s `show_ghost_players` is false) turns the ghosts
+  off. A remote skater whose frames stop for three seconds shows no
   more (its name and sounds go with it) until its frames come again; a shorter hitch leaves it
   where it was. The original takes no join while a challenge runs, so the challenge's players
   hear nothing of a member waiting in the pre-game lobby: no line when one leaves. As a port
   addition, their event log reads "<name> has joined pre-game lobby." when one joins during
   their round.
+- **Spectate** (PC port addition): the player list's last row is Spectate in place of View
+  Gamercard, for watching a player who waits in the pre-game lobby from there: in a free skate's
+  lobby skate with no activity under way or loading, and in a challenge game's before its
+  challenge or while the local player waits through one (a player in the challenge is not
+  watched); greyed otherwise. It shows the player's skater from its owner's game camera, from the
+  replay frames every member sends at the base rate (pose and camera samples twenty times a
+  second), the city streaming around it however far it skates; the local skater stands without
+  pad input meanwhile. The skate.TV overlay's B stops it, as do the player leaving or going into
+  the challenge, a change of location, a challenge or activity loading with the local player, a
+  travel and the game ending. LB's quick menu offers it too, as B Spectate in the options row the
+  career's Contacts uses (its button B), wherever a player can be watched or one is: each B with
+  LB held moves the view to the next player who can be watched, in the game's join order and
+  followed by user id (a player who left is simply not in the order), and after the last one back
+  to the local skater. While watching, the menu follows LB with its marker rows disabled.
+- **Edit Skater** (PC port addition): the online free skate's pause menu has Edit Skater above
+  Game Settings, as the single-player hub's, enabled while the local skater is in the game's
+  world with no round, travel, change of location or freeskate activity it proposed or accepted
+  coming. The editor is the career's; its shop sells against the profile's career cash and
+  unlocks, and what it buys comes off that cash in SKATER.P as it closes (the purchase's
+  statistic is not counted, the profile's statistics not being loaded online). The game simulates
+  under the editor as under the pause menu beneath it (`Net::ResumeGame`): the skater, without
+  the pad's focus, brakes to a stop and idles where it stood, and its replay frames keep going
+  out, so the others see it waiting there. Once the local skater has
+  the look the editor left, it goes to every player again (`Recipe`, at most one every two and a
+  half seconds), whose consoles build the skater again; the server replaces the member's recipe,
+  so later joiners get the new one, and drops one within two seconds of the member's last. A
+  round loading with the player, a change of location, a travel or the game ending closes the
+  editor at once: the receipt's lines leave the skater, which keeps only what the player owns or
+  bought, and the rest saves as Finish's would. The chat prompt does not open over it.
 - **Leave Challenge** (PC port addition): the online challenge's pause menu has Leave Challenge
   above Quit Game while the local player's round runs and it has not finished, with a No/Yes
   confirmation. Yes ends the local round as the lobby reset does (the skater travels back to the

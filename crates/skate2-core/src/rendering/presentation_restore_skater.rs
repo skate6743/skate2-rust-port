@@ -118,7 +118,7 @@ fn posed(
     rig: &SkaterRig,
     mut pose: Vec<AndaleSqt>,
     twist_ratios: [f32; 4],
-) -> Result<(Vec<AnimationMatrix>, AnimationMatrix), SkaterRestoreError> {
+) -> Result<(Vec<AnimationMatrix>, AnimationMatrix, Vec<AnimationMatrix>), SkaterRestoreError> {
     let mut hips_transform = None;
     try_move_root_channels(
         &mut SliceChannels {
@@ -151,14 +151,19 @@ fn posed(
         return Err(SkaterRestoreError::Pose("inverse bind count"));
     }
     let mut matrices: Vec<AnimationMatrix> = global
-        .into_iter()
+        .iter()
         .zip(rig.inverse_bind.iter())
-        .map(|(global, inverse)| compose_pose_matrix(global, *inverse))
+        .map(|(global, inverse)| compose_pose_matrix(*global, *inverse))
         .collect();
     *matrices
         .first_mut()
         .ok_or(SkaterRestoreError::Pose("root bone"))? = hips;
-    Ok((matrices, hips))
+    Ok((matrices, hips, global))
+}
+
+/// A point through a matrix of rows (the axes, then the translation).
+fn transform_point(matrix: AnimationMatrix, [x, y, z]: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|lane| matrix[12 + lane] + matrix[8 + lane].mul_add(z, matrix[4 + lane].mul_add(y, matrix[lane] * x)))
 }
 
 /// `AnimCommandSystem::Blend` keeps thirteen bits of the coefficient.
@@ -188,6 +193,10 @@ pub(crate) struct SkaterRestore {
     pub(crate) bounds: [[f32; 3]; 2],
     /// The entity's materials, as the last restored frame gave them.
     pub(crate) materials: Option<Arc<Mutex<CharacterMaterialAdmission>>>,
+    /// Bones whose world positions the restore keeps (the head and feet, for an online player's
+    /// scoring of a remote skater), and those positions as the last restore posed them.
+    pub(crate) body_bones: Option<[usize; 3]>,
+    pub(crate) body_points: Option<[[f32; 3]; 3]>,
 }
 
 #[derive(Debug)]
@@ -221,6 +230,8 @@ impl SkaterRestore {
             hips_forward: [0.0; 3],
             bounds: [[0.0; 3]; 2],
             materials: None,
+            body_bones: None,
+            body_points: None,
         }
     }
 
@@ -287,11 +298,17 @@ impl SkaterRestore {
             }
             _ => next.pose.clone(),
         };
-        let (matrices, hips) = posed(rig, pose, next.twist_ratios)?;
+        let (matrices, hips, global) = posed(rig, pose, next.twist_ratios)?;
         self.palette
             .update_bone_transforms(&matrices)
             .map_err(SkaterRestoreError::Palette)?;
         let local_to_world = multiply(root, hips);
+        // A bone's world position: its global translation through the skinning's local-to-world
+        // (the palette's matrices are the globals over the inverse bind, uploaded through it).
+        self.body_points = self.body_bones.and_then(|bones| {
+            let point = |bone: usize| global.get(bone).map(|m| transform_point(local_to_world, [m[12], m[13], m[14]]));
+            Some([point(bones[0])?, point(bones[1])?, point(bones[2])?])
+        });
         // BeginSkinJob 0x827d7c48: ClothUpdate steps the entity's ROPA cloth with the
         // hips' rotation and the restored time. A replay's DoSimRestore runs it on the
         // pose it restored (StartJobs 0x827dbb90 at 0x827e7098), by the replay's frame and
@@ -316,7 +333,7 @@ impl SkaterRestore {
                     .map_err(|error| SkaterRestoreError::Cloth(error.to_string()))?;
             } else if materials.cloth_needs_step(clock.frame) {
                 let frame_hips = if blended {
-                    let (frame_matrices, frame_hips) =
+                    let (frame_matrices, frame_hips, _) =
                         posed(rig, next.pose.clone(), next.twist_ratios)?;
                     self.palette
                         .update_bone_transforms(&frame_matrices)

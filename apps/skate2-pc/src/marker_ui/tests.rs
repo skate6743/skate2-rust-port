@@ -29,7 +29,7 @@ fn minimap_native_heading_ring_and_fade() {
 fn original_minimap_and_district_timelines() {
     let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts=MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets=Assets::load(&mounts).unwrap();
@@ -60,7 +60,7 @@ fn original_cas_projection_retains_depth_across_postfx_changes() {
     use skate2_core::ui::edit_skater_presentation::{EditSkaterCamera, EditSkaterPresentationAttributes};
     let game = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts = MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
     }
     let attributes = EditSkaterPresentationAttributes::load(&mounts).unwrap();
@@ -131,7 +131,7 @@ fn native_multiline_wrap_preserves_words_and_authored_breaks() {
 fn original_map_selection_animates_and_only_background_expands() {
     let game = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts = MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
     }
     let assets = Assets::load(&mounts).unwrap();
@@ -211,7 +211,7 @@ fn original_score_movie_trick_multiplier_timer_and_bail() {
     use skate2_core::ui::{trick_backend::{PhysicsFrame,TrickName}, trick_display::DisplayTuning};
     let game = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts = MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets = Assets::load(&mounts).unwrap();
@@ -320,7 +320,7 @@ fn original_score_movie_trick_multiplier_timer_and_bail() {
 fn original_marker_movie_opens_pulses_and_closes() {
     let root = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts = MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&root), spec.use_external_header).unwrap());
     }
     let assets = Assets::load(&mounts).unwrap();
@@ -415,7 +415,7 @@ fn original_objective_movie_lists_scales_and_completes() {
     use skate2_core::challenge::objective_hud::{ObjectiveHudView, objective_state};
     let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts=MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets=Assets::load(&mounts).unwrap();
@@ -470,7 +470,7 @@ fn original_tutorial_movie_shows_tips_animations_and_trick_guides() {
     use skate2_core::challenge::tutorial_hud::{TrickSlot, TutorialHudView, screen_state};
     let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts=MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets=Assets::load(&mounts).unwrap();
@@ -567,7 +567,7 @@ fn original_action_overlay_signs_up_and_hides() {
     use skate2_core::challenge::signup_hud::SignUpHudView;
     let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts=MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets=Assets::load(&mounts).unwrap();
@@ -608,15 +608,15 @@ fn original_signup_poster_lays_out_the_tutorial_challenge() {
     use skate2_core::challenge::signup_poster::{PosterText, PosterView};
     let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts=MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets=Assets::load(&mounts).unwrap();
     let text=|clip: &mut Clip| clip.text.as_deref().map(String::from_utf16_lossy);
     // m_1a_03's poster natives, as the core's sign-up test reads them.
     let view=PosterView {
-        title:PosterText {text:"ID_CHALLENGE_M_1A_03_TUTORIAL_FLIPTRICKS_TITLE".into(),formatted:true,dmo:None},
-        description:PosterText {text:"ID_CHALLENGE_M_1A_03_TUTORIAL_FLIPTRICKS_DESCRIPTION".into(),formatted:true,dmo:None},
+        title:PosterText {text:"ID_CHALLENGE_M_1A_03_TUTORIAL_FLIPTRICKS_TITLE".into(),formatted:true},
+        description:PosterText {text:"ID_CHALLENGE_M_1A_03_TUTORIAL_FLIPTRICKS_DESCRIPTION".into(),formatted:true},
         cash:300,
         description_enabled:true,
         tutorial_nis:Some("ID_CIC_VIEW_FLIP_TRICKS".into()),
@@ -703,7 +703,7 @@ fn original_unlock_overlay_counts_the_rewards_and_cash() {
     use skate2_core::{challenge::unlock_overlay::UnlockOverlayView, ui::apt_projection::{SPIN_DISTANCE, SPIN_START_ANGLE, Spin, SpinMode}};
     let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts=MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets=Assets::load(&mounts).unwrap();
@@ -794,7 +794,7 @@ fn original_skate101_shows_the_title_text_and_button() {
     use skate2_core::challenge::system::Skate101View;
     let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts=MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets=Assets::load(&mounts).unwrap();
@@ -833,7 +833,7 @@ fn original_skate101_shows_the_title_text_and_button() {
 fn boot_assets() -> (MountSet, Assets) {
     let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts=MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets=Assets::load(&mounts).unwrap();
@@ -1304,7 +1304,7 @@ fn original_party_play_end_screens_build() {
         options:EndChallengeOptions {win:true,throwdown,challenge:0,screen},
         leaderboard:leaderboard.clone(),
         second:leaderboard.clone(),
-        stance_regular:true, team_totals:[0;2],
+        stance_regular:true, team_totals:[0;2], online:None,
     };
     let title=MissionTitle::Missing;
     let mut spin=Spin::default();
@@ -1350,7 +1350,7 @@ fn original_failed_small_screen_builds() {
         options:EndChallengeOptions {win:false,throwdown:results::throwdown::NONE,challenge:0,screen:results::screen::FAILED_SMALL},
         leaderboard:results::LeaderboardState::default().round,
         second:results::LeaderboardState::default().round_second,
-        stance_regular:true, team_totals:[0;2],
+        stance_regular:true, team_totals:[0;2], online:None,
     };
     let text=|clip:&mut clips::Clip,path:&[&str]| clip.named(path).unwrap().text.clone().map(|t| String::from_utf16_lossy(&t));
     let x=|menu:&clips::Clip,name:&str| menu.children.values().find(|c| c.entry.name.as_deref()==Some(name)).unwrap().entry.matrix.tx;
@@ -1404,7 +1404,7 @@ fn original_end_challenge_small_screen_builds() {
         options:EndChallengeOptions {win:true,throwdown:results::throwdown::NONE,challenge:0,screen:results::screen::RESULTS_SMALL},
         leaderboard:results::LeaderboardState::default().round,
         second:results::LeaderboardState::default().round_second,
-        stance_regular:true, team_totals:[0;2],
+        stance_regular:true, team_totals:[0;2], online:None,
     };
     let text=|clip:&mut clips::Clip,path:&[&str]| clip.named(path).unwrap().text.clone().map(|t| String::from_utf16_lossy(&t));
     let mut random=apt_random::AptRandom::new();
@@ -1432,7 +1432,7 @@ fn original_dpo_values_format_as_the_native() {
     use skate2_core::challenge::{dpo_hud::DpoHud, turn_hud::{DpoView, TurnHudView}};
     let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts=MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets=Assets::load(&mounts).unwrap();
@@ -1458,7 +1458,7 @@ fn original_script_format_arguments_as_the_native() {
     use localizer::AptArgument::{Integer, Text};
     let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
     let mut mounts=MountSet::new();
-    for spec in SKATE2_ARCHIVES.iter().take(4) {
+    for spec in SKATE2_ARCHIVES.iter() {
         mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
     }
     let assets=Assets::load(&mounts).unwrap();

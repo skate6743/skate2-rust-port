@@ -4,7 +4,7 @@ use super::{
     MESH_ATTRIBUTES, MapEnvironment, MapPipelines, ShadowCascades, pack_globals, union_of_islands,
 };
 use crate::gpu_renderer::{
-    DEPTH_FORMAT, GpuResourceBuilder, RasterState, create_texture_bindings, raster_state::CullMode,
+    DEPTH_FORMAT, GpuResourceBuilder, GpuTexture, RasterState, create_texture_bindings, raster_state::CullMode,
     uniform_bytes,
 };
 use skate2_core::texture::NativeTexture;
@@ -539,6 +539,24 @@ fn ported_effects_validate_and_draw_on_an_available_adapter() {
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default()),
         ),
+        main_target: GpuTexture {
+            view: Arc::new(
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("main target stand-in"),
+                        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&wgpu::TextureViewDescriptor::default()),
+            ),
+            binding: None,
+            cube: false,
+        },
     };
     let first_mesh = builder
         .upload_mesh(&lit_triangle())

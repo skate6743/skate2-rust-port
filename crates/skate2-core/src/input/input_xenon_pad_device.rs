@@ -181,7 +181,10 @@ impl<R: Clone> XenonPadDevice<R> {
         // produce unknown guitar when the platform cannot prove the output byte.
         // Propagate that uncertainty; disconnected samples never consume it.
         self.guitar = caps.subtype.map(|subtype| subtype == 7);
-        if supported {
+        // PC port: a still request stays still. On a wireless pad the 360 tuning's high
+        // frequency offset (`kHighFreqOffset`, +0.05) would otherwise hold that motor at 5%
+        // whenever nothing rumbles.
+        if supported && frequency != 0.0 {
             if let Some(low) = refs
                 .capture_pad_vibration(PadVibrationFloat::LowScale)
                 .map_err(E::Cvar)?

@@ -52,7 +52,8 @@ PC. Requires your own legally obtained Xbox 360 copy of Skate 2 to run, you will
   and **lobby chat** (press T).
 - **Watch a challenge in progress.** Join a game mid-challenge, or pick **Leave Challenge** in
   the pause menu, and you wait in the pre-game lobby watching the players still in the challenge
-  as ghosts. They never see you.
+  as ghosts. They never see you. Online Settings' **Show Ghost Players in pregame lobby** turns
+  the ghosts off.
 - **Display Settings.** A frame-rate cap (60, 120, your monitor's refresh rate or uncapped), VSync
   (on: no tearing; off: frames show at once, with the cap still applied), a resolution scale
   (50% to 200%: above 100% the world renders larger and is scaled down for a sharper picture,
@@ -60,6 +61,9 @@ PC. Requires your own legally obtained Xbox 360 copy of Skate 2 to run, you will
   borderless fullscreen (Alt+Enter works too), and switches for PostFX and the fisheye lens.
 - **Better Party Play.** No pedestrians or traffic in the way and your own career skater is in the
   list to choose from.
+- **Stick Settings.** Under Control Settings, each stick takes a multiplier (0.40 to 1.10), a
+  deadzone and an anti-deadzone that work as RPCS3's do, with both sticks drawn live beside them.
+  Out of the box, and after Reset To Default, the sticks feel exactly as the original's.
 
 ## How to play
 
@@ -134,8 +138,8 @@ version.
 
 ### Saves and settings
 
-Everything stays in the folder you run the game from: `config.json`, `online-config.json` and
-`saves/`. On macOS the app starts itself in `~/Library/Application Support/Skate 2`, so they stay
+Everything stays in the folder you run the game from: `config.json`, `online-config.json`,
+`controller_config.json` and `saves/`. On macOS the app starts itself in `~/Library/Application Support/Skate 2`, so they stay
 there. Replays and photos go to `saves/skate_reel/`. MP4 export needs FFmpeg with H.264 and
 AAC: put `ffmpeg.exe` (`ffmpeg` on Linux and macOS) beside the game, or on your `PATH`.
 

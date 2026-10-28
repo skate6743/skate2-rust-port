@@ -41,6 +41,12 @@ pub(super) struct ReplayEditorSession {
     collision:collision::Collision,
     /// Pushed by the Hall of Meat results, which the exit pops back to.
     hom_results:bool,
+    /// `sGameInfo.additionalWorldLocation`, which a save writes: the game's in play, or the
+    /// saved replay's.
+    world_location:Option<u64>,
+    /// The world a saved replay plays in, put in place before its first frame shows
+    /// (`StateReplay::LoadAdditionalWorld` 0x827756e0).
+    world:Option<super::world_travel::TravelWorld>,
 }
 
 /// Temporary presentation ownership during a PC media export. Simulation and
@@ -123,6 +129,19 @@ impl<T,C> SelectedLiveSession<T,C> {
             }
             self.frontend_fade.reveal();return Ok(());
         }
+        // A saved replay's world location (`loadAdditionalWorldLocation`; none: the main world);
+        // over the game in play, the game's own.
+        let (world_location,world)=match recording.as_ref() {
+            Some(a)=>{
+                let file=a.world_location.and_then(|key|crate::ui::freeskate_option::location_world(&db,key));
+                let world=match (a.world_location,file) {
+                    (Some(key),Some(file))=>super::world_travel::TravelWorld::of_location(&file,key),
+                    _=>super::world_travel::TravelWorld::Main,
+                };
+                (a.world_location,Some(world))
+            }
+            None=>(self.additional_location,None),
+        };
         let tuning=assets.cvars.try_replay_editor().map_err(error)?;
         // The PC profile is the offline signed-in user. Online authentication is separate.
         let signed_in=store.load_profile_data().map_err(error)?.is_some();
@@ -146,7 +165,8 @@ impl<T,C> SelectedLiveSession<T,C> {
         self.replay_restorer=PresentationRestorer::new();
         self.replay_editor=Some(ReplayEditorSession {export:None,loaded_index,loaded_frames,loaded_hulls,intro_done:false,animation_ready:false,controller,camera:NisCamera::default(),rate:0.,
             game_camera:CameraRestore::new(),shakes,mover:Mover::default(),spaces:Spaces::default(),
-            last_rate_frame:0.,exit:0,save:None,location:String::new(),last_stream_focus:[0.;3],collision:Default::default(),hom_results});
+            last_rate_frame:0.,exit:0,save:None,location:String::new(),last_stream_focus:[0.;3],collision:Default::default(),hom_results,
+            world_location,world});
         if self.main_menu.is_none()&&!hom_results {self.pause_menu.hide_for_replay();}
         self.restore_editor_frame(0.)?;
         let location=self.initial_replay_location().map_err(error)?;
@@ -219,7 +239,7 @@ impl<T,C> SelectedLiveSession<T,C> {
         let default=crate::challenge::dynamic_hull::DynamicHulls::default();
         let hulls=hulls.map(|s|&s.world().dynamic_hulls).unwrap_or(&default);
         let mut packed=hulls.pack();packed[4..8].copy_from_slice(&hulls.game_type_flags.to_be_bytes());
-        archive::encode(&editor.controller.author.take,snapshot.film_pack,packed,self.replay_index(),self.recorded_frames())
+        archive::encode(&editor.controller.author.take,snapshot.film_pack,editor.world_location,packed,self.replay_index(),self.recorded_frames())
     }
     pub fn replay_editor_save_complete(&mut self,replay:bool,first:bool,result:Result<String,String>) {
         if let Some(editor)=self.replay_editor.as_mut() {
@@ -271,9 +291,26 @@ impl<T,C> SelectedLiveSession<T,C> {
             editor.controller.author.take.set_parameter(1.);editor.exit=2;
         }
         self.restore_editor_frame(dt)?;
+        let (focus,world)={
+            let editor=self.replay_editor.as_ref().expect("open editor");
+            // Exit stage 5 is StateReplay::PurgeAdditionalWorld 0x827662f0: the main world again.
+            let world=if editor.exit==5 {Some(super::world_travel::TravelWorld::Main)} else {editor.world.clone()};
+            (editor.spaces.anchor.map(|p|[p[1],p[2],p[0]]).ok_or_else(||error("recorded local skater absent"))?,world)
+        };
+        // StateReplay::LoadAdditionalWorld: a saved replay's world is in place before it shows; one
+        // the port cannot load leaves the main world.
+        let world_ready=match &world {
+            Some(world)=>match self.try_prepare_world(world,focus)? {
+                super::world_travel::WorldReadiness::Pending=>false,
+                super::world_travel::WorldReadiness::Ready=>true,
+                super::world_travel::WorldReadiness::MainInstead=>{
+                    self.replay_editor.as_mut().expect("open editor").world=Some(super::world_travel::TravelWorld::Main);
+                    true
+                }
+            },
+            None=>true,
+        };
         let editor=self.replay_editor.as_mut().expect("open editor");
-        let focus=editor.spaces.anchor.map(|p|[p[1],p[2],p[0]])
-            .ok_or_else(||error("recorded local skater absent"))?;
         let terrain=self.inner.terrain.as_mut().ok_or_else(||error("terrain absent"))?;
         terrain.try_advance_asset_release().map_err(error)?;
         terrain.try_update_focus(focus).map_err(error)?;
@@ -294,7 +331,7 @@ impl<T,C> SelectedLiveSession<T,C> {
             }
         }
         let loaded=status.loaded;
-        if editor.intro_done&&editor.animation_ready&&!editor.controller.ready&&loaded&&hulls_loaded {
+        if editor.intro_done&&editor.animation_ready&&!editor.controller.ready&&loaded&&hulls_loaded&&world_ready {
             editor.controller.intro_complete().map_err(error)?;self.frontend_fade.reveal();
         }
         // SimUpdate82570e60 never stalls Play. UpdateStall82567158 latches a
@@ -311,7 +348,11 @@ impl<T,C> SelectedLiveSession<T,C> {
             let requests=std::mem::take(&mut hulls.world_mut().outputs);
             career::queue_dynamic_hull_requests(terrain.as_mut(),requests)?;editor.exit=4;return Ok(());
         }
-        if (editor.exit==3 && exit_loaded&&editor.loaded_hulls.is_none())||(editor.exit==4&&hulls_loaded) {
+        let finished=(editor.exit==3 && exit_loaded&&editor.loaded_hulls.is_none())||(editor.exit==4&&hulls_loaded);
+        // StateReplay::ReplayState: a replay that loaded an additional world (mbAdditionalWorld)
+        // purges it before the front end returns.
+        if finished&&matches!(editor.world,Some(super::world_travel::TravelWorld::Additional{..})) {editor.exit=5;return Ok(());}
+        if finished||(editor.exit==5&&world_ready) {
             self.inner.bound_input.as_ref().ok_or_else(||error("input absent"))?
                 .try_set_replay_pause(false).map_err(error)?;
             let hom_results=self.replay_editor.take().is_some_and(|e|e.hom_results);

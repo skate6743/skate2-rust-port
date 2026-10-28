@@ -1,11 +1,16 @@
-//! Explicit serialized input events over the existing manager and group caches.
-//! This does not implement the platform timer, front-end hotplug notifications,
-//! vibration initialization, or the complete application pre-update scheduler.
+//! Explicit serialized input events over the existing manager and group caches, and each pad's
+//! `Vibration`. This does not implement the platform timer, front-end hotplug notifications or
+//! the complete application pre-update scheduler.
 use super::{DeviceManagerError, InputDeviceManager};
 use crate::{
+    input_cvar_runtime::InputCvarReferences,
     input_map::SelectedInputMap,
-    input_pad::device::{PadPlatform, PadRemap},
+    input_pad::{
+        device::{PadActuatorError, PadPlatform, PadRemap},
+        vibration::Vibration,
+    },
     input_pad_cache::{InputPadCache, InputPadCacheError, PublishedInputPadSample},
+    reckoning_numeric::ReckoningNumeric,
     skeleton_collision_numeric::SkeletonCollisionNumeric,
 };
 use std::sync::Arc;
@@ -56,9 +61,11 @@ pub(crate) struct SelectedDeviceInputRuntime<R, N, M> {
     map: Arc<SelectedInputMap>,
     numeric: N,
     remap: M,
+    /// `InputManager::mVibration`, one per pad.
+    vibration: [Vibration; 4],
 }
 impl<R: Clone, N: SkeletonCollisionNumeric, M: PadRemap<R>> SelectedDeviceInputRuntime<R, N, M> {
-    pub(crate) const fn from_owners(
+    pub(crate) fn from_owners(
         devices: InputDeviceManager<R>,
         sim: InputPadCache,
         pres: InputPadCache,
@@ -73,6 +80,43 @@ impl<R: Clone, N: SkeletonCollisionNumeric, M: PadRemap<R>> SelectedDeviceInputR
             map,
             numeric,
             remap,
+            vibration: std::array::from_fn(|_| Vibration::new()),
+        }
+    }
+    /// `InputManager::GetVibration` 0x82728eb0.
+    pub(crate) fn vibration_mut(&mut self, controller: usize) -> Option<&mut Vibration> {
+        self.vibration.get_mut(controller)
+    }
+    /// `InputManager::UpdateVibration` 0x826e22b0: each pad's `Vibration::Update`, whose low and
+    /// high frequencies go to its actuators 0 and 1 (`cXenonPadDevice::SetActuator`).
+    pub(crate) fn try_update_vibration<P: PadPlatform, Num: ReckoningNumeric>(
+        &mut self,
+        platform: &mut P,
+        refs: &InputCvarReferences,
+        numeric: &mut Num,
+    ) -> Result<(), PadActuatorError<P::Error, Num::Error>> {
+        let Some(devices) = self.devices.devices_mut() else { return Ok(()) };
+        for (device, vibration) in devices.iter_mut().zip(&mut self.vibration) {
+            let [low, high] = vibration.update();
+            device.set_actuator(0, low, platform, refs, numeric)?;
+            device.set_actuator(1, high, platform, refs, numeric)?;
+        }
+        Ok(())
+    }
+    /// `Vibration::Reset` 0x826e1590 of one pad: its channels, then `ResetActuators`.
+    pub(crate) fn try_reset_vibration<P: PadPlatform, Num: ReckoningNumeric>(
+        &mut self,
+        controller: usize,
+        platform: &mut P,
+        refs: &InputCvarReferences,
+        numeric: &mut Num,
+    ) -> Result<(), PadActuatorError<P::Error, Num::Error>> {
+        if let Some(vibration) = self.vibration.get_mut(controller) {
+            vibration.clear();
+        }
+        match self.devices.devices_mut().and_then(|devices| devices.get_mut(controller)) {
+            Some(device) => device.reset_actuators(platform, refs, numeric),
+            None => Ok(()),
         }
     }
     pub(crate) fn map(&self) -> &Arc<SelectedInputMap> {

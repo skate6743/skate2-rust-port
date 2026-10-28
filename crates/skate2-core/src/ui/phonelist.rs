@@ -12,6 +12,9 @@ pub struct MarkerHudSnapshot {
     pub prop: Option<PropHudSnapshot>,
     pub phone_hidden: bool,
     pub prop_tick: u32,
+    /// LB's quick menu offers B Spectate in its options row (PC port addition): an online game's
+    /// pre-game lobby where another player can be watched, or one is.
+    pub spectate: bool,
 }
 
 /// SignUpData::mExtraData and DMO_GetParams (0x826b88c8).

@@ -324,6 +324,29 @@ impl<C> SelectedProductionInputOwner<C> {
         .map_err(ProductionInputFrameError::Device)
     }
 
+    /// The `Vibration` of this owner's controller (`PlayerUI::mControllerIndex`).
+    pub(crate) fn vibration_mut(&mut self) -> Option<&mut crate::input_pad::vibration::Vibration> {
+        self.input.vibration_mut(self.controller)
+    }
+
+    /// `InputManager::UpdateVibration`: every pad's rumble into its actuators.
+    pub(crate) fn try_update_vibration<P: PadPlatform>(
+        &mut self,
+        pad: &mut P,
+        cvars: &InputCvarReferences,
+    ) -> Result<(), PadActuatorError<P::Error, ReckoningHostNumericError>> {
+        self.input.try_update_vibration(pad, cvars, &mut HostReckoningNumeric)
+    }
+
+    /// `PlayerUI::ReceiveRumbleResetMsg` 0x828aa390: this controller's `Vibration::Reset`.
+    pub(crate) fn try_reset_vibration<P: PadPlatform>(
+        &mut self,
+        pad: &mut P,
+        cvars: &InputCvarReferences,
+    ) -> Result<(), PadActuatorError<P::Error, ReckoningHostNumericError>> {
+        self.input.try_reset_vibration(self.controller, pad, cvars, &mut HostReckoningNumeric)
+    }
+
     /// Host calls after native preceding network/session effects, with actual
     /// focus/can-simulate and `PhysicalGameInfo`. The pad argument selects the
     /// same concrete platform type as the timer event; no OS call occurs here.
@@ -440,8 +463,8 @@ impl<C> SelectedProductionInputOwner<C> {
         ).map_err(ProductionInputFrameError::Device)?;
         let pad = self.input.cache(SelectedInputGroup::Presentation).pad(self.controller)
             .map_err(|e| ProductionInputFrameError::Device(SelectedDeviceInputError::Cache(e)))?;
-        let mut values = [0.0; 18];
-        for (result, state) in values.iter_mut().zip([134, 136, 137, 146, 147, 148, 149, 205, 35, 139, 144, 141, 138, 164, 165, 135, 188, 185]) {
+        let mut values = [0.0; 20];
+        for (result, state) in values.iter_mut().zip([134, 136, 137, 146, 147, 148, 149, 205, 35, 139, 144, 141, 138, 164, 165, 135, 188, 185, 150, 151]) {
             *result = self.input.map().try_value(state, &mut RetainedPadView(pad))
                 .map_err(ProductionInputFrameError::FrontendMap)?;
         }
@@ -451,6 +474,7 @@ impl<C> SelectedProductionInputOwner<C> {
             misc: values[9] != 0.0, left_shift: values[10] != 0.0, right_shift: values[11] != 0.0,
             option: values[12] != 0.0, left_released: values[13] != 0.0, right_released: values[14] != 0.0,
             back: values[15] != 0.0, left_shift_released: values[16] != 0.0, right_shift_released: values[17] != 0.0,
+            dpad_up: values[18] != 0.0, dpad_down: values[19] != 0.0,
         })
     }
 
@@ -480,6 +504,18 @@ impl<C> SelectedProductionInputOwner<C> {
         let mut value=|state|self.input.map().try_value(state,&mut RetainedPadView(pad))
             .map_err(ProductionInputFrameError::FrontendMap);
         Ok(value(29)?!=0. && value(182)?!=0.)
+    }
+
+    /// LB held, and B pressed with it (PC port addition: LB's quick menu moves an online game's
+    /// Spectate on to the next player), from the same drained PRES sample.
+    pub(crate) fn try_spectate_cycle_input<P: PadPlatform>(&self)
+        -> Result<(bool, bool), ProductionInputFrameError<P::Error>> {
+        let pad=self.input.cache(SelectedInputGroup::Presentation).pad(self.controller)
+            .map_err(|e|ProductionInputFrameError::Device(SelectedDeviceInputError::Cache(e)))?;
+        let mut value=|state|self.input.map().try_value(state,&mut RetainedPadView(pad))
+            .map_err(ProductionInputFrameError::FrontendMap);
+        let held = value(29)? != 0.;
+        Ok((held, held && value(137)? != 0.))
     }
 
     pub(crate) fn try_can_open_frontend(&self) -> Result<bool, crate::selected_pause_manager::PauseError> {

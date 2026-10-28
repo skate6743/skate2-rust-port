@@ -1,7 +1,8 @@
 //! PC port addition: `online-config.json` in the game's root directory (next
 //! to `saves`), holding the nickname the player uses in online lobbies, the
-//! dedicated server the game connects to (`skate2-pc --server` on that host) and
-//! whether lobby chat shows (Settings' Online Settings).
+//! dedicated server the game connects to (`skate2-pc --server` on that host), and
+//! whether lobby chat shows and whether a member waiting in a challenge's pre-game lobby
+//! sees its players as ghosts (Settings' Online Settings).
 //!
 //! The server the game connects to by default is part of the build: compiled with
 //! `SKATE2_DEFAULT_SERVER=<host:port>` (a release's public server), else this machine's. The
@@ -28,11 +29,14 @@ pub struct OnlineConfig {
     /// Show Lobby Chat: off, T opens no chat prompt and members' chat lines stay out of the
     /// event log. On unless the file says otherwise.
     pub show_lobby_chat: bool,
+    /// Show Ghost Players in pregame lobby: off, a member waiting in a challenge's pre-game
+    /// lobby sees nothing of the challenge's players. On unless the file says otherwise.
+    pub show_ghost_players: bool,
 }
 
 impl Default for OnlineConfig {
     fn default() -> Self {
-        Self { nickname: String::new(), server: String::new(), show_lobby_chat: true }
+        Self { nickname: String::new(), server: String::new(), show_lobby_chat: true, show_ghost_players: true }
     }
 }
 
@@ -81,10 +85,11 @@ impl OnlineConfig {
 
     fn text(&self) -> String {
         format!(
-            "{{\n  \"nickname\": {},\n  \"server\": {},\n  \"show_lobby_chat\": {}\n}}\n",
+            "{{\n  \"nickname\": {},\n  \"server\": {},\n  \"show_lobby_chat\": {},\n  \"show_ghost_players\": {}\n}}\n",
             quote(&self.nickname),
             quote(&self.server),
-            self.show_lobby_chat
+            self.show_lobby_chat,
+            self.show_ghost_players
         )
     }
 }
@@ -107,8 +112,8 @@ pub(super) fn quote(text: &str) -> String {
     out
 }
 
-/// Reads the top-level object's `nickname` and `server` strings and its `show_lobby_chat`
-/// boolean, and skips every other value.
+/// Reads the top-level object's `nickname` and `server` strings and its `show_lobby_chat` and
+/// `show_ghost_players` booleans, and skips every other value.
 fn parse(text: &str) -> Option<OnlineConfig> {
     let mut reader = Reader { bytes: text.as_bytes(), at: 0 };
     let mut config = OnlineConfig::default();
@@ -125,6 +130,8 @@ fn parse(text: &str) -> Option<OnlineConfig> {
             config.server = reader.string()?.trim().to_owned();
         } else if key == "show_lobby_chat" && matches!(reader.peek()?, b't' | b'f') {
             config.show_lobby_chat = reader.boolean()?;
+        } else if key == "show_ghost_players" && matches!(reader.peek()?, b't' | b'f') {
+            config.show_ghost_players = reader.boolean()?;
         } else {
             reader.skip_value()?;
         }
@@ -161,12 +168,88 @@ pub(super) fn string_fields(text: &str) -> Option<Vec<(String, String)>> {
     }
 }
 
+/// The top-level object's numbers with their keys, every other value skipped; `None` for text
+/// that is no JSON object.
+pub(super) fn number_fields(text: &str) -> Option<Vec<(String, f64)>> {
+    let mut reader = Reader { bytes: text.as_bytes(), at: 0 };
+    let mut fields = Vec::new();
+    reader.expect(b'{')?;
+    if reader.peek()? == b'}' {
+        return Some(fields);
+    }
+    loop {
+        let key = reader.string()?;
+        reader.expect(b':')?;
+        if matches!(reader.peek()?, b'-' | b'0'..=b'9') {
+            fields.push((key, reader.number()?));
+        } else {
+            reader.skip_value()?;
+        }
+        match reader.next()? {
+            b',' => {}
+            b'}' => return Some(fields),
+            _ => return None,
+        }
+    }
+}
+
+/// The top-level object's arrays of strings with their keys, every other value skipped (an
+/// array holding anything but strings among them); `None` for text that is no JSON object.
+pub(super) fn string_list_fields(text: &str) -> Option<Vec<(String, Vec<String>)>> {
+    let mut reader = Reader { bytes: text.as_bytes(), at: 0 };
+    let mut fields = Vec::new();
+    reader.expect(b'{')?;
+    if reader.peek()? == b'}' {
+        return Some(fields);
+    }
+    loop {
+        let key = reader.string()?;
+        reader.expect(b':')?;
+        if reader.peek()? == b'[' {
+            let start = reader.at;
+            if let Some(list) = reader.string_list() {
+                fields.push((key, list));
+            } else {
+                reader.at = start;
+                reader.skip_value()?;
+            }
+        } else {
+            reader.skip_value()?;
+        }
+        match reader.next()? {
+            b',' => {}
+            b'}' => return Some(fields),
+            _ => return None,
+        }
+    }
+}
+
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
 }
 
 impl Reader<'_> {
+    /// An array of strings; `None`, the reader left inside it, for any other value in it.
+    fn string_list(&mut self) -> Option<Vec<String>> {
+        self.expect(b'[')?;
+        let mut list = Vec::new();
+        if self.peek()? == b']' {
+            self.at += 1;
+            return Some(list);
+        }
+        loop {
+            if self.peek()? != b'"' {
+                return None;
+            }
+            list.push(self.string()?);
+            match self.next()? {
+                b',' => {}
+                b']' => return Some(list),
+                _ => return None,
+            }
+        }
+    }
     fn peek(&mut self) -> Option<u8> {
         while self.bytes.get(self.at)?.is_ascii_whitespace() {
             self.at += 1;
@@ -180,6 +263,14 @@ impl Reader<'_> {
     }
     fn expect(&mut self, byte: u8) -> Option<()> {
         (self.next()? == byte).then_some(())
+    }
+    fn number(&mut self) -> Option<f64> {
+        self.peek()?;
+        let start = self.at;
+        while self.bytes.get(self.at).is_some_and(|b| b.is_ascii_digit() || matches!(b, b'-' | b'+' | b'.' | b'e' | b'E')) {
+            self.at += 1;
+        }
+        std::str::from_utf8(&self.bytes[start..self.at]).ok()?.parse().ok().filter(|value: &f64| value.is_finite())
     }
     fn boolean(&mut self) -> Option<bool> {
         self.peek()?;
@@ -294,10 +385,22 @@ mod tests {
     #[test]
     fn config_round_trips_through_its_own_writer() {
         for show_lobby_chat in [true, false] {
-            let config =
-                OnlineConfig { nickname: "Sk8 \"Q\" \\ é".into(), server: "203.0.113.7:32082".into(), show_lobby_chat };
+            let config = OnlineConfig {
+                nickname: "Sk8 \"Q\" \\ é".into(),
+                server: "203.0.113.7:32082".into(),
+                show_lobby_chat,
+                show_ghost_players: !show_lobby_chat,
+            };
             assert_eq!(parse(&config.text()), Some(config));
         }
+    }
+
+    #[test]
+    fn ghost_players_show_unless_the_file_turns_them_off() {
+        assert!(parse(r#"{"nickname": "Rob", "show_lobby_chat": false}"#).unwrap().show_ghost_players);
+        let config = parse(r#"{"show_ghost_players": false, "nickname": "Rob"}"#).unwrap();
+        assert!(!config.show_ghost_players && config.show_lobby_chat);
+        assert!(parse(r#"{"show_ghost_players": 0}"#).unwrap().show_ghost_players);
     }
 
     #[test]
@@ -317,6 +420,14 @@ mod tests {
         assert_eq!(saved.server, "");
         assert_eq!(saved.server(), DEFAULT_SERVER);
         assert_eq!(parse(r#"{"server": " play.example.net:4000 "}"#).unwrap().server(), "play.example.net:4000");
+    }
+
+    #[test]
+    fn numbers_are_read_with_their_keys_and_other_values_skipped() {
+        let fields = number_fields(r#"{"a": 1.25, "b": "2", "c": -3, "d": [4], "e": 5e1}"#).unwrap();
+        assert_eq!(fields, [("a".to_string(), 1.25), ("c".to_string(), -3.), ("e".to_string(), 50.)]);
+        assert_eq!(number_fields(r#"{"a": 1.2.3}"#), None);
+        assert_eq!(number_fields("[]"), None);
     }
 
     #[test]

@@ -3,6 +3,8 @@
 //! a player joins (`StateOnlineGame`: lobby skate at the game's location, players joining and
 //! leaving) and the remote skaters, which show the replay frames their owners send.
 
+#[path = "online/activity.rs"]
+mod activity;
 #[path = "online/online_challenge.rs"]
 mod online_challenge;
 #[path = "online/online_dmos.rs"]
@@ -17,6 +19,10 @@ mod online_hub;
 mod online_menu;
 #[path = "online/remote_skater.rs"]
 mod remote_skater;
+#[path = "online/spectate.rs"]
+mod spectate;
+#[path = "online/edit_skater.rs"]
+mod edit_skater;
 
 use super::{SelectedLiveError, SelectedLiveSession, SelectedLiveStage};
 use crate::online::chat::{ChatOutcome, ChatPrompt};
@@ -82,6 +88,8 @@ pub enum OnlineNotice {
     /// The server does not take the nickname (`leave::KICKED_FOR_NICKNAME`): one with a word of its
     /// list. PC port addition, as the nickname is.
     NicknameNotPermitted,
+    /// The game is at a challenge this build lacks, joined or moved to (`SER_GAME_DLC_REQUIRED`).
+    DlcRequired,
 }
 
 /// A player of the game.
@@ -112,6 +120,8 @@ pub(super) struct OnlineGame {
     /// The local skater is in the game's world.
     pub(super) entered: bool,
     character_sent: bool,
+    /// When the local recipe last went: the server takes none within two seconds of the last.
+    character_sent_at: Option<std::time::Instant>,
     /// The server holds the local recipe and a replay frame (`ChatEnabled`): T opens the chat.
     chat_enabled: bool,
     /// The last frame's header flags, for a pose sample after a teleport.
@@ -169,7 +179,9 @@ pub(super) struct Online {
     /// How many times FE state 8's online display has opened.
     results_instance: u32,
     /// `cLocationManager`'s global locators, for each player's spawn location.
-    locations: Option<Arc<super::career::locations::LocationManager>>,
+    pub(super) locations: Option<Arc<super::career::locations::LocationManager>>,
+    /// The wipeout limit last given to the physics (`sync_turn_bail_limit`).
+    turn_bail_limit: Option<f32>,
     /// The lobby skate HUD, and whether `SetupLobbyHUD` runs again.
     lobby_hud: lobby_hud::LobbyHud,
     lobby_hud_dirty: bool,
@@ -200,6 +212,16 @@ pub(super) struct Online {
     diagnostic_chat_sent: bool,
     /// The pause menu's Leave Challenge answered yes (PC port addition).
     leave_challenge: bool,
+    /// The other player the console watches from the pre-game lobby (PC port addition).
+    spectate: Option<spectate::Spectate>,
+    /// LB held on the front end's last sample: LB's quick menu while the console watches, whose
+    /// skater takes no input (PC port addition).
+    pub(super) spectate_bumper: bool,
+    /// The pre-game Edit Skater is opening or open (PC port addition).
+    pub(super) edit_skater: bool,
+    /// The freeskate activity proposed, its overlay and sign-up, and the profile's completed
+    /// activities.
+    activity: activity::Activities,
 }
 
 impl Online {
@@ -252,19 +274,27 @@ fn net_header(header: &[u8]) -> [u32; HEADER_WORDS] {
 }
 /// How long the game goes without a replay frame before it says `Busy`.
 const BUSY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// How long after its last recipe the game sends another: the server drops one within two
+/// seconds of the last.
+const RECIPE_SPACING: std::time::Duration = std::time::Duration::from_millis(2500);
 const SIM_LOCATIONS: &str = "data\\content\\world\\stream\\BAM\\BAM_Sim.loc";
 /// `challenges`, its `Name` and `GlobalData`, and `challenge_global_data.Location`.
 const CHALLENGES: u64 = 0x8876_E0B5_5674_0E36;
 const CHALLENGE_NAME: u64 = 0x942A_B8AE_E4B4_14ED;
 const GLOBAL_DATA: u64 = 0x2449_1BF0_0316_AA45;
 const LOCATION: u64 = 0xF1C6_D5FA_4A23_951E;
+/// `challenge_global_data`'s world location, an `fe_locations` RefSpec, and that location's
+/// `WorldFile`.
+const WORLD_LOCATION: u64 = 0x6C81_4DB5_9F16_EBD2;
+const FE_LOCATIONS: u64 = 0xDDCD_6BC2_3255_E508;
+const WORLD_FILE: u64 = 0x116C_A244_49C4_CE44;
 /// The audio's ids of remote skaters (`SkaterData`'s player index, by which
 /// `CSTATEMGR_Player::UpdateParams` 0x82556c60 keeps each skater's sounds in one state): their
 /// game slots past the SkaterManager's eight Actors, so none shares the local skater's (always 0)
 /// or an AI skater's.
 const REMOTE_AUDIO_IDS: u32 = 8;
-/// The most opacity a challenge's player shows with to a player waiting in its pre-game lobby
-/// (PC port addition).
+/// The most opacity a challenge's player shows with to a player waiting in its pre-game lobby,
+/// and a player waiting there with to a challenge's player (PC port addition).
 const LOBBY_GHOST_OPACITY: f32 = 0.4;
 
 impl<T, C> SelectedLiveSession<T, C> {
@@ -329,6 +359,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     trace(format_args!("signed in as {user_id:016x}"));
                     self.online.sign_in = SignIn::SignedIn;
                     self.online.user_id = Some(user_id);
+                    self.online_send_content()?;
                 }
                 ClientEvent::Disconnected(reason) => {
                     trace(format_args!("disconnected: {reason:?} (build {})", skate2_net::crypto::Build::current().id()));
@@ -363,11 +394,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     let tick = self.completed_frames;
                     // Net::PauseGame holds this console's ticks: an arrival then is not paced.
                     let paced = self.online.network_resumed;
-                    // A round's player sees nothing of a member waiting in the pre-game lobby: the
-                    // server relays none of its frames, and one already on its way when the member
-                    // left the round is dropped.
-                    let waiting = self.online.round.is_some() && self.online.game.as_ref().is_some_and(|game| !game.participants.contains(&user_id));
-                    if !waiting && let Some(remote) = self.online.game.as_mut().and_then(|game| game.remotes.get_mut(&user_id)) {
+                    if let Some(remote) = self.online.game.as_mut().and_then(|game| game.remotes.get_mut(&user_id)) {
                         remote.receive(tick, *frame, paced, run_end);
                     }
                 }
@@ -392,8 +419,13 @@ impl<T, C> SelectedLiveSession<T, C> {
                 self.online.alive_sent = Some(now);
             }
         }
+        self.update_online_spectate()?;
+        self.update_online_activities();
+        self.update_online_edit_skater()?;
         self.update_network_pause()?;
         self.update_online_round()?;
+        self.sync_turn_bail_limit()?;
+        self.update_spectator_spots();
         self.update_online_lobby_hud();
         self.update_online_results();
         self.online_diagnostic_chat();
@@ -404,13 +436,29 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// made-up message, or a round it cannot build): left as a lost connection leaves a game, so
     /// nothing the server or another player sends ends the session.
     fn online_unplayable(&mut self, reason: &dyn std::fmt::Display) -> Result<(), SelectedLiveError> {
+        self.online_leave_unplayable(reason, OnlineNotice::Disconnected, OnlineNotice::MatchFailed)
+    }
+
+    /// `SetupGame` (0x82778530) of a game at a challenge this build lacks, joined or moved to by
+    /// the host (`CheckChallenge` false): `ThrowError(SE_ONL_GAME_ERROR, SER_GAME_DLC_REQUIRED)`
+    /// and `LeaveGame`, back to the Online options with `ShowErrorDialog`'s (0x825735d0)
+    /// `eSk8FEPopup_Online_Error_DLC_Required` (`ID_DLC_REQUIRED`).
+    fn online_lacks_challenge(&mut self, attributes: &GameAttributes) -> Result<(), SelectedLiveError> {
+        self.online_leave_unplayable(
+            &format_args!("the game is at a challenge this build lacks ({:016x})", attributes.challenge_key),
+            OnlineNotice::DlcRequired,
+            OnlineNotice::DlcRequired,
+        )
+    }
+
+    fn online_leave_unplayable(&mut self, reason: &dyn std::fmt::Display, lost: OnlineNotice, failed: OnlineNotice) -> Result<(), SelectedLiveError> {
         eprintln!("online: leaving the game: {reason}");
         self.online.send(ClientMessage::LeaveGame);
         self.online.searching = None;
         if self.online.game.is_some() {
-            return self.online_game_lost(OnlineNotice::Disconnected);
+            return self.online_game_lost(lost);
         }
-        self.online.notices.push(OnlineNotice::MatchFailed);
+        self.online.notices.push(failed);
         Ok(())
     }
 
@@ -418,9 +466,26 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// (the list the menus offer): any other is one this console cannot load.
     fn online_challenge_known(&mut self, attributes: &GameAttributes) -> Result<bool, SelectedLiveError> {
         self.online_data()?;
-        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
-        let challenges = crate::online::catalog::online_challenges(db, attributes.challenge_type, &|name| table.find(name).is_some(), &|title| title.to_owned());
+        let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+        let challenges = crate::online::catalog::online_challenges(db, attributes.challenge_type, &|name| self.online_location_known(name), &|title| title.to_owned());
         Ok(challenges.iter().any(|challenge| challenge.key == attributes.challenge_key))
+    }
+
+    /// PC port: the online challenges this build has, every type's, sent once signed in so the
+    /// server's matchmaking and lobby browser offer only games at them, as `ChallengeKeyPreference`
+    /// (0x8276c678) fits the original's search to the console's own challenges.
+    pub(super) fn online_send_content(&mut self) -> Result<(), SelectedLiveError> {
+        self.online_data()?;
+        let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+        let mut challenges: Vec<u64> = (0..challenge::COUNT)
+            .flat_map(|net_type| crate::online::catalog::online_challenges(db, net_type, &|name| self.online_location_known(name), &|title| title.to_owned()))
+            .map(|online| online.key)
+            .collect();
+        challenges.sort_unstable();
+        challenges.dedup();
+        trace(format_args!("this build has {} online challenges", challenges.len()));
+        self.online.send(ClientMessage::Content(challenges));
+        Ok(())
     }
 
     /// `SKATE2_DIAGNOSTIC_ONLINE_START`: the challenge asked for after that many lobby ticks,
@@ -452,9 +517,10 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
 
     /// T (PC port addition): the chat prompt opens in the game's world once the server enabled the
-    /// player's chat, unless Show Lobby Chat is off.
+    /// player's chat, unless Show Lobby Chat is off or Edit Skater is up.
     pub fn online_open_chat(&mut self) {
         if self.online.chat.is_none()
+            && !self.online.edit_skater
             && self.options_menu.show_lobby_chat()
             && self.online.game.as_ref().is_some_and(|game| game.entered && game.chat_enabled)
         {
@@ -589,8 +655,16 @@ impl<T, C> SelectedLiveSession<T, C> {
         // network game's solver passes.
         let online = self.online.game.as_ref().is_some_and(|game| game.entered);
         if let Some(owner) = self.inner.world.as_ref() {
-            let world = owner.world.lock().map_err(|_| error("world lock poisoned"))?;
+            let mut world = owner.world.lock().map_err(|_| error("world lock poisoned"))?;
             world.sim_rate.lock().map_err(|_| error("sim rate lock poisoned"))?.set_online_game(online);
+            // The same flag's sGhostSystemEnabled and isNetworkGame, from SetupInitalGameInfo to
+            // BackToSP: no skater touches a board online, an off-board skater's own included, and a
+            // spawn or teleport keeps normal collision.
+            let in_game = self.online.game.is_some();
+            world.set_online_game_culling(in_game);
+            if let Some(services) = world.physical_world_services() {
+                services.game_info().try_set_online_game(in_game).map_err(|e| error(format!("{e:?}")))?;
+            }
         }
         // Net::IsInOnlineGame (0x82559b80): the flow's STATE_OnlineGame, which a scene's load reads.
         if let Some(career) = self.career.as_mut() {
@@ -633,8 +707,8 @@ impl<T, C> SelectedLiveSession<T, C> {
         let create = parts.next() == Some("create");
         let challenge_type = parts.next().and_then(|text| text.parse().ok()).unwrap_or(challenge::SKATE);
         self.online_data()?;
-        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
-        let challenges = crate::online::catalog::online_challenges(db, challenge_type, &|name| table.find(name).is_some(), &|title| title.to_owned());
+        let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+        let challenges = crate::online::catalog::online_challenges(db, challenge_type, &|name| self.online_location_known(name), &|title| title.to_owned());
         let named = parts.next().map(crate::challenge::keys::hash64);
         let key = challenges
             .iter()
@@ -671,7 +745,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             ServerMessage::GameJoined { game, slot, attributes, players, phase, participants } => self.online_game_joined(game, slot, attributes, players, phase, participants)?,
             ServerMessage::GameAttributes(attributes) => {
                 if !self.online_challenge_known(&attributes)? {
-                    return self.online_unplayable(&format_args!("the game went to a challenge this build lacks ({:016x})", attributes.challenge_key));
+                    return self.online_lacks_challenge(&attributes);
                 }
                 // A game joined but not yet entered (the front end's fade still covers the join)
                 // goes where its attributes now say: its location changed in between.
@@ -690,7 +764,8 @@ impl<T, C> SelectedLiveSession<T, C> {
                     game.attributes = attributes;
                 }
             }
-            ServerMessage::GameReset { kind, seed, session, participants } => self.online_game_reset(kind, seed, session, &participants)?,
+            ServerMessage::GameReset { kind, seed, session, participants, activity } => self.online_game_reset(kind, seed, session, &participants, activity)?,
+            ServerMessage::GameProposal { kind, activity, user_id, timeout } => self.online_proposal(kind, activity, user_id, timeout)?,
             ServerMessage::Vote { user_id, score } => self.online_vote(user_id, score),
             ServerMessage::SyncPoint { round } => self.online_sync_point_released(round)?,
             ServerMessage::AllPlayersComplete => self.online_all_players_complete(),
@@ -716,7 +791,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 }
             }
             ServerMessage::Chat { user_id, text } => self.online_chat(user_id, &text),
-            ServerMessage::ChallengeLeave { user_id } => self.online_challenge_leave(user_id),
+            ServerMessage::ChallengeLeave { user_id } => self.online_challenge_leave(user_id)?,
             message => trace(format_args!("unhandled {message:?}")),
         }
         Ok(())
@@ -727,11 +802,14 @@ impl<T, C> SelectedLiveSession<T, C> {
     fn online_game_joined(&mut self, id: u32, slot: u8, attributes: GameAttributes, players: Vec<PlayerInfo>, phase: Phase, participants: Vec<u64>) -> Result<(), SelectedLiveError> {
         trace(format_args!("joined game {id} in slot {slot}: {attributes:?}, {} players, {phase:?}", players.len()));
         if !self.online_challenge_known(&attributes)? {
-            return self.online_unplayable(&format_args!("game {id} is at a challenge this build lacks ({:016x})", attributes.challenge_key));
+            return self.online_lacks_challenge(&attributes);
         }
         self.online.searching = None;
         self.online.screen = None;
         self.online.browser = None;
+        self.online_end_spectate()?;
+        self.online_clear_activities();
+        self.online_load_completed_activities();
         let local = self.online.user_id;
         let remotes = players
             .iter()
@@ -751,6 +829,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             announced: Vec::new(),
             entered: false,
             character_sent: false,
+            character_sent_at: None,
             chat_enabled: false,
             last_teleport: false,
             last_camera_rotation: None,
@@ -775,30 +854,72 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// or the location itself (`challenge_global_data.Location` in `BAM_Sim.loc`) where the
     /// global locators lack it.
     fn online_location(&mut self, attributes: &GameAttributes, player: u8) -> Result<[f32; 16], SelectedLiveError> {
-        let (location, fallback) = self.online_challenge_location(attributes)?;
+        self.online_spawn(attributes.challenge_key, player)
+    }
+
+    /// Where a player of the challenge `challenge` starts, as [`Self::online_location`]: an
+    /// activity's own location for its players (`GetStreamerPosition` with the activity key).
+    pub(super) fn online_spawn(&mut self, challenge: u64, player: u8) -> Result<[f32; 16], SelectedLiveError> {
+        let location = self.online_key_location_name(challenge)?;
         if self.online.locations.is_none() {
             let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts);
             self.online.locations = Some(Arc::new(super::career::locations::LocationManager::with_global_locations(&mounts).map_err(error)?));
         }
         let hash = crate::challenge::keys::hash_value32(&location);
-        let spawn = self.online.locations.as_ref().and_then(|locations| locations.online_spawn_location(hash, i32::from(player)));
-        Ok(spawn.unwrap_or(fallback))
+        if let Some(spawn) = self.online.locations.as_ref().and_then(|locations| locations.online_spawn_location(hash, i32::from(player))) {
+            return Ok(spawn);
+        }
+        Ok(self.online_key_location(challenge)?.1)
     }
 
     /// The challenge's `challenge_global_data.Location` and its transform in `BAM_Sim.loc`
     /// (`cLocationManager::GetLocationPosition`).
     fn online_challenge_location(&mut self, attributes: &GameAttributes) -> Result<(String, [f32; 16]), SelectedLiveError> {
+        self.online_key_location(attributes.challenge_key)
+    }
+
+    fn online_key_location(&mut self, challenge: u64) -> Result<(String, [f32; 16]), SelectedLiveError> {
+        let location = self.online_key_location_name(challenge)?;
+        let (_, table) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+        if let Some(found) = table.find(&location) {
+            return Ok((location, found.transform));
+        }
+        // An additional world's challenge: its location is a global locator, or the world's.
+        let world = self.online_challenge_world(challenge)?.map_or_else(|| crate::game::DEBUG_REFERENCE_WORLD_FILE.into(), |(_, file)| file);
+        let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts);
+        let transform = super::world_travel::world_location(&mounts, &world, &location)?;
+        Ok((location, transform))
+    }
+
+    /// The challenge's world location (an `fe_locations` key) and its world's file; none for the
+    /// main world (`IsMainWorldLocation` 0x828a95b8: the invalid key or a missing collection).
+    pub(super) fn online_challenge_world(&mut self, challenge: u64) -> Result<Option<(u64, String)>, SelectedLiveError> {
         self.online_data()?;
-        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
-        let location = db
-            .attribute(CHALLENGES, attributes.challenge_key, GLOBAL_DATA)
+        let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+        Ok(db
+            .attribute(CHALLENGES, challenge, GLOBAL_DATA)
+            .and_then(|global| global.ref_spec(0))
+            .and_then(|(class, key)| db.attribute(class, key, WORLD_LOCATION))
+            .and_then(|world| world.ref_spec(0))
+            .map(|(_, location)| location)
+            .filter(|&location| location != u64::MAX && db.has_collection(FE_LOCATIONS, location))
+            .and_then(|location| {
+                let file = db.attribute(FE_LOCATIONS, location, WORLD_FILE)?.text(0)?;
+                Some((location, file.to_owned()))
+            }))
+    }
+
+    /// The challenge's `challenge_global_data.Location`.
+    fn online_key_location_name(&mut self, challenge: u64) -> Result<String, SelectedLiveError> {
+        self.online_data()?;
+        let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+        Ok(db
+            .attribute(CHALLENGES, challenge, GLOBAL_DATA)
             .and_then(|global| global.ref_spec(0))
             .and_then(|(class, key)| db.attribute(class, key, LOCATION))
             .and_then(|location| location.text(0))
-            .ok_or_else(|| error(format!("challenge {:016x} has no location", attributes.challenge_key)))?
-            .to_owned();
-        let transform = table.find(&location).ok_or_else(|| error(format!("location {location} absent")))?.transform;
-        Ok((location, transform))
+            .ok_or_else(|| error(format!("challenge {challenge:016x} has no location")))?
+            .to_owned())
     }
 
     /// `GameModule::GameLoad`'s network branch for the game's challenge, behind the travel's
@@ -832,6 +953,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             terrain.try_set_online_area(None).map_err(|e| error(format!("{e:?}")))?;
         }
         self.release_online_dmos()?;
+        self.set_remote_scoring_skaters(Vec::new())?;
         self.set_online_boundaries(None)
     }
 
@@ -866,15 +988,26 @@ impl<T, C> SelectedLiveSession<T, C> {
         Ok(boundaries.warning_amount(position))
     }
 
-    /// `skater.vlt` and `BAM_Sim.loc`, shared with free skate's screens.
+    /// `skater.vlt` and `BAM_Sim.loc`, shared with free skate's screens, and the global locators.
     pub(super) fn online_data(&mut self) -> Result<(), SelectedLiveError> {
+        let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts);
         if self.freeskate.data.is_none() {
-            let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts);
-            let db = Arc::new(crate::challenge::attrib_db::AttribDb::load(&mounts, &crate::challenge::attrib_db::CAREER_VAULTS).map_err(error)?);
+            let db = Arc::new(crate::challenge::attrib_db::AttribDb::load_career(&mounts).map_err(error)?);
             let table = skate2_formats::location::LocationTable::parse(&mounts.read_path(SIM_LOCATIONS).map_err(error)?).map_err(error)?;
             self.freeskate.data = Some((db, table));
         }
+        if self.online.locations.is_none() {
+            self.online.locations = Some(Arc::new(super::career::locations::LocationManager::with_global_locations(&mounts).map_err(error)?));
+        }
         Ok(())
+    }
+
+    /// Whether a challenge's location is one this build holds, after [`Self::online_data`]: the
+    /// main world's (`BAM_Sim.loc`) or a global locator, the linked downloadable content's
+    /// included, where an additional world's challenges stand.
+    pub(super) fn online_location_known(&self, name: &str) -> bool {
+        self.freeskate.data.as_ref().is_some_and(|(_, table)| table.find(name).is_some())
+            || self.online.locations.as_ref().is_some_and(|globals| globals.is_valid(crate::challenge::keys::hash_value32(name)))
     }
 
     /// The local skater enters the game: `StartGameModule` in `GM_OnlineFreeSkate` with the
@@ -908,6 +1041,18 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.pause_menu.set_hub(crate::ui::pause_menu::StartHub::OnlineFreeSkate);
         self.load_created_skater()?;
         self.online_load_area()?;
+        // GameLoad into the game challenge's world (`sGameInfo.additionalWorldLocation`): an
+        // additional world's challenge loads it, a main world's unloads one held.
+        let challenge = self.online.game.as_ref().map(|game| game.attributes.challenge_key);
+        let world = match challenge {
+            Some(challenge) => self.online_challenge_world(challenge)?,
+            None => None,
+        };
+        self.map_travel_world = match &world {
+            Some((location, file)) => self.world_operation(*location, Some(file.as_str())),
+            None => self.world_operation(u64::MAX, None),
+        }
+        .unwrap_or_default();
         self.map_travel = Some(start);
         self.map_travel_presentation_ready = false;
         self.map_travel_dispatched = false;
@@ -927,6 +1072,9 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// challenge's type and name (`ID_ONLINE_EVENT_CANNOT_CHANGE_LOCATION` for an unknown one).
     fn online_game_change(&mut self, challenge_type: u8, challenge_key: u64) -> Result<(), SelectedLiveError> {
         trace(format_args!("game changes to {challenge_key:016x} (type {challenge_type})"));
+        // FrontEndState_OnlineHubMenu::OnMessage(MT_GameChange): ResetFSAProposal (the server
+        // takes no change while a proposal is under way, so none is left to end).
+        self.online_reset_proposal()?;
         self.online.changing_location = Some((challenge_type, challenge_key));
         let title = self.online_challenge_list(challenge_type)?.into_iter().find(|challenge| challenge.key == challenge_key).map(|challenge| challenge.title);
         self.online.event_log.add(EventText::plain("ID_ONLINE_EVENT_CHANGED_SETTINGS"));
@@ -1002,6 +1150,8 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// The game ended under the player (lost connection, kicked): back to the main menu with
     /// the error.
     fn online_game_lost(&mut self, notice: OnlineNotice) -> Result<(), SelectedLiveError> {
+        // The pre-game Edit Skater closes first, keeping what the player owns or bought.
+        self.online_close_edit_skater()?;
         let entered = self.online.game.as_ref().is_some_and(|game| game.entered);
         // Lost while the fade still covers the join: the main menu, or the game in play, stays,
         // as the game it was leaving for is gone.
@@ -1013,6 +1163,10 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
         self.close_online_hub()?;
         self.online.changing_location = None;
+        self.online_clear_activities();
+        if let Err(e) = self.online_end_spectate() {
+            trace(format_args!("spectating not ended: {e:?}"));
+        }
         if self.online.round.take().is_some()
             && let Some(input) = self.inner.bound_input.as_ref()
         {
@@ -1038,6 +1192,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             let _ = input.try_set_online_pause(false);
         }
         self.online.changing_location = None;
+        self.online_clear_activities();
+        if let Err(e) = self.online_end_spectate() {
+            trace(format_args!("spectating not ended: {e:?}"));
+        }
         self.online.hub = online_hub::Hub::default();
         self.online.chat = None;
         if self.online.game.take().is_some() {
@@ -1093,6 +1251,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             return Ok(());
         }
         self.online_diagnostic_start();
+        self.online_diagnostic_activity();
         if self.online.game.is_none() {
             return Ok(());
         }
@@ -1116,13 +1275,17 @@ impl<T, C> SelectedLiveSession<T, C> {
         let plays = round.is_some_and(online_challenge::Round::local_plays);
         let watched = plays && round.is_some_and(online_challenge::Round::local_followed);
         let interval = if plays { PLAYING_INTERVAL } else { INTERVAL };
+        // A look the local skater still loads (the pre-game Edit Skater's) goes once it shows.
+        let character_loaded = self.inner.player.as_ref().is_some_and(|player| {
+            matches!(player.selected.owners.loader.phase(), crate::player::PlayerLoadPhase::Loaded { .. })
+        });
         let game = self.online.game.as_mut().expect("checked");
         let camera = projection.map(|projection| remote_skater::camera_values(&projection.camera_matrix, projection.chosen_fov_y_degrees, game.last_camera_rotation));
         if let Some(values) = camera {
             game.last_camera_rotation = Some([values[3], values[4], values[5], values[6]]);
         }
         if let Some(frame) = local {
-            if !game.character_sent {
+            if !game.character_sent && character_loaded && game.character_sent_at.is_none_or(|at| at.elapsed() >= RECIPE_SPACING) {
                 match remote_skater::encode_character(&frame) {
                     Ok(data) => {
                         trace(format_args!("sending our character ({} bytes)", data.len()));
@@ -1130,6 +1293,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                             client.send(ClientMessage::Recipe(data));
                         }
                         game.character_sent = true;
+                        game.character_sent_at = Some(std::time::Instant::now());
                     }
                     Err(e) => trace(format_args!("our character cannot be sent: {e}")),
                 }
@@ -1181,6 +1345,9 @@ impl<T, C> SelectedLiveSession<T, C> {
             }
         }
         let camera_position = camera.map_or([0.0; 3], |values| [values[0], values[1], values[2]]);
+        // Every skater's hierarchy is the presentation's own: its head and feet are the local
+        // skater's bones.
+        let body_bones = self.inner.player.as_ref().and_then(|player| player.selected.owners.presentation.as_ref()).and_then(|presentation| presentation.animation.body);
         let mut followed_hud = None;
         for remote in game.remotes.values_mut() {
             match remote.finish_character() {
@@ -1189,7 +1356,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 None => {}
             }
             let shown = remote.visible();
-            if let Err(e) = remote.advance(tick, camera_position, &vault, &cvars) {
+            if let Err(e) = remote.advance(tick, camera_position, body_bones, &vault, &cvars) {
                 trace(format_args!("{:016x}: {e}", remote.user_id));
             }
             // Every remote's records are taken each tick, the followed one's for the HUD.
@@ -1215,7 +1382,27 @@ impl<T, C> SelectedLiveSession<T, C> {
                 self.online.event_log.add(EventText::named("ID_ONLINE_EVENT_JOIN_SKATER", &name));
             }
         }
+        // The skaters the local skater's next scoring may be over: those on its own side of a
+        // challenge (no ghost of the pre-game lobby), the slot order the roster's.
+        let in_round = self.online.round.is_some();
+        let scoring: Vec<_> = game
+            .remotes
+            .values()
+            .filter(|remote| in_round == game.participants.contains(&remote.user_id))
+            .filter_map(RemoteSkater::scoring)
+            .collect();
+        self.set_remote_scoring_skaters(scoring)?;
         self.show_followed_hud(followed_hud);
+        Ok(())
+    }
+
+    /// The other players' skaters the local skater's scoring collects (`PhysicalAssemblyWorld`'s
+    /// list, none outside an online game).
+    fn set_remote_scoring_skaters(&self, skaters: Vec<crate::physical_player_phys_out::conditioners::scoring_external::RemoteScoringSkater>) -> Result<(), SelectedLiveError> {
+        if let Some(owner) = self.inner.world.as_ref() {
+            let world = owner.world.lock().map_err(|_| error("world lock poisoned"))?;
+            *world.remote_scoring_skaters.lock().map_err(|_| error("remote scoring skaters lock poisoned"))? = skaters;
+        }
         Ok(())
     }
 
@@ -1269,11 +1456,28 @@ impl<T, C> SelectedLiveSession<T, C> {
         world.try_hud_trick_name(physical.owner(), key).ok().flatten()
     }
 
+    /// Whether this console leaves a remote skater undrawn and unheard. While a challenge runs, its
+    /// players see nothing of the members waiting in its pre-game lobby, as the original shows a
+    /// challenge's players nothing of lobby skate (the server relays them none of its frames
+    /// either), and a member waiting sees the challenge's players only with Show Ghost Players in
+    /// pregame lobby on; to the players, one of them off their waiting spot through another's turn
+    /// shows nothing either (PC port additions).
+    fn online_remote_hidden(&self, user_id: u64) -> bool {
+        let Some(game) = self.online.game.as_ref() else { return false };
+        let playing = game.participants.contains(&user_id);
+        if self.online.round.is_some() {
+            !playing || self.online_spot_hidden(user_id)
+        } else {
+            playing && !self.options_menu.show_ghost_players()
+        }
+    }
+
     /// The remote skaters' frames this tick, for the presentation's submission.
     pub(super) fn online_submitted_frames(&self) -> Vec<crate::presentation_restore::skater::SkaterFrame> {
         let Some(game) = self.online.game.as_ref() else { return Vec::new() };
         game.remotes
             .values()
+            .filter(|remote| !self.online_remote_hidden(remote.user_id))
             .filter_map(RemoteSkater::shown)
             .map(|shown| crate::presentation_restore::skater::SkaterFrame {
                 rig: Arc::clone(&shown.frame.rig),
@@ -1289,14 +1493,15 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// The remote skaters for the tick's visual snapshot, each named by the game's player whose
     /// skater it is (`SkaterPresEntity`'s constructor 0x827e5740 takes a non-empty name). Its
     /// index is the player's row on the leaderboard HUD: the round's table in a challenge, the
-    /// game's players on the lobby board. A player waiting in the pre-game lobby watches the
-    /// challenge's players as ghosts (PC port addition), drawn as the ghost technique draws a
-    /// skater the camera comes close to.
+    /// game's players on the lobby board. A member waiting in the pre-game lobby watches the
+    /// challenge's players as ghosts (PC port addition, with Show Ghost Players in pregame lobby
+    /// on), drawn as the ghost technique draws a skater the camera comes close to.
     pub(super) fn online_visuals(&self) -> Vec<crate::SelectedSkaterVisual<'_>> {
         let Some(game) = self.online.game.as_ref() else { return Vec::new() };
         let round = self.online.round.as_ref();
         game.remotes
             .values()
+            .filter(|remote| !self.online_remote_hidden(remote.user_id))
             .filter_map(|remote| {
                 let mut visual = remote.visual()?;
                 visual.name_tag = game.players.iter().position(|player| player.user_id == remote.user_id).and_then(|row| {
@@ -1304,6 +1509,8 @@ impl<T, C> SelectedLiveSession<T, C> {
                     let index = round.and_then(|round| round.player_index(remote.user_id)).unwrap_or(row);
                     (!name.is_empty()).then(|| crate::SkaterNameTag { name: name.clone(), index: u8::try_from(index).unwrap_or(u8::MAX) })
                 });
+                // A challenge's players to a member waiting in its pre-game lobby (who joined
+                // during it, left it or never loaded it).
                 if round.is_none() && game.participants.contains(&remote.user_id) {
                     visual.opacity = visual.opacity.min(LOBBY_GHOST_OPACITY);
                     visual.ghosted = true;
@@ -1324,6 +1531,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let local = self.online_audio_local().map(|remote| remote.user_id);
         game.remotes
             .values()
+            .filter(|remote| !self.online_remote_hidden(remote.user_id))
             .filter_map(|remote| {
                 let audio = remote.shown()?.audio.clone()?;
                 Some(super::AudioSkater {

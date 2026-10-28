@@ -73,6 +73,8 @@ pub(super) const fn notice_text(notice: &OnlineNotice) -> &'static str {
         OnlineNotice::Kicked => "ID_ONLINE_KICKED_BY_GAME_HOST",
         OnlineNotice::UpdateRequired => "#Your game doesn't match the server's version. Update the game to play online.",
         OnlineNotice::NicknameNotPermitted => "#Nickname not permitted.",
+        // ShowErrorDialog 0x825735d0: eSk8FEPopup_Online_Error_DLC_Required, ID_EANATION and OK.
+        OnlineNotice::DlcRequired => "ID_DLC_REQUIRED",
     }
 }
 
@@ -104,8 +106,8 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// `challengeArray` and each type's locations: the unranked match types with challenges.
     pub(super) fn online_match_lists(&mut self) -> Result<Vec<(u8, Vec<OnlineChallenge>)>, SelectedLiveError> {
         self.online_data()?;
-        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
-        let types = catalog::unranked_match_types(db, &|name| table.find(name).is_some());
+        let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+        let types = catalog::unranked_match_types(db, &|name| self.online_location_known(name));
         let mut lists = Vec::with_capacity(types.len());
         for net_type in types {
             lists.push((net_type, self.online_challenge_list(net_type)?));
@@ -117,9 +119,9 @@ impl<T, C> SelectedLiveSession<T, C> {
     pub(super) fn online_challenge_list(&mut self, net_type: u8) -> Result<Vec<OnlineChallenge>, SelectedLiveError> {
         let titles = self.online_titles()?;
         self.online_data()?;
-        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+        let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
         let localize = |label: &str| titles.get(&string_hash(label.as_bytes())).cloned().unwrap_or_else(|| label.to_owned());
-        Ok(catalog::online_challenges(db, net_type, &|name| table.find(name).is_some(), &localize))
+        Ok(catalog::online_challenges(db, net_type, &|name| self.online_location_known(name), &localize))
     }
 
     /// The Online options, each front-end update: the sign-in state its rows read, the screen it

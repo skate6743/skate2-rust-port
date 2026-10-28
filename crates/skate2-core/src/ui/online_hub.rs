@@ -7,7 +7,9 @@
 //! `GoToSetupToggleSlotAccessMenu` 0x826889e0). In a single player game: the single player menu
 //! (0, `SetupSinglePlayerMenu` 0x82688b38) with Freeskate (5, `SetupFreeskateMenu` 0x82688d00)
 //! and Unranked (7, `SetupUnrankedOnlineMenu` 0x82688e48), or before signing in the offline menu
-//! (15, `SetupOfflineMainMenu` 0x82689068). The screen's `menu_picker`s keep the selection as
+//! (15, `SetupOfflineMainMenu` 0x82689068). An online free skate's Freeskate Activities lead to
+//! the activity types (12, `SetupFreeskateActivitiesMenu` 0x8268a500) and a type's activities
+//! (13, `GoToFreeskateType` 0x826886f0). The screen's `menu_picker`s keep the selection as
 //! `NextValueCalc` and `PrevValueCalc` step it: over disabled items, wrapping.
 
 use super::FeSoundRequest;
@@ -22,6 +24,8 @@ pub const UNRANKED: u32 = 7;
 pub const HOST: u32 = 9;
 pub const CLIENT: u32 = 10;
 pub const HOST_OPTIONS: u32 = 11;
+pub const FREESKATE_ACTIVITIES: u32 = 12;
+pub const FREESKATE_ACTIVITY_LIST: u32 = 13;
 pub const PLAYER_LIST: u32 = 14;
 pub const OFFLINE: u32 = 15;
 pub const SESSION_ACCESS: u32 = 17;
@@ -42,6 +46,21 @@ pub enum Title {
     Literal(String),
     /// `"#%s (%d/%d)"` of a HAL id's packed string.
     Count { label: &'static str, count: usize, total: usize },
+    /// A HAL id the game data names: an activity's `Title`.
+    Text(String),
+    /// `"#\xBB %s"` of a HAL id's packed string: a completed activity's title behind the
+    /// fonts' flash character.
+    Completed(String),
+}
+
+/// One freeskate activity of the game's location as `GoToFreeskateType` reads it: its key,
+/// `FreeskateActivityType` and `Title`, and `OnlineBackEnd::IsFSACompleted`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HubActivity {
+    pub key: u64,
+    pub kind: i32,
+    pub title: String,
+    pub completed: bool,
 }
 
 /// The hub `PickCurrentState` 0x82688470 sets up.
@@ -84,7 +103,19 @@ pub struct Lobby {
     pub players: Vec<(u64, String)>,
     /// `GetPlayerTypeCount(GAME_PLAYER_TYPE_PARTICIPANT)`.
     pub participants: usize,
+    /// The fewest participants the game's challenge starts with (`challenge::min_participants`).
+    pub min_participants: usize,
+    /// The other players the player list's Spectate can watch: they wait in the pre-game lobby as
+    /// the local player does, and their skaters show (PC port addition).
+    pub spectatable: Vec<u64>,
+    /// `GetOnlineFreeSkateActivities` of the game's location, in its order.
+    pub activities: Vec<HubActivity>,
+    /// `sProposal`: an activity is proposed.
+    pub proposal: bool,
 }
+
+/// The player menu's item in place of View Gamercard (PC port addition).
+pub const SPECTATE: &str = "Spectate";
 
 /// What an item does when selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,13 +124,18 @@ enum Target {
     /// A `PeerHubMenuItem` of a player, to their menu.
     Peer(u64),
     StartChallenge,
-    FreeskateActivities,
+    /// A type of the activity types menu (`GoToFreeskateGap` and the others), to its
+    /// activities.
+    ActivityType(i32),
+    /// An activity of a type's menu (`GoToFreeskateActivityCIC`).
+    Activity(u64),
     MatchSetup,
     ChangeLocation,
     SessionAccess,
     ToggleSlotAccess,
     SendFriendInvite,
-    ViewGamercard,
+    /// The player menu's Spectate (PC port addition).
+    Spectate,
     KickPlayer,
     PublicFreeskate,
     CustomFreeskate,
@@ -190,6 +226,11 @@ pub enum Action {
     SetPrivate(bool),
     /// `KickPlayerCallback` 0x8266c908's `Net::KickPlayer`, central message and Exit.
     Kick(u64),
+    /// The player menu's Spectate (PC port addition): the console watches the player's skater,
+    /// then Exit.
+    Spectate(u64),
+    /// `GoToFreeskateActivityCIC` 0x82661a98: FE state 67 over the hub, to propose the activity.
+    ActivitySignUp(u64),
     /// `GoToFreeSkateHere` 0x8267bee8: a public free skate where the skater is
     /// (`StateOnlineFreeskateHere`).
     PublicFreeskate,
@@ -209,6 +250,8 @@ pub struct Controller {
     stack: Vec<u32>,
     /// `FrontEndState_SkateProfile::m_rPeerID`: the player whose menu is set up.
     peer: Option<u64>,
+    /// The type whose activities `GoToFreeskateType` last listed in menu 13.
+    activity_type: Option<i32>,
     popup: Option<Popup>,
     calls: Vec<ScreenCall>,
     sounds: Vec<FeSoundRequest>,
@@ -223,7 +266,8 @@ impl Controller {
     #[must_use]
     pub fn open(lobby: Lobby) -> Self {
         let root = Self::root(&lobby);
-        let mut hub = Self { lobby, menus: BTreeMap::new(), stack: vec![root], peer: None, popup: None, calls: Vec::new(), sounds: Vec::new(), ready: false };
+        let mut hub =
+            Self { lobby, menus: BTreeMap::new(), stack: vec![root], peer: None, activity_type: None, popup: None, calls: Vec::new(), sounds: Vec::new(), ready: false };
         hub.setup_menus();
         hub.calls.push(ScreenCall::Initialize);
         hub
@@ -369,15 +413,26 @@ impl Controller {
             enabled: players > 0,
             target: Target::Menu(PLAYER_LIST),
         };
-        // SetupStartChallengeMenuItem 0x82661db0.
+        // SetupStartChallengeMenuItem 0x82661db0, which wants another player; Spot Battle and
+        // Hall of Meat start alone (PC port addition).
         let start_challenge = Item {
             title: Title::Hal("ID_ONLINE_HUB_START_CHALLENGE"),
-            enabled: lobby.lobby_mode && !lobby.ranked && !lobby.free_skate_type && players + 1 > 1 && !lobby.challenge_in_progress && !lobby.changing_location,
+            enabled: lobby.lobby_mode
+                && !lobby.ranked
+                && !lobby.free_skate_type
+                && players + 1 >= lobby.min_participants.max(1)
+                && !lobby.challenge_in_progress
+                && !lobby.changing_location,
             target: Target::StartChallenge,
         };
-        // SetupFreeskateActivitiesMenuItem 0x8268a710: enabled only in an online free skate with
-        // others; the port has no freeskate activities, so it stays off.
-        let activities = Item { title: Title::Hal("ID_ONLINE_HUB_FREESTYLE_ACTIVITES"), enabled: false, target: Target::FreeskateActivities };
+        // SetupFreeskateActivitiesMenuItem 0x8268a710: in an online free skate with others and
+        // its player list, while no game, proposal or change of location is on.
+        let activities_enabled = lobby.free_skate_type && !lobby.challenge_in_progress && players > 0 && !lobby.proposal && !lobby.changing_location;
+        let activities = Item {
+            title: Title::Hal("ID_ONLINE_HUB_FREESTYLE_ACTIVITES"),
+            enabled: activities_enabled,
+            target: Target::Menu(FREESKATE_ACTIVITIES),
+        };
         // HubStateOnlineHost::OnEvent: Host Options only while no game, proposal or change is on.
         // The port keeps them open while a challenge runs (PC port addition), for Session Access.
         let host_options = Item {
@@ -409,9 +464,10 @@ impl Controller {
         let list = lobby.players.iter().map(|(user_id, name)| Item { title: Title::Literal(name.clone()), enabled: true, target: Target::Peer(*user_id) }).collect();
         let selected = self.menus.get(&PLAYER_LIST).map_or(0, |menu| menu.selected.min(players.saturating_sub(1)));
         self.menus.insert(PLAYER_LIST, Menu { title: Some(Title::Hal("ID_ONLINE_HUB_PLAYER_LIST")), items: list, selected });
-        // Match Setup and Change Location wait for lobby skate while Session Access stays open
-        // during a challenge (PC port addition); the selection stays on an item still enabled.
-        let setup = !lobby.challenge_in_progress;
+        // Match Setup and Change Location wait for lobby skate with no activity proposed (the
+        // original's Host Options waited for both) while Session Access stays open (PC port
+        // addition); the selection stays on an item still enabled.
+        let setup = !lobby.challenge_in_progress && !lobby.proposal;
         let items = vec![
             Item { title: Title::Hal("ID_ONLINE_HUB_NEW_CHALLENGE"), enabled: setup, target: Target::MatchSetup },
             Item { title: Title::Hal("ID_ONLINE_HUB_CHANGE_LOCATION"), enabled: setup, target: Target::ChangeLocation },
@@ -422,17 +478,69 @@ impl Controller {
         self.menus.insert(HOST_OPTIONS, Menu { title: Some(Title::Hal("ID_ONLINE_HUB_HOST_OPTIONS")), items, selected });
         self.setup_player_menu();
         self.setup_session_access();
+        if activities_enabled {
+            self.setup_activity_types();
+            if let Some(kind) = self.activity_type {
+                self.setup_activity_list(kind);
+            }
+        } else {
+            self.menus.remove(&FREESKATE_ACTIVITIES);
+            self.menus.remove(&FREESKATE_ACTIVITY_LIST);
+        }
     }
 
-    /// `Setup{Host,Client}PlayerTemplate`: the player's name; Send Friend Request and View
-    /// Gamercard (Xbox LIVE's, which the port has not, so both off); the host's Kick Player in an
-    /// unranked game, which the original offers only with no challenge on and the port during one
-    /// too (PC port addition).
+    /// `SetupFreeskateActivitiesMenu` 0x8268a500: the six types in its order, each enabled where
+    /// the location has an activity of it (`FreeskateActivitiesExistsForType` 0x82654150), the
+    /// first enabled selected; the selection stays as the menu is set up again.
+    fn setup_activity_types(&mut self) {
+        let items: Vec<Item> = crate::online::activities::MENU_KINDS
+            .iter()
+            .map(|&kind| Item {
+                title: Title::Hal(crate::online::activities::type_title(kind)),
+                enabled: self.lobby.activities.iter().any(|activity| activity.kind == kind),
+                target: Target::ActivityType(kind),
+            })
+            .collect();
+        let kept = self.menus.get(&FREESKATE_ACTIVITIES).map(|menu| menu.selected).filter(|&selected| items.get(selected).is_some_and(|item| item.enabled));
+        let selected = kept.or_else(|| items.iter().position(|item| item.enabled)).unwrap_or(0);
+        self.menus.insert(FREESKATE_ACTIVITIES, Menu { title: Some(Title::Hal("ID_ONLINE_HUB_FREESTYLE_ACTIVITES")), items, selected });
+    }
+
+    /// `GoToFreeskateType` 0x826886f0's menu: the type's activities, each titled by its `Title`,
+    /// a completed one's behind the flash character, all enabled. `sCurrentFreeskateActivitiesList`
+    /// keeps at most 17 of them to propose; past that an item proposes nothing.
+    fn setup_activity_list(&mut self, kind: i32) {
+        const LISTED: usize = 17;
+        let items: Vec<Item> = self
+            .lobby
+            .activities
+            .iter()
+            .filter(|activity| activity.kind == kind)
+            .enumerate()
+            .map(|(index, activity)| Item {
+                title: if activity.completed { Title::Completed(activity.title.clone()) } else { Title::Text(activity.title.clone()) },
+                enabled: true,
+                target: if index < LISTED { Target::Activity(activity.key) } else { Target::NotPorted },
+            })
+            .collect();
+        if items.is_empty() {
+            self.menus.remove(&FREESKATE_ACTIVITY_LIST);
+            return;
+        }
+        let selected = self.menus.get(&FREESKATE_ACTIVITY_LIST).map_or(0, |menu| menu.selected.min(items.len() - 1));
+        self.menus.insert(FREESKATE_ACTIVITY_LIST, Menu { title: Some(Title::Hal("ID_ONLINE_HUB_FREESTYLE_ACTIVITES")), items, selected });
+    }
+
+    /// `Setup{Host,Client}PlayerTemplate`: the player's name; Send Friend Request (Xbox LIVE's,
+    /// which the port has not, so off); Spectate in place of View Gamercard (PC port addition);
+    /// the host's Kick Player in an unranked game, which the original offers only with no
+    /// challenge on and the port during one too (PC port addition).
     fn setup_player_menu(&mut self) {
         let name = self.peer.and_then(|peer| self.peer_name(peer)).map(str::to_owned);
+        let spectate = self.peer.is_some_and(|peer| self.can_spectate(peer));
         let mut items = vec![
             Item { title: Title::Hal("ID_ONLINE_HUB_SEND_FRIEND_INVITE"), enabled: false, target: Target::SendFriendInvite },
-            Item { title: Title::Hal("ID_ONLINE_HUB_VIEW_GAMERCARD"), enabled: false, target: Target::ViewGamercard },
+            Item { title: Title::Literal(SPECTATE.to_owned()), enabled: spectate, target: Target::Spectate },
         ];
         if self.lobby.host && !self.lobby.ranked && name.is_some() {
             items.push(Item { title: Title::Hal("ID_ONLINE_HUB_KICK_PLAYER"), enabled: true, target: Target::KickPlayer });
@@ -440,6 +548,17 @@ impl Controller {
         let selected = items.iter().position(|item| item.enabled).unwrap_or(0);
         let title = name.map_or(Title::Hal("ID_ONLINE_HUB_PLAYER_LIST"), Title::Literal);
         self.menus.insert(PLAYER, Menu { title: Some(title), items, selected });
+    }
+
+    /// Whether Spectate watches `user_id` (PC port addition): from the pre-game lobby, a free
+    /// skate's with no activity under way or loading, with no change of location counting down,
+    /// a player waiting there too.
+    fn can_spectate(&self, user_id: u64) -> bool {
+        let lobby = &self.lobby;
+        lobby.lobby_mode
+            && !(lobby.free_skate_type && lobby.challenge_in_progress)
+            && !lobby.changing_location
+            && lobby.spectatable.contains(&user_id)
     }
 
     /// `GoToSetupToggleSlotAccessMenu`: Make Public when private, Make Private when public, the
@@ -583,7 +702,7 @@ impl Controller {
                 Action::None
             }
             Target::StartChallenge => {
-                if self.lobby.participants >= 2 { Action::StartChallenge } else { Action::None }
+                if self.lobby.participants >= self.lobby.min_participants.max(1) { Action::StartChallenge } else { Action::None }
             }
             Target::MatchSetup => Action::MatchSetup,
             Target::ChangeLocation => Action::ChangeLocation,
@@ -607,7 +726,21 @@ impl Controller {
             Target::QuickMatch => Action::QuickMatch,
             Target::CustomMatch => Action::CustomMatch,
             Target::SignIn => Action::SignIn,
-            Target::FreeskateActivities | Target::SendFriendInvite | Target::ViewGamercard | Target::NotPorted => Action::None,
+            Target::Spectate => self.peer.filter(|&peer| self.can_spectate(peer)).map_or(Action::None, Action::Spectate),
+            // GoToFreeskateType: the type's menu starts at its first activity
+            // (`HubMenu::ClearMenuItems` 0x82654050) and opens if it has any.
+            Target::ActivityType(kind) => {
+                self.activity_type = Some(kind);
+                self.menus.remove(&FREESKATE_ACTIVITY_LIST);
+                self.setup_activity_list(kind);
+                if self.menus.contains_key(&FREESKATE_ACTIVITY_LIST) {
+                    self.stack.push(FREESKATE_ACTIVITY_LIST);
+                    self.calls.push(ScreenCall::Push);
+                }
+                Action::None
+            }
+            Target::Activity(key) => Action::ActivitySignUp(key),
+            Target::SendFriendInvite | Target::NotPorted => Action::None,
         }
     }
 }
@@ -623,6 +756,7 @@ mod tests {
             lobby_mode: true,
             players: (0..others).map(|index| (index as u64 + 2, format!("Skater{index}"))).collect(),
             participants: others + 1,
+            min_participants: 2,
             ..Lobby::default()
         }
     }
@@ -666,6 +800,15 @@ mod tests {
         free_skate.free_skate_type = true;
         assert!(!Controller::open(free_skate).snapshot().stack[0].items[1].1);
         let mut hub = Controller::open(lobby(true, 1));
+        hub.ready = true;
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::StartChallenge);
+    }
+
+    #[test]
+    fn spot_battle_and_hall_of_meat_start_alone() {
+        let solo = Lobby { min_participants: 1, ..lobby(true, 0) };
+        let mut hub = Controller::open(solo);
+        assert!(hub.snapshot().stack[0].items[1].1);
         hub.ready = true;
         assert_eq!(hub.update(press(|input| input.select = true)), Action::StartChallenge);
     }
@@ -753,6 +896,110 @@ mod tests {
         changing.challenge_in_progress = true;
         changing.changing_location = true;
         assert!(!Controller::open(changing).snapshot().stack[0].items[4].1, "nothing while a change counts down");
+    }
+
+    #[test]
+    fn spectate_takes_view_gamercards_place_and_watches_from_the_pre_game_lobby() {
+        let mut free_skate = lobby(false, 1);
+        free_skate.free_skate_type = true;
+        free_skate.spectatable = vec![2];
+        let challenge = Lobby { free_skate_type: false, ..free_skate.clone() };
+        // Waiting in the pre-game lobby while the challenge runs, watching another who waits.
+        let waiting = Lobby { challenge_in_progress: true, ..challenge.clone() };
+        for open in [free_skate.clone(), challenge, waiting] {
+            let mut hub = open_player_menu(open);
+            let snapshot = hub.snapshot();
+            assert_eq!(snapshot.stack[2].items[1], (Title::Literal(SPECTATE.into()), true));
+            assert_eq!(snapshot.stack[2].selected, 1);
+            assert_eq!(hub.update(press(|input| input.select = true)), Action::Spectate(2));
+        }
+        for blocked in [
+            Lobby { spectatable: Vec::new(), ..free_skate.clone() },
+            Lobby { challenge_in_progress: true, ..free_skate.clone() },
+            Lobby { changing_location: true, ..free_skate.clone() },
+            Lobby { lobby_mode: false, free_skate_type: false, challenge_in_progress: true, ..free_skate.clone() },
+        ] {
+            let mut hub = open_player_menu(blocked);
+            assert!(!hub.snapshot().stack[2].items[1].1, "greyed out");
+            assert_eq!(hub.update(press(|input| input.select = true)), Action::None);
+        }
+    }
+
+    /// The first player's menu, through the root's Player List (which follows Freeskate
+    /// Activities where those are enabled).
+    fn open_player_menu(lobby: Lobby) -> Controller {
+        let mut hub = Controller::open(lobby);
+        hub.ready = true;
+        let on_player_list = |hub: &Controller| {
+            let snapshot = hub.snapshot();
+            let root = &snapshot.stack[0];
+            matches!(root.items[root.selected].0, Title::Count { label: "ID_ONLINE_HUB_PLAYER_LIST", .. })
+        };
+        for _ in 0..4 {
+            if on_player_list(&hub) {
+                break;
+            }
+            hub.update(press(|input| input.down = true));
+        }
+        assert!(on_player_list(&hub), "the root selects its Player List");
+        hub.update(press(|input| input.select = true));
+        hub.update(press(|input| input.select = true));
+        hub
+    }
+
+    #[test]
+    fn freeskate_activities_list_the_location_s_types_then_a_type_s_activities() {
+        use crate::online::activities::kind;
+        let mut free_skate = lobby(false, 1);
+        free_skate.free_skate_type = true;
+        free_skate.activities = vec![
+            HubActivity { key: 1, kind: kind::GAP, title: "ID_GAP_ONE".into(), completed: false },
+            HubActivity { key: 2, kind: kind::SURVIVAL, title: "ID_SURVIVAL".into(), completed: true },
+            HubActivity { key: 3, kind: kind::GAP, title: "ID_GAP_TWO".into(), completed: true },
+        ];
+        let mut hub = Controller::open(free_skate.clone());
+        hub.ready = true;
+        let root = &hub.snapshot().stack[0];
+        assert_eq!(root.items[1], (Title::Hal("ID_ONLINE_HUB_FREESTYLE_ACTIVITES"), true));
+        assert_eq!(root.selected, 1);
+        hub.update(press(|input| input.select = true));
+        let types = &hub.snapshot().stack[1];
+        assert_eq!(types.id, FREESKATE_ACTIVITIES);
+        // Gap, Accumulation, Group Trick List, Simultaneous Trick, Survival, Tag.
+        assert_eq!(types.items.iter().map(|(_, enabled)| *enabled).collect::<Vec<_>>(), vec![true, false, false, false, true, false]);
+        hub.update(press(|input| input.select = true));
+        let list = &hub.snapshot().stack[2];
+        assert_eq!(list.id, FREESKATE_ACTIVITY_LIST);
+        assert_eq!(titles(list), vec![Title::Text("ID_GAP_ONE".into()), Title::Completed("ID_GAP_TWO".into())]);
+        hub.update(press(|input| input.down = true));
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::ActivitySignUp(3));
+        for blocked in [
+            Lobby { proposal: true, ..free_skate.clone() },
+            Lobby { changing_location: true, ..free_skate.clone() },
+            Lobby { challenge_in_progress: true, ..free_skate.clone() },
+            Lobby { free_skate_type: false, ..free_skate.clone() },
+            Lobby { players: Vec::new(), participants: 1, ..free_skate.clone() },
+        ] {
+            assert!(!Controller::open(blocked).snapshot().stack[0].items[1].1, "greyed out");
+        }
+        // Once the item is off, its menus close back to the root.
+        hub.refresh(Lobby { proposal: true, ..free_skate });
+        assert_eq!(hub.snapshot().stack.len(), 1);
+    }
+
+    #[test]
+    fn a_proposal_holds_the_host_s_changes_back() {
+        let mut proposing = lobby(true, 1);
+        proposing.free_skate_type = true;
+        proposing.proposal = true;
+        let mut hub = Controller::open(proposing);
+        hub.ready = true;
+        assert_eq!(hub.snapshot().stack[0].selected, 3, "on the player list");
+        hub.update(press(|input| input.down = true));
+        hub.update(press(|input| input.select = true));
+        let options = &hub.snapshot().stack[1];
+        assert_eq!(options.id, HOST_OPTIONS);
+        assert_eq!(options.items.iter().map(|(_, enabled)| *enabled).collect::<Vec<_>>(), vec![false, false, true]);
     }
 
     fn single_player(kind: HubKind) -> Controller {

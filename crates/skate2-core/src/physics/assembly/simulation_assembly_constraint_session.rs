@@ -251,12 +251,18 @@ pub(crate) struct SimulationAssemblyConstraintSession<M, C = ()> {
         Option<std::sync::Arc<crate::simulation_entity_roster::SimulationEntityRoster>>,
     pub(crate) local_skater_identity:
         Option<std::sync::Arc<crate::skater_manager_local_identity::SkaterManagerLocalIdentity>>,
+    /// The other online players' skaters as the local skater's scoring collects them, with
+    /// their body points (PC port: the original's network game simulated every player's skater
+    /// in its SkaterManager, whose roster `CollectNearbyEntitiesForScoring` walks).
+    pub(crate) remote_scoring_skaters: std::sync::Mutex<Vec<crate::physical_player_phys_out::conditioners::scoring_external::RemoteScoringSkater>>,
     backend: Backend<M>,
     contacts: SimulationManagerContactDomain,
     hooks: SimulationHookAssemblyPool<M, C>,
     island_flags: u32,
     /// `Island::mCullingTable`, built by the ctor's InitCullingTable 0x827bad10.
     island_culling: skate2_formats::collision::BitTable,
+    /// The culling table is the online game's ([`Self::set_online_game_culling`]).
+    online_game_culling: bool,
     simulation_max_iterations: Option<u32>,
     world_line_queries: Option<world_line_query::SimulationWorldLineQueries>,
     skaters: Option<crate::dynamic_assembly_session::skater_pool::SimulationSkaterAssemblyPool>,
@@ -455,6 +461,21 @@ impl<M, C> SimulationAssemblyConstraintSession<M, C> {
 
     /// Explicit source world configuration. The historical component constructor
     /// above selects Both3, but does not implement the complete flags3 Tick.
+    /// An online game's culling table. The original's online game sets `sGhostSystemEnabled`
+    /// (`StateOnlineGame::SetupInitalGameInfo` 0x8275dba4) until `GameModule::BackToSP`, and
+    /// `World::UpdateIslandFlags` 0x827ab9c0 then makes the simulation island `FLAG_Simulation`
+    /// (`Island::ChangeFlags` 0x827ba5b0), whose table (`InitCullingTable` 0x827b8c10) culls
+    /// boards and skeletons against each other (groups 4, 6 and 7): an off-board skater passes
+    /// through every board, its own included. The port's netcode leaves the ghost system clear,
+    /// so only the table follows the online game; the island keeps its flags.
+    pub(crate) fn set_online_game_culling(&mut self, online: bool) {
+        if online == self.online_game_culling {
+            return;
+        }
+        self.online_game_culling = online;
+        self.island_culling = island_culling::island_culling_table(if online { 1 } else { self.island_flags });
+    }
+
     pub(crate) fn try_new_with_island_flags(
         bodies: usize,
         joints: usize,
@@ -489,6 +510,7 @@ impl<M, C> SimulationAssemblyConstraintSession<M, C> {
             hooks,
             island_flags,
             island_culling: island_culling::island_culling_table(island_flags),
+            online_game_culling: false,
             simulation_max_iterations: None,
             world_line_queries: None,
             skaters: None,
@@ -501,6 +523,7 @@ impl<M, C> SimulationAssemblyConstraintSession<M, C> {
             skeleton_culling: crate::skeleton_culling::SkeletonCullingInventory::default(),
             contact_feedback_progress:
                 contact_feedback::SimulationContactFeedbackProgress::NotStarted,
+            remote_scoring_skaters: std::sync::Mutex::new(Vec::new()),
             #[cfg(test)]
             last_drive_words: Vec::new(),
             #[cfg(test)]

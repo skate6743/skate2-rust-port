@@ -12,6 +12,10 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// The scoring ids of other online players' skaters: their game slots past the SkaterManager's
+/// player indices, so none is taken for a skater the roster lists.
+const REMOTE_SKATER_IDS: u32 = 16;
+
 #[derive(Clone, Copy)]
 pub(crate) struct ScoringFrameSchedule<'a> {
     pub(crate) tick: u32,
@@ -156,6 +160,21 @@ impl PhysicalAssemblyWorld {
                     },
                     unique_id: other_player,
                 });
+            }
+            // The other online players' skaters, which the port does not simulate here, by the
+            // same test (PC port: in the original they were the roster's own).
+            let remote = self.remote_scoring_skaters.lock().map_err(dependency)?;
+            for other in remote.iter() {
+                if input.skaters.len() >= 7 {
+                    break;
+                }
+                let dx = skeleton.skeleton_hips_pos.xyz[0] - other.hips[0];
+                let dz = skeleton.skeleton_hips_pos.xyz[2] - other.hips[2];
+                let distance_sq = (dx * dx + 0.0) + dz * dz;
+                if !(distance_sq < 9.0) {
+                    continue;
+                }
+                input.skaters.push(other.nearby(REMOTE_SKATER_IDS + u32::from(other.slot)));
             }
         }
         if cvars

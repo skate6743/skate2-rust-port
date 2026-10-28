@@ -8,11 +8,14 @@ use skate2_net::protocol::{CHAT_CHARACTERS, valid_chat};
 /// The widest line the event log shows a chat line in.
 pub const LINE_CHARACTERS: usize = 50;
 
-/// The open chat prompt: the line typed so far and the cursor's place in it.
+/// The open chat prompt: the line typed so far, the cursor's place in it, and whether Ctrl+A
+/// selected the whole line (a key typed then replaces it, Backspace or Delete clears it, Esc only
+/// lets it go, and an arrow, Home or End puts the cursor at that end of it).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChatPrompt {
     pub text: String,
     pub cursor: usize,
+    pub selected: bool,
 }
 
 /// What a key did to the prompt.
@@ -25,9 +28,43 @@ pub enum ChatOutcome {
 }
 
 impl ChatPrompt {
-    /// A key: printable ASCII and spaces up to the line's limit, editing, Enter and Esc.
+    /// A key: printable ASCII and spaces up to the line's limit, editing, Enter and Esc, and
+    /// Ctrl+A's selection of the whole line.
     pub fn input(&mut self, input: TextInput) -> ChatOutcome {
+        if self.selected {
+            self.selected = false;
+            match input {
+                TextInput::Insert(ref typed) if typed.chars().any(|character| character.is_ascii_graphic() || character == ' ') => {
+                    self.text.clear();
+                    self.cursor = 0;
+                }
+                TextInput::Insert(_) => {
+                    self.selected = true;
+                    return ChatOutcome::Open;
+                }
+                TextInput::Backspace | TextInput::Delete => {
+                    self.text.clear();
+                    self.cursor = 0;
+                    return ChatOutcome::Open;
+                }
+                TextInput::Cancel => return ChatOutcome::Open,
+                TextInput::Left | TextInput::Home => {
+                    self.cursor = 0;
+                    return ChatOutcome::Open;
+                }
+                TextInput::Right | TextInput::End => {
+                    self.cursor = self.text.len();
+                    return ChatOutcome::Open;
+                }
+                TextInput::SelectAll => {
+                    self.selected = true;
+                    return ChatOutcome::Open;
+                }
+                TextInput::Accept => {}
+            }
+        }
         match input {
+            TextInput::SelectAll => self.selected = !self.text.is_empty(),
             TextInput::Insert(typed) => {
                 for character in typed.chars().filter(|character| character.is_ascii_graphic() || *character == ' ') {
                     if self.text.len() == CHAT_CHARACTERS {
@@ -125,6 +162,40 @@ mod tests {
         assert!(prompt.text.starts_with('b') && prompt.text.len() == CHAT_CHARACTERS);
         assert_eq!(typed("   ").input(TextInput::Accept), ChatOutcome::Closed);
         assert_eq!(typed("hi").input(TextInput::Cancel), ChatOutcome::Closed);
+    }
+
+    #[test]
+    fn ctrl_a_selects_the_line_for_the_next_key_to_replace_or_clear() {
+        let mut prompt = typed("hello there");
+        prompt.input(TextInput::SelectAll);
+        assert!(prompt.selected);
+        assert_eq!(prompt.input(TextInput::Insert("x".into())), ChatOutcome::Open);
+        assert_eq!((prompt.text.as_str(), prompt.cursor, prompt.selected), ("x", 1, false), "a key replaces the line");
+        prompt.input(TextInput::SelectAll);
+        prompt.input(TextInput::Backspace);
+        assert_eq!((prompt.text.as_str(), prompt.cursor, prompt.selected), ("", 0, false), "Backspace clears it");
+        let mut prompt = typed("keep me");
+        prompt.input(TextInput::SelectAll);
+        assert_eq!(prompt.input(TextInput::Cancel), ChatOutcome::Open, "Esc lets the selection go and keeps the prompt");
+        assert_eq!((prompt.text.as_str(), prompt.selected), ("keep me", false));
+        assert_eq!(prompt.input(TextInput::Cancel), ChatOutcome::Closed);
+        let mut prompt = typed("abc");
+        prompt.input(TextInput::SelectAll);
+        prompt.input(TextInput::Left);
+        assert_eq!((prompt.cursor, prompt.selected), (0, false));
+        prompt.input(TextInput::SelectAll);
+        prompt.input(TextInput::Delete);
+        assert!(prompt.text.is_empty());
+        let mut prompt = typed("send me");
+        prompt.input(TextInput::SelectAll);
+        assert_eq!(prompt.input(TextInput::Accept), ChatOutcome::Send("send me".into()), "Enter sends the selected line");
+        let mut empty = ChatPrompt::default();
+        empty.input(TextInput::SelectAll);
+        assert!(!empty.selected, "nothing to select");
+        let mut prompt = typed("x");
+        prompt.input(TextInput::SelectAll);
+        prompt.input(TextInput::Insert("\u{e9}".into()));
+        assert_eq!((prompt.text.as_str(), prompt.selected), ("x", true), "a key the line cannot take replaces nothing");
     }
 
     #[test]

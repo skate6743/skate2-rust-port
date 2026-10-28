@@ -28,6 +28,7 @@ pub mod rw4;
 pub mod shader;
 pub mod skater_profile;
 pub mod state_graph;
+pub mod stfs;
 pub mod stream;
 pub mod stream_xml;
 pub mod boundary_xml;

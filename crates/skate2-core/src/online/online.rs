@@ -3,6 +3,8 @@
 //! chat's prompt and lines, and the front-end controllers of the online screens. The connection and the remote skaters live in
 //! the session (`selected_session_online.rs`); the server and wire format in `skate2-net`.
 
+#[path = "activities.rs"]
+pub mod activities;
 #[path = "audio_record.rs"]
 pub mod audio_record;
 #[path = "catalog.rs"]

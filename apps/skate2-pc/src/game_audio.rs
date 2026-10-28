@@ -330,7 +330,7 @@ fn load_system(mounts: &MountSet) -> Result<(AudioSystem, HashMap<String, u64>),
     let grains = grain_files(&root)?;
     let aems = aems_files(&root)?;
     // `skater.vlt` and the challenge Vaults the contests' audio reads `challenges` from.
-    let db = AttribDb::load(mounts, &skate2_core::challenge::attrib_db::CAREER_VAULTS).map_err(|e| e.to_string())?;
+    let db = AttribDb::load_career(mounts).map_err(|e| e.to_string())?;
     let (sounds, globals) = fe_sounds(&db);
     let mut system = AudioSystem::new();
     system.set_hom_banks(hom_banks(&root)?);

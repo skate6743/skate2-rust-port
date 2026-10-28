@@ -59,6 +59,8 @@ pub enum TextInput {
     End,
     Accept,
     Cancel,
+    /// Ctrl+A (PC): the whole line selected, where a prompt takes a selection.
+    SelectAll,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

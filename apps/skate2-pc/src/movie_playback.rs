@@ -14,7 +14,7 @@ use skate2_formats::ea_xa::EaXaDecoder;
 use skate2_formats::mount::MountSet;
 use skate2_formats::vp6::{Vp6Decoder, YuvFrame};
 use std::collections::VecDeque;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -102,6 +102,9 @@ pub(crate) struct MovieRenderer {
     set_volume: bool,
     volume: f32,
 }
+
+/// A movie's bytes as the reader takes them.
+type MovieSource = BufReader<Box<dyn Read + Send>>;
 
 /// The game root, from the Boot archive's path (`data\big\miscboot.big`).
 fn game_root(mounts: &MountSet) -> Option<PathBuf> {
@@ -245,19 +248,21 @@ impl MovieRenderer {
     /// then the new one starts. A file that does not open leaves no player.
     fn do_open(&mut self, settings: &MovieSettings, mounts: &MountSet, audio: Option<&GameAudio>) {
         self.do_stop(audio);
-        let Some(root) = game_root(mounts) else {
-            eprintln!("movie: no game root for {}", settings.file);
-            return;
+        let (name, source) = match open_movie(settings, mounts) {
+            Ok(opened) => opened,
+            Err(error) => {
+                eprintln!("movie: {} did not open: {error}", settings.file);
+                return;
+            }
         };
-        let path = skate2_formats::host_path::on_disk(&root.join(settings.file.replace('\\', "/")));
-        match Playback::start(&path, settings, audio) {
+        match Playback::start(&name, source, settings, audio) {
             Ok(playback) => {
                 self.playback = Some(playback);
                 self.playing = true;
                 self.set_volume = true;
                 self.volume = audio.map_or(0.0, |audio| audio.movie_volume() * settings.volume);
             }
-            Err(error) => eprintln!("movie: {} did not open: {error}", path.display()),
+            Err(error) => eprintln!("movie: {name} did not open: {error}"),
         }
     }
 
@@ -277,16 +282,29 @@ impl MovieRenderer {
     }
 }
 
+/// The movie's file: the game's own on disk (`data\movies\`), else the one an archive holds, as
+/// downloadable content's are (`data\movies_dlc\`, read through the `dlcbig:` device).
+fn open_movie(settings: &MovieSettings, mounts: &MountSet) -> Result<(String, MovieSource), String> {
+    if let Some(root) = game_root(mounts) {
+        let path = skate2_formats::host_path::on_disk(&root.join(settings.file.replace('\\', "/")));
+        if path.is_file() {
+            let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            return Ok((path.display().to_string(), BufReader::new(Box::new(file))));
+        }
+    }
+    let stream = mounts.open_stream(&settings.file).map_err(|e| e.to_string())?;
+    Ok((settings.file.clone(), BufReader::new(Box::new(stream))))
+}
+
 impl Playback {
     /// `MoviePlayer::Init` and `Play` with `PreparePlayer`: the header and the sound's header
     /// read, the sound's renderer made, then the reader and decoder threads.
     fn start(
-        path: &Path,
+        name: &str,
+        mut reader: MovieSource,
         settings: &MovieSettings,
         audio: Option<&GameAudio>,
     ) -> Result<Self, String> {
-        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        let mut reader = BufReader::new(file);
         let mut header = None;
         let mut sound_header = None;
         let mut early = Vec::new();
@@ -321,7 +339,7 @@ impl Playback {
             audio.is_some_and(|audio| audio.movie_init(h.sample_rate, channels, sound.clone()))
         });
         if std::env::var_os("SKATE2_TRACE_MOVIE").is_some() {
-            eprintln!("movie trace: start {} sound_header={} audio_started={audio_started}", path.display(), sound_header.is_some());
+            eprintln!("movie trace: start {name} sound_header={} audio_started={audio_started}", sound_header.is_some());
         }
         let (video_tx, video_rx) = sync_channel::<OwnedChunk>(VIDEO_CHUNKS_AHEAD);
         let (frame_tx, frame_rx) = sync_channel::<DecodedFrame>(1);
@@ -470,7 +488,7 @@ impl Playback {
 /// the movie's sound queue, the video chunks handed to the decoder thread.
 #[allow(clippy::too_many_arguments)]
 fn read_movie(
-    mut reader: BufReader<std::fs::File>,
+    mut reader: MovieSource,
     early: Vec<OwnedChunk>,
     filter: [u8; 2],
     channels: usize,

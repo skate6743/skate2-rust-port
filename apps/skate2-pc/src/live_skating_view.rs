@@ -135,11 +135,29 @@ impl LiveSkatingView {
     pub(crate) fn update_online_chat(&mut self, prompt: Option<&skate2_core::online::chat::ChatPrompt>, nickname: Option<&skate2_core::ui::profile_name::Prompt>) -> RenderResult<()> {
         self.marker_ui.as_mut().ok_or("frontend UI absent")?.update_online_chat(prompt, nickname)
     }
+    pub(crate) fn update_online_spectator(&mut self, name: Option<&str>) -> RenderResult<()> {
+        self.marker_ui.as_mut().ok_or("frontend UI absent")?.update_online_spectator(name)
+    }
+    pub(crate) fn update_online_activities(
+        &mut self,
+        renderer: &GpuRenderer,
+        overlay: Option<&skate2_core::online::activities::OverlayView>,
+        sign_up: Option<&skate2_core::online::activities::SignUpView>,
+        log_hidden: bool,
+    ) -> RenderResult<bool> {
+        self.marker_ui.as_mut().ok_or("frontend UI absent")?.update_online_activities(renderer, overlay, sign_up, log_hidden)
+    }
     pub(crate) fn update_chyron(&mut self, state: i32, songs: &[u32]) -> RenderResult<()> {
         self.marker_ui.as_mut().ok_or("frontend UI absent")?.update_chyron(state, songs)
     }
     pub(crate) fn set_options_menu(&mut self, state: skate2_core::ui::options::Snapshot) -> RenderResult<()> {
         self.marker_ui.as_mut().ok_or("frontend UI absent")?.set_options_menu(state)
+    }
+    /// The playing controller's sticks as its pad reports them (left x and y, then right), which
+    /// the Stick Settings pages show.
+    pub(crate) fn set_stick_preview(&mut self, sticks: Option<[i16; 4]>) -> RenderResult<()> {
+        self.marker_ui.as_mut().ok_or("frontend UI absent")?.set_stick_preview(sticks);
+        Ok(())
     }
     pub(crate) fn set_free_skate_settings(&mut self, settings: Option<(bool, bool)>) {
         if let Some(ui) = self.marker_ui.as_mut() {
@@ -199,6 +217,17 @@ impl LiveSkatingView {
     pub(crate) fn take_extras_events(&mut self) -> (bool, bool, bool) {
         self.marker_ui.as_mut().map_or((false, false, false), |ui| ui.take_extras_events())
     }
+    /// The Downloadable Content screen's `IntroComplete` since the last call.
+    pub(crate) fn take_dlc_intro(&mut self) -> bool {
+        self.marker_ui.as_mut().is_some_and(crate::marker_ui::MarkerUi::take_dlc_intro)
+    }
+    /// PC: a link mounted downloadable content, whose language databases' strings join the
+    /// screens' (`StateDLCFlow::LoadDLCLanguageDB`).
+    pub(crate) fn add_dlc_strings(&mut self) {
+        if let Some(ui) = self.marker_ui.as_mut() {
+            ui.add_dlc_strings(&self.mounts);
+        }
+    }
     pub(crate) fn update_movie_frontend(&mut self, renderer: &GpuRenderer, scene: &mut GpuScene, now: Instant) -> RenderResult<()> {
         self.marker_ui.as_mut().ok_or("marker UI not initialized")?.update_movie_frontend(renderer, scene, now)
     }
@@ -209,6 +238,22 @@ impl LiveSkatingView {
     /// The mission hulls' presentation collections the session's hull loaders registered.
     pub(crate) fn set_hull_presentations(&mut self, hulls: Vec<skate2_core::presentation::HullPresentation>) {
         self.map.set_hull_presentations(hulls);
+    }
+    /// The additional world the session holds loaded, which the city streams with BAM.
+    pub(crate) fn set_additional_world(&mut self, world: Option<String>) {
+        self.map.set_additional_world(world);
+    }
+    /// The session's world render location, which the city's environment follows.
+    pub(crate) fn set_world_render_location(&mut self, location: Option<u64>) -> RenderResult<()> {
+        self.map.set_world_render_location(&self.mounts, location)
+    }
+    /// The additional world the city may still hold collections of.
+    pub(crate) fn additional_world_held(&self) -> Option<String> {
+        self.map.additional_world_held()
+    }
+    /// The additional world the city selects from.
+    pub(crate) fn additional_world_selected(&self) -> Option<String> {
+        self.map.additional_world_selected()
     }
     /// The presentation stream for the session's `IsAreaLoaded`.
     pub(crate) fn presentation_stream_area(&self) -> Option<skate2_core::streaming::area_loaded::PresentationStreamArea> {

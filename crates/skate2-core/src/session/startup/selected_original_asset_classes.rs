@@ -160,6 +160,10 @@ pub(crate) fn selected_additional_classes() -> Vec<u64> {
         crate::living_world_grind_services::dmo_models::PRIORITY_CLASS,
         crate::living_world_grind_services::dmo_objects::CENSUS_RANGES_CLASS,
         crate::living_world_grind_services::dmo_objects::ENTITIES_CLASS,
+        // RumbleManager's events, its RumbleDataMapper's surfaces and the wheels' patterns.
+        crate::input_pad::rumble::CLASSES[0],
+        crate::input_pad::rumble::CLASSES[1],
+        crate::input_pad::rumble::CLASSES[2],
     ]
 }
 

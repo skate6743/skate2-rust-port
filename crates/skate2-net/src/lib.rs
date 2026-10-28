@@ -13,6 +13,7 @@ pub mod panel;
 pub mod protocol;
 pub mod range;
 pub mod server;
+pub mod stats;
 pub mod transport;
 pub mod words;
 

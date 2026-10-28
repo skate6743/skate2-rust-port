@@ -3,6 +3,7 @@
 use crate::{
     big::{BigArchive, BigEntry, BigEntryKey, BigError},
     refpack::{self, RefPackError},
+    stfs::{StfsFile, StfsReader},
 };
 use std::{
     fmt,
@@ -10,7 +11,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     ops::Range,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Arc, OnceLock, PoisonError, RwLock},
     time::{Duration, Instant},
 };
 
@@ -141,10 +142,85 @@ impl ArchiveSpec {
     }
 }
 
+/// Where an archive's bytes are: a file, or a file inside an Xbox 360 content package
+/// (downloadable content, `XenonDLCDriver`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArchiveSource {
+    File(PathBuf),
+    Package(StfsFile),
+}
+
+impl ArchiveSource {
+    /// A reader over the archive's bytes from its first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MountError::Io`] when the file or package cannot be opened.
+    pub fn open(&self) -> Result<ArchiveReader, MountError> {
+        match self {
+            Self::File(path) => open_file(path).map(ArchiveReader::File),
+            Self::Package(file) => file
+                .open()
+                .map(ArchiveReader::Package)
+                .map_err(|source| MountError::Io { path: file.package().to_owned(), source }),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        match self {
+            Self::File(path) => path,
+            Self::Package(file) => file.package(),
+        }
+    }
+}
+
+/// `Read` and `Seek` over an [`ArchiveSource`].
+#[derive(Debug)]
+pub enum ArchiveReader {
+    File(File),
+    Package(StfsReader),
+}
+
+impl Read for ArchiveReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::File(file) => file.read(buf),
+            Self::Package(file) => file.read(buf),
+        }
+    }
+}
+
+impl Seek for ArchiveReader {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        match self {
+            Self::File(file) => file.seek(to),
+            Self::Package(file) => file.seek(to),
+        }
+    }
+}
+
+/// One entry's bytes as they are taken (see [`MountSet::open_stream`]): a stored entry read from
+/// its archive, or a RefPack one unpacked whole.
+#[derive(Debug)]
+pub enum EntryStream {
+    Stored(io::Take<ArchiveReader>),
+    Unpacked(io::Cursor<Vec<u8>>),
+}
+
+impl Read for EntryStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Stored(entry) => entry.read(buf),
+            Self::Unpacked(entry) => entry.read(buf),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MountedBig {
     data_path: PathBuf,
     header_path: PathBuf,
+    source: ArchiveSource,
     archive: BigArchive,
 }
 
@@ -174,13 +250,26 @@ impl MountedBig {
         } else {
             preferred_header
         };
-        let archive = read_archive_header(&header_path)?;
+        let archive = read_archive_header(&mut open_file(&header_path)?, &header_path)?;
 
         Ok(Self {
+            source: ArchiveSource::File(data_path.clone()),
             data_path,
             header_path,
             archive,
         })
+    }
+
+    /// Opens an archive whose table is at the start of its own bytes, as
+    /// `BigHandler::AddArchiveFromFile` (`0x82bb91d8`) reads downloadable content's (no `.bh`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MountError`] if the header cannot be read or its table is malformed.
+    pub fn open_source(source: ArchiveSource) -> Result<Self, MountError> {
+        let path = source.path().to_owned();
+        let archive = read_archive_header(&mut source.open()?, &path)?;
+        Ok(Self { data_path: path.clone(), header_path: path, source, archive })
     }
 
     #[must_use]
@@ -188,9 +277,16 @@ impl MountedBig {
         &self.archive
     }
 
+    /// The file holding the archive: the `.big`, or the content package it is inside (see
+    /// [`MountedBig::source`]).
     #[must_use]
     pub fn data_path(&self) -> &Path {
         &self.data_path
+    }
+
+    #[must_use]
+    pub fn source(&self) -> &ArchiveSource {
+        &self.source
     }
 
     #[must_use]
@@ -223,7 +319,7 @@ impl MountedBig {
     /// entry cannot be decompressed and size-validated.
     pub fn read_entry(&self, entry: &BigEntry) -> Result<Vec<u8>, MountError> {
         let started = Instant::now();
-        let mut file = open_file(&self.data_path)?;
+        let mut file = self.source.open()?;
         let bytes = read_entry(&mut file, entry)?;
         self.observe(entry, bytes.len(), started);
         Ok(bytes)
@@ -266,7 +362,7 @@ impl MountedBig {
         range: Range<u64>,
     ) -> Result<LogicalEntryRange, MountError> {
         let started = Instant::now();
-        let mut file = open_file(&self.data_path)?;
+        let mut file = self.source.open()?;
         let read = read_entry_range(&mut file, entry, range, &self.data_path)?;
         self.observe(entry, read.bytes.len(), started);
         Ok(read)
@@ -282,6 +378,11 @@ impl MountedBig {
 #[derive(Debug, Default)]
 pub struct MountSet {
     archives: Vec<MountedBig>,
+    /// Downloadable content's archives, searched after the game's own (the shipped packs hold
+    /// no path the game's archives do): native `DLC::Manager` adds every `*.big` of its content
+    /// mounts to the `dlcbig:` device (`EnumerateContent` `0x825e86c8`). Linking more while the
+    /// game runs adds to them.
+    dlc: RwLock<Vec<Arc<MountedBig>>>,
 }
 
 impl MountSet {
@@ -294,17 +395,40 @@ impl MountSet {
         self.archives.push(archive);
     }
 
+    /// The game's own archives in mount order (not downloadable content's).
     #[must_use]
     pub fn archives(&self) -> &[MountedBig] {
         &self.archives
+    }
+
+    /// Adds a downloadable content archive, which later reads find after the game's archives
+    /// and every earlier one's.
+    pub fn push_dlc(&self, archive: MountedBig) {
+        self.dlc.write().unwrap_or_else(PoisonError::into_inner).push(Arc::new(archive));
+    }
+
+    /// The downloadable content archives in mount order.
+    #[must_use]
+    pub fn dlc_archives(&self) -> Vec<Arc<MountedBig>> {
+        self.dlc.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The archive that owns a path: the game's first, then downloadable content's.
+    fn owner<T>(&self, normalized: &str, mut found: impl FnMut(&MountedBig, &BigEntry) -> T) -> Option<T> {
+        for mounted in &self.archives {
+            if let Some(entry) = mounted.archive.find_path(normalized) {
+                return Some(found(mounted, entry));
+            }
+        }
+        let dlc = self.dlc.read().unwrap_or_else(PoisonError::into_inner);
+        dlc.iter().find_map(|mounted| mounted.archive.find_path(normalized).map(|entry| found(mounted.as_ref(), entry)))
     }
 
     /// Whether a mounted archive holds the virtual game path
     /// (`xcore::FileLoader::FileExists` for archived files).
     #[must_use]
     pub fn contains_path(&self, path: &str) -> bool {
-        let normalized = normalize_game_path(path);
-        self.archives.iter().any(|mounted| mounted.archive.find_path(&normalized).is_some())
+        self.owner(&normalize_game_path(path), |_, _| ()).is_some()
     }
 
     /// Resolves a virtual game path in mount order.
@@ -315,12 +439,8 @@ impl MountSet {
     /// the path, or propagates a read/decompression failure from the owner.
     pub fn read_path(&self, path: &str) -> Result<Vec<u8>, MountError> {
         let normalized = normalize_game_path(path);
-        for mounted in &self.archives {
-            if mounted.archive.find_path(&normalized).is_some() {
-                return mounted.read_path(&normalized);
-            }
-        }
-        Err(MountError::EntryNotFound(normalized))
+        self.owner(&normalized, |mounted, entry| mounted.read_entry(entry))
+            .unwrap_or_else(|| Err(MountError::EntryNotFound(normalized.clone())))
     }
 
     /// Resolves a virtual path in mount order and reads a logical entry range.
@@ -338,12 +458,34 @@ impl MountSet {
         range: Range<u64>,
     ) -> Result<LogicalEntryRange, MountError> {
         let normalized = normalize_game_path(path);
-        for mounted in &self.archives {
-            if let Some(entry) = mounted.archive.find_path(&normalized) {
-                return mounted.read_entry_range(entry, range);
+        let mut range = Some(range);
+        self.owner(&normalized, |mounted, entry| mounted.read_entry_range(entry, range.take().unwrap_or(0..0)))
+            .unwrap_or_else(|| Err(MountError::EntryNotFound(normalized.clone())))
+    }
+
+    /// Resolves a virtual path in mount order and streams its entry, for an entry too large to
+    /// read whole (a downloadable content movie).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MountError::EntryNotFound`] when no mounted archive contains the path, or the
+    /// owner's read failure.
+    pub fn open_stream(&self, path: &str) -> Result<EntryStream, MountError> {
+        let normalized = normalize_game_path(path);
+        self.owner(&normalized, |mounted, entry| {
+            let failed = |source| MountError::Io { path: mounted.data_path.clone(), source };
+            let mut reader = mounted.source.open()?;
+            reader.seek(SeekFrom::Start(entry.offset)).map_err(failed)?;
+            let probe = usize::try_from(entry.stored_size.min(2)).unwrap_or(0);
+            let mut prefix = [0_u8; 2];
+            reader.read_exact(&mut prefix[..probe]).map_err(failed)?;
+            if is_refpack(&prefix[..probe]) {
+                return mounted.read_entry(entry).map(|bytes| EntryStream::Unpacked(io::Cursor::new(bytes)));
             }
-        }
-        Err(MountError::EntryNotFound(normalized))
+            reader.seek(SeekFrom::Start(entry.offset)).map_err(failed)?;
+            Ok(EntryStream::Stored(reader.take(entry.stored_size)))
+        })
+        .unwrap_or_else(|| Err(MountError::EntryNotFound(normalized.clone())))
     }
 }
 
@@ -450,8 +592,7 @@ fn open_file(path: &Path) -> Result<File, MountError> {
     })
 }
 
-fn read_archive_header(path: &Path) -> Result<BigArchive, MountError> {
-    let mut file = open_file(path)?;
+fn read_archive_header(file: &mut impl Read, path: &Path) -> Result<BigArchive, MountError> {
     let mut fixed = [0_u8; FIXED_HEADER_SIZE];
     file.read_exact(&mut fixed)
         .map_err(|source| MountError::Io {
@@ -695,6 +836,7 @@ mod tests {
         MountedBig {
             data_path: file.path.clone(),
             header_path: file.path.clone(),
+            source: ArchiveSource::File(file.path.clone()),
             archive: BigArchive {
                 format: BigFormat::Named { integer_width: 4 },
                 declared_archive_size: 0,

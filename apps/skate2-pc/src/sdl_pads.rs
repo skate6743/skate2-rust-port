@@ -28,6 +28,14 @@ const RUMBLE_MS: u32 = 0xFFFF;
 const RUMBLE_RESEND: Duration = Duration::from_secs(30);
 const STILL: PadVibration = PadVibration { left: 0, right: 0 };
 
+/// Set by the panic hook: the game stopped, and every pad's motors stop with it.
+static SILENCED: AtomicBool = AtomicBool::new(false);
+
+/// Stops every pad's rumble for the rest of the process.
+pub(crate) fn silence() {
+    SILENCED.store(true, Ordering::Relaxed);
+}
+
 /// SDL's buttons and the XInput bits DS4Windows set for them. XInputGetState never reports
 /// Guide, so the PS button has none.
 const BUTTONS: [(Button, u16); 14] = [
@@ -280,12 +288,17 @@ fn run(shared: &SharedState, stop: &AtomicBool) -> Result<(), sdl3::Error> {
         if first {
             mark_ready(shared);
         }
+        let silenced = SILENCED.load(Ordering::Relaxed);
         for (id, vibration) in wanted {
             if let Some(pad) = open.iter_mut().find(|pad| pad.id == id) {
-                rumble(pad, vibration);
+                rumble(pad, if silenced { STILL } else { vibration });
             }
         }
         std::thread::sleep(POLL);
+    }
+    // A pad keeps its last rumble command: leave none running.
+    for pad in &mut open {
+        rumble(pad, STILL);
     }
     Ok(())
 }

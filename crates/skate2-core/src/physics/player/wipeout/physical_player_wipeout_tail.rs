@@ -72,6 +72,11 @@ pub(crate) trait WipeoutRecoverySource {
     fn global(&mut self, key: u64) -> Result<f32, Self::Error>;
     fn time_delta(&mut self) -> Result<f32, Self::Error>;
     fn unknown(&mut self, field: &'static str) -> Self::Error;
+    /// PC port: the game's limit on a wipeout's length before its auto teleport (an online round
+    /// of S.K.A.T.E. or Spot Battle); none keeps the original's timing.
+    fn turn_bail_limit(&mut self) -> Result<Option<f32>, Self::Error> {
+        Ok(None)
+    }
 }
 pub(crate) fn try_impulse<S: WipeoutRecoverySource>(
     fields: &mut WipeoutGroundFields,
@@ -163,6 +168,9 @@ fn try_auto_teleport<S: WipeoutRecoverySource>(
         return Ok(fields.time_in_state > source.threshold(WipeoutRecoveryFloat::MaximumAi)?);
     }
     let maximum = source.global(MAX_AUTO_TIME)?;
+    // PC port: in an online turn the wipeout ends by the game's limit at the latest, however long
+    // its Hall of Meat moves keep the body from settling, so the turn passes on.
+    let maximum = source.turn_bail_limit()?.map_or(maximum, |limit| maximum.min(limit));
     if fields.time_in_state > maximum {
         return Ok(true);
     }
@@ -277,6 +285,10 @@ impl WipeoutRecoverySource for LiveRecovery<'_> {
             .physics_state_fields()
             .time_delta
             .ok_or(E::Missing("DT93c"))
+    }
+    fn turn_bail_limit(&mut self) -> Result<Option<f32>, Self::Error> {
+        let Some(services) = self.owner.world_services() else { return Ok(None) };
+        services.game_info().try_turn_bail_limit().map_err(|_| WipeoutTailError::Poisoned)
     }
 }
 impl PhysicalAssemblyWorld {

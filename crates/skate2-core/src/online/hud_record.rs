@@ -517,6 +517,12 @@ fn held_frame(record: &HudRecord) -> PhysicsFrame {
 /// HUD keeps its once-a-tick pace. The local frame's backend commands (simulation requests the
 /// one `TricksBackEnd` takes whichever skater it follows), its simulation rate and its line
 /// maximum (a Vault constant) carry over. `name` finds a trick's name in the receiver's database.
+///
+/// The Hall of Meat HUD and the minimap's bail state stay the local skater's (the records carry
+/// no bail), and a reactivation of scoring takes the HoM HUD down and gives the minimap back
+/// (`PhysOutModule_Hud::ReactivateScoring` 0x827c7230): the followed skater's, as the original's
+/// `GetLocal()` makes it, and the local skater's own at its respawn, so a bail shown before the
+/// view moved to the next player never stays up.
 pub fn followed_frames(steps: &[HudStep], latest: Option<&HudRecord>, local: PhysicsFrame, mut name: impl FnMut(u64) -> Option<TrickName>) -> Vec<PhysicsFrame> {
     let mut frames = Vec::new();
     for step in steps.iter().filter(|step| step.events.any()) {
@@ -550,6 +556,10 @@ pub fn followed_frames(steps: &[HudStep], latest: Option<&HudRecord>, local: Phy
     for frame in &mut frames {
         frame.simulation_rate = local.simulation_rate;
         frame.line_max_points = local.line_max_points;
+    }
+    let reactivated = local.hom.just_reactivated || steps.iter().any(|step| step.events.reactivated);
+    if let Some(last) = frames.last_mut() {
+        last.hom.just_reactivated = reactivated;
     }
     frames[0].backend_commands = local.backend_commands;
     frames

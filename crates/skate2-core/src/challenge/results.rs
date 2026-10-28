@@ -265,13 +265,13 @@ pub struct OnlineResults {
 
 impl OnlineResults {
     /// The final results board of the rows (`SetActiveResultsLeaderboard(FinalResults)` with the
-    /// layout `SetResultsMenuType` gives the challenge type: Death Race's time, otherwise place
-    /// and score).
+    /// layout `SetResultsMenuType` gives the challenge: Death Race's time, a freeskate activity's
+    /// by its type, otherwise place and score).
     #[must_use]
-    pub fn leaderboard(rows: &[OnlineResultRow], challenge_type: i32) -> LeaderboardData {
+    pub fn leaderboard(rows: &[OnlineResultRow], results_type: i32) -> LeaderboardData {
         let mut board = LeaderboardData::constructed();
         board.num_players = i32::try_from(rows.len()).unwrap_or(0);
-        board.results_type = if challenge_type == 19 { 3 } else { 0 };
+        board.results_type = results_type;
         for row in rows {
             if let Some(player) = board.players.get_mut(row.player) {
                 player.position = row.position;

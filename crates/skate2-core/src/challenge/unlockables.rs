@@ -31,6 +31,27 @@ pub mod category {
     pub const GESTURES: u32 = 14;
     pub const CLOTHING_UNLOCK: u32 = 15;
     pub const CLOTHING_SPONSOR: u32 = 16;
+    /// The names, in category order (`LoadUnlocksFromFiles` `0x82573100` compares an unlock
+    /// list's category with each).
+    pub const NAMES: [&str; 17] = [
+        "CLOTHING",
+        "BOARDACCESSORIES",
+        "LOCATIONS",
+        "CHALLENGES",
+        "CHARACTERS",
+        "FMV",
+        "COVERAGE",
+        "SPONSORSHIP",
+        "OWN_THE_SPOT",
+        "OWN_THE_SPOT_OWNED",
+        "SKATE_SHOPS",
+        "REPLAY",
+        "EGGS",
+        "SECURITY_SETTING",
+        "GESTURES",
+        "CLOTHING_UNLOCK",
+        "CLOTHING_SPONSOR",
+    ];
 }
 
 /// The savable (`IMemcardSavable` of `UnlockablesBackEnd`), registered first by
@@ -88,9 +109,10 @@ pub fn string_hash(name: &str) -> u32 {
 impl Unlockables {
     /// The constructor (`0x82a739c8`), then `UnlockablesBackEnd::Init`
     /// (`0x8255cca0`) → `UnlockablesBackEndCore::Init` (`0x82a73c80`): no
-    /// items, then `AddDefaultUnlocks`. DLC unlocks come only from
-    /// `LoadUnlocksFromFiles` (`data\unlocks\*.unlock`), which the shipped
-    /// data does not have.
+    /// items, then `AddDefaultUnlocks`. The DLC list holds the downloadable
+    /// content's unlock lists (`LoadUnlocksFromFiles`, run when
+    /// `DLC::Manager::EnumerateContent` mounts content), which the database
+    /// read with its vaults ([`AttribDb::dlc_unlocks`]).
     #[must_use]
     pub fn new(db: &AttribDb) -> Self {
         let mut unlockables = Self {
@@ -101,6 +123,9 @@ impl Unlockables {
             unlock_all: false,
         };
         unlockables.add_default_unlocks(db);
+        for &(category, id) in db.dlc_unlocks() {
+            unlockables.unlock(category, id, true);
+        }
         unlockables
     }
 

@@ -254,6 +254,53 @@ impl SceneDirectory {
         let start = usize::from(scene.character_start);
         &self.characters[start..start + usize::from(scene.character_count)]
     }
+
+    /// PC port: a later directory's scenes (downloadable content's `scene_NNN.bin`) that this one
+    /// lacks, with their characters. The game's own scenes stay this directory's.
+    pub fn add_new_scenes(&mut self, other: &Self) {
+        for scene in &other.scenes {
+            if self.by_hash.contains_key(&scene.name_hash) {
+                continue;
+            }
+            let Ok(start) = u16::try_from(self.characters.len()) else { return };
+            let mut added = scene.clone();
+            added.character_start = start;
+            self.characters.extend_from_slice(other.characters(scene));
+            self.by_hash.insert(added.name_hash, self.scenes.len());
+            self.scenes.push(added);
+        }
+    }
+}
+
+/// The downloadable content's numbered scene files `load_with_content` looks for.
+const CONTENT_SCENE_FILES: u32 = 32;
+
+/// `FindSceneDataFile`'s scene directory and the ICE data, with the downloadable content's. The
+/// original reads only the highest-numbered `scene_NNN.bin` and `ice_NNN.bin`, which a pack
+/// builds with the game's own scenes as the release build has them; here the game's own
+/// (`_000`) stay as this build ships them, and each pack's file adds the scenes it brings.
+///
+/// # Errors
+///
+/// A file that cannot be read or parsed.
+pub fn load_with_content(
+    mounts: &skate2_formats::mount::MountSet,
+) -> Result<(SceneDirectory, skate2_formats::ice_camera::CameraSet), String> {
+    use skate2_formats::ice_camera::CameraSet;
+    let read = |path: &str| mounts.read_path(path).map_err(|e| format!("{path}: {e}"));
+    let mut directory = SceneDirectory::parse(&read(PATH)?).map_err(|e| format!("{PATH}: {e}"))?;
+    let mut cameras = CameraSet::parse(&read(super::camera::PATH)?)?;
+    for number in 1..=CONTENT_SCENE_FILES {
+        let scene = format!("data\\scene\\scene_{number:03}.bin");
+        if mounts.contains_path(&scene) {
+            directory.add_new_scenes(&SceneDirectory::parse(&read(&scene)?).map_err(|e| format!("{scene}: {e}"))?);
+        }
+        let ice = format!("data\\scene\\ice_{number:03}.bin");
+        if mounts.contains_path(&ice) {
+            cameras.add_new_groups(CameraSet::parse(&read(&ice)?).map_err(|e| format!("{ice}: {e}"))?);
+        }
+    }
+    Ok((directory, cameras))
 }
 
 #[cfg(test)]

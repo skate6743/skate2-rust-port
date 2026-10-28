@@ -20,6 +20,7 @@ mod juice_platform;
 mod windows_pad_platform;
 mod local_calendar;
 mod sdl_pads;
+mod pad_sticks;
 #[cfg(not(windows))]
 mod sdl_pad_platform;
 #[cfg(windows)]
@@ -216,6 +217,7 @@ mod gpu_log;
 mod panic_report;
 mod game_root;
 mod game_update;
+mod dlc_link;
 mod input_fuzz;
 mod live_skating_client;
 mod live_skating_view;
@@ -234,6 +236,7 @@ mod render_environment;
 mod render_irradiance;
 mod render_inspection;
 mod render_material_census;
+mod render_streams;
 mod render_shadows;
 mod render_water_animation;
 mod render_window;
@@ -3569,20 +3572,24 @@ fn bind_runtime_material_attributes(
     // CreateEffectListFromPegasusMaterialUnSkinned82e20948 falls back to
     // material_defaultenvironment/default when the material has no resolvable
     // Attribulator collection. GetAttribulatorKeyFromAttrMaterialName82e13310
-    // cannot split legacy names such as model_default. Resolve that world-only
-    // case here, preserving the serialized name for diagnostics. The normal
-    // Vault lookup below supplies the real effect and draw order; no shader or
-    // render state is guessed. Character/vehicle material parsing is unchanged.
+    // cannot split legacy names such as model_default. A downloadable content
+    // world's materials are collections of the content's own vaults, which
+    // cVaultManager::StartDLCLoad 0x82ab8b50 adds to the game's classes. Resolve
+    // the rest here, preserving the serialized name for diagnostics. The Vault
+    // lookup below supplies the real effect and draw order; no shader or render
+    // state is guessed. Character/vehicle material parsing is unchanged.
+    let known = vault_collection_keys(mounts)?;
+    let content = if skate2_core::dlc::vaults(mounts).is_empty() { None } else { Some(vault_database(mounts)?) };
     for effect in scene
         .resident_collections_mut()
         .flat_map(|collection| &mut collection.arenas)
         .flat_map(|arena| &mut arena.materials)
         .filter_map(|material| material.effect.as_mut())
     {
-        if effect
+        if !effect
             .attribute_class_id
             .zip(effect.material_variant_id)
-            .is_none()
+            .is_some_and(|key| known.contains(&key) || content.as_ref().is_some_and(|db| db.has_collection(key.0, key.1)))
         {
             let serialized_name = std::mem::take(&mut effect.serialized_name);
             *effect =
@@ -3649,6 +3656,28 @@ fn load_material_attribute_bindings(
         .collect()
 }
 
+/// The (class, collection) keys of `skater.vlt`'s collections, read once per mount set.
+fn vault_collection_keys(mounts: &MountSet) -> Result<std::sync::Arc<BTreeSet<(u64, u64)>>, Box<dyn std::error::Error>> {
+    type Keys = BTreeMap<usize, std::sync::Arc<BTreeSet<(u64, u64)>>>;
+    static KEYS: std::sync::Mutex<Keys> = std::sync::Mutex::new(BTreeMap::new());
+    let mount = std::ptr::from_ref(mounts) as usize;
+    let mut cached = KEYS.lock().map_err(|_| "vault collection cache poisoned")?;
+    if let Some(keys) = cached.get(&mount) {
+        return Ok(std::sync::Arc::clone(keys));
+    }
+    let bytes = skater_vault(mounts)?;
+    let vault = AttributeVaultMetadata::parse(&bytes.0)?;
+    let keys = vault
+        .exports
+        .iter()
+        .filter(|export| export.kind() == skate2_formats::attrib::AttributeExportKind::Collection)
+        .map(|export| export.collection_load_data(&bytes.0).map(|collection| (collection.class_id, collection.collection_id)))
+        .collect::<Result<BTreeSet<_>, skate2_formats::attrib::AttributeChunkError>>()?;
+    let keys = std::sync::Arc::new(keys);
+    cached.insert(mount, std::sync::Arc::clone(&keys));
+    Ok(keys)
+}
+
 /// `skater.vlt` and `skater.bin` of a mount set, read once: every material binding resolves
 /// from them, and reading them again for each new material (a remote skater's, a pedestrian's)
 /// would read the archive on the render thread.
@@ -3694,13 +3723,14 @@ fn resolve_material_attribute_bindings(
         .collect::<Result<BTreeMap<_, _>, skate2_formats::attrib::AttributeChunkError>>()?;
     let mut bindings = BTreeMap::new();
     for &(class_id, collection_id) in keys {
+        let Some((collection_export, collection)) = collections.get(&(class_id, collection_id)) else {
+            // A downloadable content world's material, in the content's vault.
+            bindings.insert((class_id, collection_id), resolve_vault_material(mounts, class_id, collection_id)?);
+            continue;
+        };
         let class = classes
             .get(&class_id)
             .ok_or_else(|| format!("missing material class {class_id:016x}"))?;
-        let (collection_export, collection) =
-            collections.get(&(class_id, collection_id)).ok_or_else(|| {
-                format!("missing material collection {class_id:016x}:{collection_id:016x}")
-            })?;
         let binding = resolve_material_attributes(
             class,
             collection_export,
@@ -3716,6 +3746,49 @@ fn resolve_material_attribute_bindings(
         bindings.insert((class_id, collection_id), binding);
     }
     Ok(bindings)
+}
+
+/// The game's `skater.vlt` and every mounted downloadable content vault as one database, as
+/// `cVaultManager::StartDLCLoad` 0x82ab8b50 adds the content's collections to the game's classes;
+/// read once per mount set and set of content vaults.
+pub(crate) fn vault_database(mounts: &MountSet) -> Result<std::sync::Arc<skate2_core::challenge::attrib_db::AttribDb>, Box<dyn std::error::Error>> {
+    type Databases = BTreeMap<(usize, Vec<String>), std::sync::Arc<skate2_core::challenge::attrib_db::AttribDb>>;
+    static DATABASES: std::sync::Mutex<Databases> = std::sync::Mutex::new(BTreeMap::new());
+    let key = (std::ptr::from_ref(mounts) as usize, skate2_core::dlc::vaults(mounts));
+    let mut cached = DATABASES.lock().map_err(|_| "vault database cache poisoned")?;
+    if let Some(db) = cached.get(&key) {
+        return Ok(std::sync::Arc::clone(db));
+    }
+    let paths: Vec<&str> = std::iter::once("data\\db\\skater.vlt").chain(key.1.iter().map(String::as_str)).collect();
+    let db = std::sync::Arc::new(skate2_core::challenge::attrib_db::AttribDb::load(mounts, &paths).map_err(|e| e.to_string())?);
+    cached.insert(key, std::sync::Arc::clone(&db));
+    Ok(db)
+}
+
+/// A world material whose collection only a downloadable content vault holds, resolved through
+/// [`vault_database`] as [`resolve_material_attributes`] resolves the game's: the `effect` name
+/// ("default" for a null pointer, as `CreateEffectListFromMaterialKey` leaves it) and the
+/// `DrawOrder` reference's `GUID`.
+fn resolve_vault_material(mounts: &MountSet, class: u64, collection: u64) -> Result<PresentationMaterialBinding, Box<dyn std::error::Error>> {
+    let db = vault_database(mounts)?;
+    if !db.has_collection(class, collection) {
+        return Err(format!("missing material collection {class:016x}:{collection:016x}").into());
+    }
+    let manifest_name = db
+        .attribute(class, collection, string_hash64("effect"))
+        .and_then(|effect| effect.text(0))
+        .unwrap_or("default")
+        .to_owned();
+    let draw_order = match db.attribute(class, collection, string_hash64("DrawOrder")).and_then(|order| order.ref_spec(0)) {
+        Some((draw_class, draw_collection)) if draw_class != 0 && draw_collection != 0 => {
+            if !db.has_collection(draw_class, draw_collection) {
+                return Err(format!("material collection {class:016x}:{collection:016x}: missing DrawOrder collection").into());
+            }
+            db.attribute(draw_class, draw_collection, string_hash64("GUID")).and_then(|guid| guid.i32(0)).unwrap_or(0)
+        }
+        _ => 0,
+    };
+    Ok(PresentationMaterialBinding { manifest_name, draw_order })
 }
 
 type AttributeCollectionMap<'a> =
@@ -12499,7 +12572,8 @@ fn load_runtime_texture_scene(
 }
 fn load_runtime_texture_scene_at(mounts:&MountSet,location_name:&str,focus:[f32;3])->Result<TextureScene,Box<dyn std::error::Error>>{
     let base = "data\\content\\world\\stream\\BAM\\BAM_Tex";
-    let collections = CollectionMap::parse(&mounts.read_path(&format!("{base}.xsm"))?)?;
+    let collections = render_streams::RenderStreams::single(render_streams::RenderStreamFile::bam(
+        CollectionMap::parse(&mounts.read_path(&format!("{base}.xsm"))?)?, "Tex"));
     let space = CollectionSpace::parse(&mounts.read_path(&format!("{base}.xss"))?)?;
     let selected = space.focus_collections(
         focus,
@@ -12533,18 +12607,13 @@ fn load_runtime_texture_scene_at(mounts:&MountSet,location_name:&str,focus:[f32;
 
 fn load_texture_collection(
     mounts: &MountSet,
-    collections: &CollectionMap,
+    collections: &render_streams::RenderStreams,
     focus_collection: &skate2_formats::stream::FocusCollection,
 ) -> Result<TextureCollection, Box<dyn std::error::Error>> {
-    let collection = collections
-        .collections
-        .iter()
-        .find(|entry| entry.id == focus_collection.id)
+    let (collection, stream) = collections
+        .entry(focus_collection.id)
         .ok_or_else(|| format!("missing texture collection {:016x}", focus_collection.id))?;
-    let path = format!(
-        "data\\content\\world\\stream\\BAM\\{}.xsf",
-        collection.filename
-    );
+    let path = stream.collection_path(collection);
     let xsf = mounts.read_path(&path)?;
     let file = StreamFile::parse(&xsf, collection.asset_count)?;
     let mut arenas = Vec::with_capacity(file.assets.len());
@@ -12571,7 +12640,8 @@ fn move_runtime_texture_scene(
         return Err("texture focus move was rejected".into());
     }
     let base = "data\\content\\world\\stream\\BAM\\BAM_Tex";
-    let collections = CollectionMap::parse(&mounts.read_path(&format!("{base}.xsm"))?)?;
+    let collections = render_streams::RenderStreams::single(render_streams::RenderStreamFile::bam(
+        CollectionMap::parse(&mounts.read_path(&format!("{base}.xsm"))?)?, "Tex"));
     let space = CollectionSpace::parse(&mounts.read_path(&format!("{base}.xss"))?)?;
     let selected = space.focus_collections(
         position,
@@ -12585,7 +12655,7 @@ fn move_runtime_texture_selection(
     scene: &mut TextureScene,
     mounts: &MountSet,
     position: [f32; 3],
-    collections: &CollectionMap,
+    collections: &render_streams::RenderStreams,
     selected: &[skate2_formats::stream::FocusCollection],
 ) -> Result<StreamFocusTransition, Box<dyn std::error::Error>> {
     scene.stream_focus.move_to(position, false);
@@ -12650,7 +12720,8 @@ fn load_runtime_presentation_scene(
 }
 fn load_runtime_presentation_scene_at(mounts:&MountSet,location_name:&str,focus:[f32;3])->Result<PresentationScene,Box<dyn std::error::Error>>{
     let base = "data\\content\\world\\stream\\BAM\\BAM_Pres";
-    let collections = CollectionMap::parse(&mounts.read_path(&format!("{base}.xsm"))?)?;
+    let collections = render_streams::RenderStreams::single(render_streams::RenderStreamFile::bam(
+        CollectionMap::parse(&mounts.read_path(&format!("{base}.xsm"))?)?, "Pres"));
     let space = CollectionSpace::parse(&mounts.read_path(&format!("{base}.xss"))?)?;
     let selected = space.focus_collections(
         focus,
@@ -12838,7 +12909,7 @@ fn load_boot_presentation_collection(
 /// This retains visual inventories; it does not synthesize native callbacks.
 fn load_presentation_dependencies(
     mounts: &MountSet,
-    collections: &CollectionMap,
+    collections: &render_streams::RenderStreams,
     selected: &[skate2_formats::stream::FocusCollection],
     mut retained: Vec<PresentationCollection>,
 ) -> Result<Vec<PresentationCollection>, Box<dyn std::error::Error>> {
@@ -12847,7 +12918,7 @@ fn load_presentation_dependencies(
         collection_resident_streamer::CollectionId,
     };
     let mut planner = CollectionParentManager::new(proxy_texture_world::Planning);
-    for row in &collections.collections {
+    for row in collections.entries() {
         planner.add_parent(CollectionId(row.id), CollectionId(row.parent_id));
     }
     let spatial: BTreeSet<_> = selected.iter().map(|row| row.id).collect();
@@ -12882,28 +12953,23 @@ fn load_presentation_dependencies(
 
 fn load_presentation_collection(
     mounts: &MountSet,
-    collections: &CollectionMap,
+    collections: &render_streams::RenderStreams,
     focus_collection: &skate2_formats::stream::FocusCollection,
 ) -> Result<PresentationCollection, Box<dyn std::error::Error>> {
-    let collection = collections
-        .collections
-        .iter()
-        .find(|entry| entry.id == focus_collection.id)
+    let (collection, stream) = collections
+        .entry(focus_collection.id)
         .ok_or_else(|| {
             format!(
                 "missing presentation collection {:016x}",
                 focus_collection.id
             )
         })?;
-    let path = format!(
-        "data\\content\\world\\stream\\BAM\\{}.xsf",
-        collection.filename
-    );
+    let path = stream.collection_path(collection);
     let xsf = mounts.read_path(&path)?;
     let payload = xsf.get(collection.payload_offset as usize..)
         .ok_or("presentation collection payload offset")?;
     let file = skate2_formats::stream::CollectionPayload::parse(payload, collection.asset_count)?;
-    let metadata = AssetToc::parse(&mounts.read_path("data\\content\\world\\stream\\BAM\\BAM_Pres.xst")?)?;
+    let metadata = AssetToc::parse(&mounts.read_path(&stream.asset_toc_path())?)?;
     let mut navigation = Vec::new();
     let mut light_probes = Vec::new();
     let mut arenas = Vec::with_capacity(file.assets.len());
@@ -12968,7 +13034,8 @@ fn move_runtime_presentation_scene(
         return Err("presentation focus move was rejected".into());
     }
     let base = "data\\content\\world\\stream\\BAM\\BAM_Pres";
-    let collections = CollectionMap::parse(&mounts.read_path(&format!("{base}.xsm"))?)?;
+    let collections = render_streams::RenderStreams::single(render_streams::RenderStreamFile::bam(
+        CollectionMap::parse(&mounts.read_path(&format!("{base}.xsm"))?)?, "Pres"));
     let space = CollectionSpace::parse(&mounts.read_path(&format!("{base}.xss"))?)?;
     let selected = space.focus_collections(
         position,
@@ -12982,7 +13049,7 @@ fn move_runtime_presentation_selection(
     scene: &mut PresentationScene,
     mounts: &MountSet,
     position: [f32; 3],
-    collections: &CollectionMap,
+    collections: &render_streams::RenderStreams,
     selected: &[skate2_formats::stream::FocusCollection],
 ) -> Result<StreamFocusTransition, Box<dyn std::error::Error>> {
     let dependencies = load_presentation_dependencies(

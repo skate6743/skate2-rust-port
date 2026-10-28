@@ -34,6 +34,7 @@ pub(crate) enum Error {
     Start(WorldStreamInvariantError),
     Poll(Arc<WorldStreamControllerError<StreamError>>),
     Bounds(WorldBoundsError),
+    Unload(String),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -42,8 +43,19 @@ impl std::fmt::Display for Error {
             Self::Start(e) => write!(f, "world stream start: {e}"),
             Self::Poll(e) => write!(f, "world stream poll: {e}"),
             Self::Bounds(e) => write!(f, "world stream bounds: {e}"),
+            Self::Unload(e) => write!(f, "world stream unload: {e}"),
         }
     }
+}
+/// A completed stream's files while `cGameAssetManager::UpdateGameStreamFileUnloaded`
+/// (`0x824e2300`) takes them out: Pres, then Sim, then Tex (the texture stream enabled), each
+/// `cStreamFile::Unload`ed once the one before is done.
+struct Unloading<F> {
+    files: Vec<F>,
+    /// The file being unloaded.
+    next: usize,
+    /// Its `cStreamFile::Unload` was asked.
+    requested: bool,
 }
 /// Owns the existing stream controller, files and publication for their consumers.
 /// The caller supplies the actual high-collection effects; none are invented here.
@@ -53,6 +65,7 @@ pub(crate) struct SelectedWorldStream<E: WorldStreamEffects> {
     adapter: Adapter<E>,
     loads: WorldStreamLoads<<Adapter<E> as WorldStreamBackend>::StreamFile, StreamError>,
     handle: WorldStreamHandle,
+    unloading: Option<Unloading<<Adapter<E> as WorldStreamBackend>::StreamFile>>,
 }
 impl<E: WorldStreamEffects> SelectedWorldStream<E> {
     pub(crate) fn try_new(
@@ -74,7 +87,53 @@ impl<E: WorldStreamEffects> SelectedWorldStream<E> {
             adapter,
             loads,
             handle,
+            unloading: None,
         })
+    }
+    /// `cGameAssetManager::UnloadGameStreamFile` (`0x824da8f0`): the completed stream begins
+    /// unloading.
+    pub(crate) fn try_begin_unload(&mut self) -> Result<(), Error> {
+        if self.unloading.is_some() {
+            return Err(Error::Unload("already unloading".into()));
+        }
+        let (_, _, presentation, simulation, texture) =
+            self.loads.take_completed(self.handle).map_err(|e| Error::Unload(format!("{e:?}")))?.into_parts();
+        let mut files = vec![presentation, simulation];
+        if let crate::game::CompletedTextureStream::Loaded(texture) = texture {
+            files.push(texture);
+        }
+        self.unloading = Some(Unloading { files, next: 0, requested: false });
+        Ok(())
+    }
+    /// One `UpdateGameStreamFileUnloaded` step: the first file's unload asked, else the file
+    /// unloading advanced and, once it is out, the next one's asked. True once every file is out
+    /// (the case that recalculates the world box, `CalcWorldBBox`).
+    pub(crate) fn try_poll_unload(&mut self) -> Result<bool, Error> {
+        let Some(unloading) = self.unloading.as_mut() else { return Err(Error::Unload("not unloading".into())) };
+        let unload = |adapter: &mut Adapter<E>, file: &mut <Adapter<E> as WorldStreamBackend>::StreamFile| {
+            adapter.request_stream_file_unload(file).map_err(|e| Error::Unload(format!("{e:?}")))
+        };
+        if !unloading.requested {
+            unload(&mut self.adapter, &mut unloading.files[unloading.next])?;
+            unloading.requested = true;
+            return Ok(false);
+        }
+        if unloading.next == unloading.files.len() {
+            self.unloading = None;
+            return Ok(true);
+        }
+        let state = self
+            .adapter
+            .poll_stream_file(&mut unloading.files[unloading.next])
+            .map_err(|e| Error::Unload(format!("{e:?}")))?;
+        if state.raw() != crate::game_stream::StreamFileState::UNLOAD_DONE.raw() {
+            return Ok(false);
+        }
+        unloading.next += 1;
+        if unloading.next < unloading.files.len() {
+            unload(&mut self.adapter, &mut unloading.files[unloading.next])?;
+        }
+        Ok(false)
     }
     pub(crate) fn state(&self) -> Result<u32, WorldStreamInvariantError> {
         self.loads

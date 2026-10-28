@@ -23,6 +23,7 @@ __pycache__/
 # Local machine configuration.
 .env
 release-secret.txt
+release-server.txt
 /dist/
 /config.json
 /online-config.json

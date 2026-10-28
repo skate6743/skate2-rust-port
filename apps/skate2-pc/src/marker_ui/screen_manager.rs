@@ -48,6 +48,8 @@ pub(super) enum Screen {
     Contacts,
     /// `FrontEndState_SkateProfile`'s screen 93, onlinehub/skateProfile.swf.
     SkateProfile,
+    /// `FrontEndState_DLC`'s screen 10, main/dlc.swf.
+    Dlc,
 }
 
 impl Screen {
@@ -112,7 +114,7 @@ pub(super) struct ScreenManager {
     /// `CreateScreen` makes the screen's clip at that depth.
     depth: u32,
     /// Each screen's depth from its last `ReadyScreen`.
-    depths: [u32; 13],
+    depths: [u32; 14],
 }
 
 impl ScreenManager {
@@ -327,7 +329,7 @@ mod tests {
                     Screen::StartHub => self.hub.link(assets).unwrap(),
                     Screen::Options => self.options.link(assets, None).unwrap(),
                     Screen::MusicPlayer => self.player.link(assets).unwrap(),
-                    Screen::MainMenu | Screen::Extras => unreachable!("not part of this fixture"),
+                    _ => unreachable!("not part of this fixture"),
                 }
             }
             if self.player.take_letterbox_off() {
@@ -363,7 +365,7 @@ mod tests {
     fn start_hub_options_and_music_player_follow_the_screen_manager() {
         let game = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
         let mut mounts = MountSet::new();
-        for spec in SKATE2_ARCHIVES.iter().take(4) {
+        for spec in SKATE2_ARCHIVES.iter() {
             mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
         }
         let assets = Assets::load(&mounts).unwrap();

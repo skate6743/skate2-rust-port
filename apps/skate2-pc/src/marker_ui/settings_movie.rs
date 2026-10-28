@@ -2,6 +2,8 @@
 //! pushes state73; Options::OnEnter8265c468 opens options/options.swf.
 //! Its fingerprinted CreateOptions/SetSelection/UpdateItemValue scripts own
 //! placement and controls. Only the two PC setting definitions are new.
+//! PC port addition: the Stick Settings pages take Edit Skater's morph knob
+//! for the deadzones and draw both sticks live in boxes beside their rows.
 use super::{
     assets::Assets,
     clips::{Child, Clip},
@@ -9,13 +11,25 @@ use super::{
     letterbox::LetterBox,
     localizer, map_movie,
     pause_movie::child,
+    stick_preview,
 };
 use crate::gpu_renderer::RenderResult;
-use skate2_core::ui::{
-    apt_timeline::{DisplayEntry, PlacementIdentity},
-    options::{FrameRateCap, Page, Row, Snapshot},
-    edit_skater::EditSkaterRow,
+use skate2_core::{
+    stick_settings::DEADZONES,
+    ui::{
+        apt_timeline::{DisplayEntry, PlacementIdentity},
+        options::{FrameRateCap, Page, Row, Snapshot},
+        edit_skater::EditSkaterRow,
+    },
 };
+use skate2_formats::apt::Matrix;
+/// PC port addition: a Stick Settings page's boxes, a small gap right of what its rows
+/// draw (the deadzone sliders reach x 768 on the flat 1280 x 720 screen): the left
+/// stick's level with the first row and the right stick's below it, above the rows'
+/// depths (100 on).
+const STICK_LEFT: f32 = 800.;
+const STICK_GAP: f32 = 16.;
+const STICK_DEPTH: i32 = 200;
 pub(super) struct SettingsMovie {
     pub root: Clip,
     /// The LetterBox of Options opened in game; over the main menu Options
@@ -32,6 +46,9 @@ pub(super) struct SettingsMovie {
     outro_complete: bool,
     /// The intro's `IntroComplete` since the last take.
     intro_complete: bool,
+    /// The playing controller's sticks as its pad reports them (left x and
+    /// y, then right), which a Stick Settings page's boxes show.
+    stick_raw: Option<[i16; 4]>,
 }
 impl SettingsMovie {
     pub fn new(assets: &Assets) -> RenderResult<Self> {
@@ -46,7 +63,54 @@ impl SettingsMovie {
             destroy: false,
             outro_complete: false,
             intro_complete: false,
+            stick_raw: None,
         })
+    }
+    /// The playing controller's sticks as its pad reports them, each frame.
+    pub fn set_stick_preview(&mut self, sticks: Option<[i16; 4]>) {
+        self.stick_raw = sticks;
+        self.refresh_stick_preview();
+    }
+    /// A Stick Settings page's boxes show each stick's settings and its axes.
+    fn refresh_stick_preview(&mut self) {
+        if !self.state.stick_page() {
+            return;
+        }
+        let sticks = self.state.sticks;
+        let raw = self.stick_raw;
+        for (name, stick, axes) in [
+            ("mStickBoxL", sticks.left, raw.map(|r| [r[0], r[1]])),
+            ("mStickBoxR", sticks.right, raw.map(|r| [r[2], r[3]])),
+        ] {
+            if let Ok(clip) = self.root.named(&[name]) {
+                stick_preview::set(clip, stick, axes);
+            }
+        }
+    }
+    /// PC port addition: a Stick Settings page's two boxes, each lettered at its
+    /// top left as the option rows' titles are.
+    fn attach_stick_preview(&mut self, assets: &Assets) -> RenderResult<()> {
+        let anchor = child(&mut self.root, "dummy0")?.clone();
+        let mut option = Clip::new(assets, 20, export(assets, 20, "HighlightOptionComponent")?)?;
+        let label = option.named(&["mTitle", "TEXTLABEL"])?.clone();
+        let mut depth = STICK_DEPTH;
+        for (name, letter, offset) in [("mStickBoxL", "L", 0.), ("mStickBoxR", "R", stick_preview::SIZE + STICK_GAP)] {
+            let mut matrix = anchor.entry.matrix;
+            matrix.tx = STICK_LEFT;
+            matrix.ty += offset * matrix.d;
+            // A fresh instance of the anchor's placeholder, which draws only the box.
+            let mut clip = Clip::new(assets, anchor.clip.asset, anchor.clip.character)?;
+            clip.properties.insert("_type".into(), stick_preview::TYPE.into());
+            self.root.children.insert(depth, Child { entry: entry(anchor.entry.identity.character, matrix, name), clip });
+            let mut text = label.clone();
+            text.text = Some(letter.encode_utf16().collect());
+            text.properties.insert("text_colour".into(), 0xffff_ffec_u32.to_string());
+            matrix.tx += 8. * matrix.a;
+            matrix.ty += 4. * matrix.d;
+            self.root.children.insert(depth + 1, Child { entry: entry(text.character, matrix, &format!("{name}Letter")), clip: text });
+            depth += 2;
+        }
+        Ok(())
     }
     /// The state waits for its screen.
     pub fn pending(&self) -> bool {
@@ -165,18 +229,13 @@ impl SettingsMovie {
                     .is_some_and(|n| n.starts_with("dummy"))
             });
             for (index, row) in rows.iter().enumerate() {
-                let (asset, export, height) = match row.kind.as_str() {
-                    "option" => (20, "HighlightOptionComponent", 36.), // GetHeight002272
-                    "slider" => (21, "HighlightSliderComponent", 72.), // prototype mHeight
-                    _ => (18, "HighlightSelectorComponent", 58.),      // GetHeight001868
+                let (asset, character, height) = match row.kind.as_str() {
+                    "option" => (20, export(assets, 20, "HighlightOptionComponent")?, 36.), // GetHeight002272
+                    "slider" => (21, export(assets, 21, "HighlightSliderComponent")?, 72.), // prototype mHeight
+                    // PC port: the stick deadzones take Edit Skater's morph knob.
+                    "morph" => (16, edit_skater_movie::MORPH, 45.),
+                    _ => (18, export(assets, 18, "HighlightSelectorComponent")?, 58.), // GetHeight001868
                 };
-                let character = assets.movies[asset]
-                    .movie
-                    .exports
-                    .iter()
-                    .find(|e| e.name == export)
-                    .ok_or("original Options control export absent")?
-                    .character_id;
                 let mut clip = Clip::new(assets, asset, character)?;
                 edit_skater_movie::highlight(&mut clip, assets, row, index == state.selected)?;
                 self.root.children.insert(
@@ -201,6 +260,9 @@ impl SettingsMovie {
                 );
                 matrix.ty += height;
             }
+            if state.stick_page() {
+                self.attach_stick_preview(assets)?;
+            }
         } else {
             for (index, row) in rows.iter().enumerate() {
                 let clip = self.root.named(&[&format!("mItem{index}")])?;
@@ -211,9 +273,12 @@ impl SettingsMovie {
                     edit_skater_movie::selector_subtitle(clip, assets, &row.subtitle)?;
                 } else if row.kind == "slider" {
                     edit_skater_movie::slider_value(clip, assets, &row.subtitle, row.value, index == state.selected)?;
+                } else if row.kind == "morph" {
+                    edit_skater_movie::morph_value(clip, assets, &row.title, row.value)?;
                 }
             }
         }
+        self.refresh_stick_preview();
         Ok(())
     }
     /// `LetterBox.EnableLetterBox`, called by a screen over Options.
@@ -268,6 +333,17 @@ impl SettingsMovie {
 fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<EditSkaterRow> {
     let title = row.title();
     let title = if title.starts_with("ID_") { assets.localize(title)? } else { title.into() };
+    // PC port: a stick page's rows: the multiplier as its value, a deadzone as
+    // its percent after its title and as its knob along the morph line, whose
+    // ends are the ends of its range.
+    if let Some(stick) = state.stick() {
+        let (title, subtitle, value) = match row {
+            Row::StickMultiplier => (title, format!("{}.{:02}", stick.multiplier / 100, stick.multiplier % 100), 0),
+            Row::StickDeadzone => percent(&title, stick.deadzone),
+            _ => percent(&title, stick.anti_deadzone),
+        };
+        return Ok(EditSkaterRow { kind: row.kind().into(), title, subtitle, value, ..Default::default() });
+    }
     let volume = match row {
         Row::SfxVolume => Some(state.volumes[0]),
         Row::DialogueVolume => Some(state.volumes[1]),
@@ -292,8 +368,12 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
             Row::MiniMap => on_off(state.mini_map),
             Row::Hud => on_off(state.hud),
             Row::ShowLobbyChat => on_off(state.show_lobby_chat),
+            Row::ShowGhostPlayers => on_off(state.show_ghost_players),
             // GetStringValue 0x82643d48: ID_GAMESETTINGS_CAMERA_HIGH for 1, _LOW for 0.
             Row::CameraAngle => if state.camera_high { "ID_GAMESETTINGS_CAMERA_HIGH" } else { "ID_GAMESETTINGS_CAMERA_LOW" },
+            // Its Off-board Y Axis reads Normal with mInvertYAxis set.
+            Row::OffboardYAxis => if state.invert_y { "ID_GAMESETTINGS_AXIS_NORMAL" } else { "ID_GAMESETTINGS_AXIS_INVERTED" },
+            Row::Vibration => on_off(state.vibration),
             _ => match state.values.frame_rate_cap {
                 FrameRateCap::Unlimited => "Unlimited",
                 FrameRateCap::Fps60 => "60 (Vanilla)",
@@ -306,6 +386,32 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
         (String::new(), 0)
     };
     Ok(EditSkaterRow { kind: row.kind().into(), title, subtitle, value, ..Default::default() })
+}
+
+/// A deadzone row: its title with the percent, and its knob's place along the
+/// morph line.
+fn percent(title: &str, value: u8) -> (String, String, i32) {
+    (format!("{title} {value}%"), String::new(), i32::from(value) * 100 / i32::from(*DEADZONES.end()))
+}
+
+/// The character an Options control movie exports under `name`.
+fn export(assets: &Assets, asset: usize, name: &str) -> RenderResult<u32> {
+    Ok(assets.movies[asset].movie.exports.iter().find(|e| e.name == name).ok_or("original Options control export absent")?.character_id)
+}
+
+/// A script-placed child, as `CreateOptions` places its rows.
+fn entry(character: u32, matrix: Matrix, name: &str) -> DisplayEntry {
+    DisplayEntry {
+        identity: PlacementIdentity { character, frame: 0 },
+        matrix,
+        colour_scale: u32::MAX,
+        colour_bias: 0,
+        ratio: 0.,
+        name: Some(name.into()),
+        clip_depth: -1,
+        events: Vec::new(),
+        blend_mode: None,
+    }
 }
 
 /// Options' LetterBox: the main menu's over the front end, else its own.
@@ -363,7 +469,7 @@ mod tests {
     fn display_preferences_original_options_layout_and_lifecycle() {
         let game = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
         let mut mounts = MountSet::new();
-        for spec in SKATE2_ARCHIVES.iter().take(4) {
+        for spec in SKATE2_ARCHIVES.iter() {
             mounts
                 .push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
         }
@@ -569,6 +675,145 @@ mod tests {
             assert_eq!(std::mem::take(&mut shown(&mut movie, &mut main).sounds), exit);
             assert!(movie.take_outro_complete());
         }
+    }
+
+    /// The text of `field`, every glyph of which its font maps.
+    fn mapped(field: &mut Clip, assets: &Assets) -> String {
+        let label = String::from_utf16(field.text.as_ref().unwrap()).unwrap();
+        let skate2_formats::apt::Character::Text(text) = field.definition(assets).unwrap() else {
+            panic!("{label}: not text");
+        };
+        let Some(skate2_formats::apt::Character::Font { name, .. }) =
+            assets.movies[field.asset].movie.characters[text.font_id as usize].as_ref()
+        else {
+            panic!("{label}: font absent");
+        };
+        let font = assets.apt_font(name).unwrap();
+        assert!(label.encode_utf16().all(|unit| font.metrics.mapped_glyph(unit).is_some()), "{label}");
+        label
+    }
+
+    /// PC port: the Stick Settings pages lay out their rows with the original
+    /// controls (the deadzones Edit Skater's morph knob), every label in glyphs
+    /// its font has, and the two boxes right of every row, drawn and on screen.
+    #[test]
+    #[ignore = "requires external SKATE2_GAME_ROOT"]
+    fn stick_settings_pages_lay_out_their_rows_and_boxes() {
+        let game = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
+        let mut mounts = MountSet::new();
+        for spec in SKATE2_ARCHIVES.iter() {
+            mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
+        }
+        let assets = Assets::load(&mounts).unwrap();
+        let mut movie = SettingsMovie::new(&assets).unwrap();
+        let mut main = None;
+        let mut state = Snapshot { page: Page::Options, ..Default::default() };
+        movie.update(&assets, state, None).unwrap();
+        movie.link(&assets, None).unwrap();
+        tick(&mut movie, &mut main, &assets, 90);
+        state.sticks.left = skate2_core::stick_settings::StickSettings { multiplier: 107, deadzone: 12, anti_deadzone: 50 };
+        for page in [Page::StickSettings, Page::LeftStick, Page::RightStick] {
+            state.page = page;
+            state.selected = 0;
+            movie.update(&assets, state, None).unwrap();
+            movie.set_stick_preview(Some([3277, -3277, 32767, 0]));
+            tick(&mut movie, &mut main, &assets, 30);
+            // Whichever row is highlighted, every row ends a gap left of the boxes.
+            for selected in 0..state.rows().len() {
+                state.selected = selected;
+                movie.update(&assets, state, None).unwrap();
+                tick(&mut movie, &mut main, &assets, 30);
+                for index in 0..state.rows().len() {
+                    let right = drawn_right(child(&mut movie.root, &format!("mItem{index}")).unwrap(), &assets);
+                    assert!(right + STICK_GAP <= STICK_LEFT, "{page:?} row {index} with row {selected} highlighted reaches {right}");
+                }
+            }
+            state.selected = 0;
+            movie.update(&assets, state, None).unwrap();
+            tick(&mut movie, &mut main, &assets, 30);
+            for (index, row) in state.rows().iter().enumerate() {
+                let item = movie.root.named(&[&format!("mItem{index}")]).unwrap();
+                assert_eq!(item.asset, match row.kind() { "option" => 20, "morph" => 16, _ => 18 });
+                let title = mapped(item.named(&["mTitle", "TEXTLABEL"]).unwrap(), &assets);
+                if row.kind() == "selector" {
+                    assert_eq!(mapped(item.named(&["mSubtitle", "TEXTLABEL"]).unwrap(), &assets), if page == Page::LeftStick { "1.07" } else { "1.00" });
+                }
+                if page == Page::LeftStick && *row == Row::StickAntiDeadzone {
+                    assert_eq!(title, "Stick Anti-Deadzone 50%");
+                }
+            }
+            for letter in ["mStickBoxLLetter", "mStickBoxRLetter"] {
+                mapped(movie.root.named(&[letter]).unwrap(), &assets);
+            }
+            // Both boxes draw, inside the window, at normal and ultrawide sizes, flat as the
+            // screen draws (placement 0).
+            for size in [(1280, 720), (2560, 720)] {
+                for name in ["mStickBoxL", "mStickBoxR"] {
+                    let entry = child(&mut movie.root, name).unwrap().clone();
+                    let mut batches = Vec::new();
+                    super::super::flatten_projected(&assets, &entry.clip, entry.entry.matrix, super::super::Colour::default(), size, &mut batches, true, None).unwrap();
+                    // The box, its edges, its rings (the left stick's deadzones as well), the dots.
+                    let rings = if name == "mStickBoxL" { 3 } else { 1 };
+                    assert_eq!(batches.len(), 1 + 4 + rings + 2, "{page:?} {name}");
+                    assert!(
+                        batches.iter().flat_map(|b| &b.vertices).all(|v| v.iter().all(|x| x.is_finite()) && (v[0] / v[3]).abs() <= 1. && (v[1] / v[3]).abs() <= 1.),
+                        "{page:?} {name} leaves the window"
+                    );
+                }
+            }
+        }
+        // Another page takes the boxes away.
+        state.page = Page::Control;
+        movie.update(&assets, state, None).unwrap();
+        assert!(movie.root.named(&["mStickBoxL"]).is_err());
+    }
+
+    /// PC port: the Online Settings page's titles, Show Ghost Players in pregame lobby among them,
+    /// in glyphs their font has and within their fields.
+    #[test]
+    #[ignore = "requires external SKATE2_GAME_ROOT"]
+    fn online_settings_titles_fit_their_fields() {
+        let game = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
+        let mut mounts = MountSet::new();
+        for spec in SKATE2_ARCHIVES.iter() {
+            mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
+        }
+        let assets = Assets::load(&mounts).unwrap();
+        let mut movie = SettingsMovie::new(&assets).unwrap();
+        let mut main = None;
+        movie.update(&assets, Snapshot { page: Page::Options, ..Default::default() }, None).unwrap();
+        movie.link(&assets, None).unwrap();
+        tick(&mut movie, &mut main, &assets, 90);
+        let state = Snapshot { page: Page::Online, show_lobby_chat: true, show_ghost_players: true, ..Default::default() };
+        movie.update(&assets, state, None).unwrap();
+        tick(&mut movie, &mut main, &assets, 30);
+        for (index, row) in state.rows().iter().enumerate() {
+            let field = movie.root.named(&[&format!("mItem{index}"), "mTitle", "TEXTLABEL"]).unwrap();
+            let title = mapped(field, &assets);
+            assert_eq!(title, row.title());
+            let skate2_formats::apt::Character::Text(text) = field.definition(&assets).unwrap() else {
+                panic!("{title}: not text");
+            };
+            let Some(skate2_formats::apt::Character::Font { name, .. }) =
+                assets.movies[field.asset].movie.characters[text.font_id as usize].as_ref()
+            else {
+                panic!("{title}: font absent");
+            };
+            let font = assets.apt_font(name).unwrap();
+            let width: f32 = title
+                .encode_utf16()
+                .map(|unit| font.metrics.mapped_glyph(unit).map_or(0., |glyph| glyph.advance * font.scale[0] * text.height))
+                .sum();
+            let room = text.bounds.right - text.bounds.left;
+            assert!(width <= room, "{title}: {width} wide in a field {room} wide");
+        }
+    }
+
+    /// The rightmost x a row draws on the 1280 x 720 screen, flat as the screen draws.
+    fn drawn_right(entry: &Child, assets: &Assets) -> f32 {
+        let mut batches = Vec::new();
+        super::super::flatten_projected(assets, &entry.clip, entry.entry.matrix, super::super::Colour::default(), (1280, 720), &mut batches, true, None).unwrap();
+        batches.iter().flat_map(|b| &b.vertices).filter(|v| v[9] > 0.).map(|v| (v[0] / v[3] + 1.) * 640.).fold(f32::MIN, f32::max)
     }
 
     /// MarkerUi's step order: the main menu ticks the shared letterbox first.

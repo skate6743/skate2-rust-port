@@ -8,6 +8,8 @@ pub mod ui;
 pub mod online;
 pub(crate) mod ai;
 pub mod challenge;
+#[path = "dlc/dlc.rs"]
+pub mod dlc;
 pub mod nis;
 #[path = "session/edit_skater_profile.rs"]
 pub mod edit_skater_profile;
@@ -158,6 +160,8 @@ mod input_map;
 mod input_pad;
 #[path = "input/devices/input_pad_cache.rs"]
 mod input_pad_cache;
+#[path = "input/stick_settings.rs"]
+pub mod stick_settings;
 #[path = "input/recognition/input_pattern.rs"]
 mod input_pattern;
 #[path = "input/recognition/input_pattern_matcher.rs"]

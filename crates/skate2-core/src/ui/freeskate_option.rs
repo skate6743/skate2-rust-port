@@ -131,6 +131,12 @@ fn valid_location(db: &AttribDb, mounts: &MountSet, key: u64) -> bool {
     mounts.contains_path(&format!("data\\content\\world\\stream\\{world}\\{world}_Sim.xsm"))
 }
 
+/// A location's `WorldFile`: `BAM` for the main world, an additional world's stream otherwise.
+#[must_use]
+pub fn location_world(db: &AttribDb, key: u64) -> Option<String> {
+    db.attribute(FE_LOCATIONS, key, WORLD).and_then(|world| world.text(0)).map(str::to_owned)
+}
+
 /// `FELocationManager::AddLocationsFromGroup` 0x82635018.
 fn add_locations(db: &AttribDb, unlockables: &Unlockables, mounts: &MountSet, group: u64, locked: bool, keys: &mut Vec<u64>) {
     for key in ref_keys(db, FE_LOCATION_GROUP, group, LOCATION) {

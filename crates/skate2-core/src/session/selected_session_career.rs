@@ -12,7 +12,7 @@ use crate::{
     input_cvar_runtime::InputCvarReferences,
     challenge::{
         ChallengeSystem, Event, Output,
-        attrib_db::{AttribDb, CAREER_VAULTS},
+        attrib_db::AttribDb,
         cas_unlock_parts::{self, CasUnlockPartDb},
         dynamic_hull,
         hud::HudBinding,
@@ -36,13 +36,11 @@ use crate::{
     narrow_phase::{GpPrimitive, rw_overlap},
     nis::{
         self,
-        directory::SceneDirectory,
         manager::{FrozenFocus, NisCamera, NisEvent, NisSystem, NisView},
     },
     ui::party_play::{self, ChangeAction, ChangeGame, ChangeSnapshot},
 };
 use skate2_formats::{
-    ice_camera::CameraSet,
     localization::{Histogram, LanguageCategory, string_hash},
     location::LocationTable,
     mount::MountSet,
@@ -281,7 +279,7 @@ pub(super) struct CareerSaves {
 
 impl CareerSaves {
     pub(super) fn busy(&self)->bool {self.writing.as_ref().is_some_and(|w|!w.is_finished())}
-    fn start(&mut self, write: impl FnOnce() + Send + 'static) {
+    pub(super) fn start(&mut self, write: impl FnOnce() + Send + 'static) {
         self.finish();
         match std::thread::Builder::new().name("career save".into()).spawn(write) {
             Ok(writing) => self.writing = Some(writing),
@@ -747,7 +745,7 @@ impl CareerSession {
         wipeout_almost_over_time: f32,
         host_calendar: Option<fn() -> [u16; 6]>,
     ) -> Result<Self, String> {
-        let db = Arc::new(AttribDb::load(mounts, &CAREER_VAULTS).map_err(|e| e.to_string())?);
+        let db = Arc::new(AttribDb::load_career(mounts).map_err(|e| e.to_string())?);
         let global = mounts.read_path(GLOBAL_LUA).map_err(|e| e.to_string())?;
         let mut system = ChallengeSystem::new_career(db, &global).map_err(|e| e.to_string())?;
         system.world_mut().hom_local_calendar = host_calendar;
@@ -761,9 +759,7 @@ impl CareerSession {
             system.world_mut().locations.insert(key, location.transform);
             location_transforms.insert(key, location.transform);
         }
-        let directory = SceneDirectory::parse(&mounts.read_path(nis::directory::PATH).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        let cameras = CameraSet::parse(&mounts.read_path(nis::camera::PATH).map_err(|e| e.to_string())?)?;
+        let (directory, cameras) = nis::directory::load_with_content(mounts)?;
         let subtitles = mounts.read_path(nis::subtitles::BIG_PATH).map_err(|e| e.to_string())?;
         // LanguageManager::GetCurrentLanguageName of the English build.
         let mut nis = NisSystem::new(
@@ -1641,11 +1637,12 @@ impl CareerSession {
         crate::challenge::map_icons::minimap_icons(self.system.world())
     }
 
-    /// `FrontEndState_ChallengeMap::OnEnter` (`0x826539e8`) and `OnLoaded` (`0x826879b8`).
-    pub(super) fn open_challenge_map(&mut self) {
-        self.challenge_map = Some(crate::challenge::stuff_menu::ChallengeMap::open(
-            self.system.world_mut(),
-        ));
+    /// `FrontEndState_ChallengeMap::OnEnter` (`0x826539e8`) and `OnLoaded` (`0x826879b8`), with the
+    /// game's additional world location (`sGameInfo.additionalWorldLocation`).
+    pub(super) fn open_challenge_map(&mut self, additional_world_location: Option<u64>) {
+        let world = self.system.world_mut();
+        world.additional_world_location = additional_world_location;
+        self.challenge_map = Some(crate::challenge::stuff_menu::ChallengeMap::open(world));
     }
 
     /// `FrontEndState_ChallengeMap::OnLeave` (`0x8265ec98`).
@@ -1948,6 +1945,10 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// The port's game load of a career start: the map's travel to the spawn, on the board, which
     /// streams it in under the fade, with the career's updates held until the skater has landed.
     fn travel_to_career_start(&mut self, transform: [f32; 16]) {
+        // GameLoad 0x8273be50's SyncPurgeAdditionalWorldFile: a career sets no additional location
+        // (only free skate, Party Play and online games call SetAdditionalLocation 0x8256bdc0), so a
+        // world another game left loaded goes.
+        self.map_travel_world = super::world_travel::TravelWorld::Main;
         self.map_travel = Some(transform);
         self.map_travel_presentation_ready = false;
         self.map_travel_dispatched = false;
@@ -2011,7 +2012,8 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// device writes the original's; every later profile access waits for it.
     fn save_career(&mut self) -> Result<(), SelectedLiveError> {
         self.apply_stat_updates()?;
-        let asks = self.career.as_ref().is_some_and(|career| signpost_progress::asks_progression_orientation(career.system.world()));
+        let in_additional_world = self.inner.terrain.as_ref().is_some_and(|terrain| terrain.additional_world().is_some());
+        let asks = self.career.as_ref().is_some_and(|career| signpost_progress::asks_progression_orientation(career.system.world(), in_additional_world));
         if asks && let Some(rows) = self.local_suggested_respawn()? {
             let career = self.career.as_mut().ok_or_else(|| error("career absent"))?;
             signpost_progress::set_progression_orientation(career.system.world_mut(), rows);
@@ -2763,6 +2765,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         // Simulation::SimUpdate1 runs WorldPainter::LayerMan::Update (0x82ceb108) at the local
         // actor's x/z; a new eFE_LocationTriggers key reaches the objectives manager's
         // WorldPainterKeyChangeMsg (0x82d42d58) as CachedLocationKey.
+        let per_player = self.online_round_per_player_objectives();
         let hom_location = own.as_ref().and_then(|frame| self.hom_location_name(frame.position));
         let location_key = own.as_ref().and_then(|frame| self.career_location_key(frame.position));
         let layer_keys = own.as_ref().and_then(|frame| self.career_challenge_layer_keys(frame.position));
@@ -2778,6 +2781,17 @@ impl<T, C> SelectedLiveSession<T, C> {
             mission.update(frame, *mission_tuning, &mut |event| system.post(event));
         }
         let pairs = |entries: &[(u32, u64, u64)]| entries.iter().map(|&(_, guid, local)| (guid, local)).collect::<Vec<_>>();
+        // An online freeskate activity's objectives each read their own player's state, from
+        // every player's facts alike on every console (PC port: the original read each skater's
+        // own output).
+        system.world_mut().player_states = if per_player {
+            frames
+                .iter()
+                .map(|frame| (frame.player, mission::player_state(frame, pairs(previous.get(&frame.player).map_or(&[][..], Vec::as_slice)))))
+                .collect()
+        } else {
+            Vec::new()
+        };
         if let Some(frame) = own.as_ref() {
             system.world_mut().player = mission::player_state(frame, pairs(previous.get(&frame.player).map_or(&[][..], Vec::as_slice)));
             // IsStanceTrickGesturesFlipped 0x82614648: (mCurrentStance != 0) ==
@@ -2978,6 +2992,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let online_local = career.system.world().online.as_ref().map(|online| online.local_player);
         let mut online_outputs = Vec::new();
         let mut end_points = Vec::new();
+        let mut world_teleports = Vec::new();
         let mut start_teleports = Vec::new();
         let mut crowd_updates = 0;
         let mut markers = Vec::new();
@@ -3098,12 +3113,8 @@ impl<T, C> SelectedLiveSession<T, C> {
                 // to a location of the loaded world (the debug reference's BAM) as a challenge end
                 // point does; another world's is an additional world location, which the port does
                 // not load.
-                Output::TeleportLocalToWorldLocation { world_file, location } => {
-                    if world_file.as_deref().is_none_or(|file| file.eq_ignore_ascii_case(crate::game::DEBUG_REFERENCE_WORLD_FILE)) {
-                        end_points.push(location);
-                    } else {
-                        eprintln!("career: teleport to {location} in the additional world location {world_file:?} is not ported");
-                    }
+                Output::TeleportLocalToWorldLocation { world_location, world_file, location } => {
+                    world_teleports.push((world_location, world_file, location));
                 }
                 Output::TeleportLocalPlayerToSessionMarker => marker_teleports += 1,
                 Output::AutoSave => autosave = true,
@@ -3297,6 +3308,9 @@ impl<T, C> SelectedLiveSession<T, C> {
         for location in end_points {
             self.teleport_to_challenge_end_point(&location)?;
         }
+        for (world_location, world_file, location) in world_teleports {
+            self.teleport_local_to_world_location(world_location, world_file.as_deref(), &location)?;
+        }
         for challenge in start_teleports {
             self.teleport_local_player_start_challenge(challenge)?;
         }
@@ -3316,6 +3330,13 @@ impl<T, C> SelectedLiveSession<T, C> {
             })
         {
             self.online_switch_camera(player);
+        }
+        if online_local.is_some() {
+            for request in &requests {
+                if let &SkaterRequest::TeleportPlayer(player, transform) = request {
+                    self.online_note_spot(player, transform);
+                }
+            }
         }
         let requests = match online_local {
             Some(local) => self.online_skater_requests(requests, local),

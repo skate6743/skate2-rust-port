@@ -1060,6 +1060,12 @@ so the front end has its bed.
 
   The Send goes to `GetMasterSubMix`. `Rechannel` turns the 5 channels into 6
   (`ReChannelGainWrite`, channel for channel, LFE silent).
+* `PlayAmbience` sets no gain, so the bed plays at the Gain's default of 1.0 until the next
+  `ProcessUpdate`, which on the 360 is one update at the default profile's full volume. The port
+  sets the Gain to 0 before the play event (PC port change): the level the fade-in starts from.
+  Without it, a profile saved at no volume heard the bed at full volume at boot, for as long as
+  the first frames took (a mix dump at boot with all volumes at 0: peak 0.41 for one 256-sample
+  block, then silence).
 * The destructor 0x82529b60 releases the voice (no stop event) and the pool, leaving a running
   crossfade alone. It runs only at `Shutdown`, which the port does not have.
 

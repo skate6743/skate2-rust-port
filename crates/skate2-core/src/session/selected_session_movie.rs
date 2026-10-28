@@ -5,7 +5,7 @@
 //! `mDoEnterCACFromMainMenu`, before `NewCAC`.
 use super::{SelectedLiveError, SelectedLiveSession, SelectedLiveStage};
 use crate::{
-    challenge::attrib_db::{AttribDb, CAREER_VAULTS},
+    challenge::attrib_db::AttribDb,
     nis,
     ui::{
         movie_player::{
@@ -196,7 +196,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             .as_ref()
             .ok_or_else(|| error("assets absent"))?;
         Ok(Arc::new(
-            AttribDb::load(&assets.mounts, &CAREER_VAULTS).map_err(error)?,
+            AttribDb::load_career(&assets.mounts).map_err(error)?,
         ))
     }
 

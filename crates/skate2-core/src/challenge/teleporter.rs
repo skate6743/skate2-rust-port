@@ -176,7 +176,7 @@ fn to_world_file_location(_: &mut Lua<World>, world: &mut World, call: &NativeCa
     let world_file = (key != u64::MAX && world.db.has_collection(class::FE_LOCATIONS, key)).then(|| {
         world.db.attribute(class::FE_LOCATIONS, key, FE_LOCATION_WORLD).and_then(|attribute| attribute.text(0)).unwrap_or_default().to_owned()
     });
-    world.output(Output::TeleportLocalToWorldLocation { world_file, location });
+    world.output(Output::TeleportLocalToWorldLocation { world_location: key, world_file, location });
     Ok(Vec::new())
 }
 

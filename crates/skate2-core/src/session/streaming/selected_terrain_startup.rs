@@ -324,12 +324,22 @@ impl SelectedTerrainStartup {
                 .push((self.resident.selected().ok_or(E::Pending)?, admitted.len()));
             self.additional_pending = false;
         }
+        // cAssetStreamManager::PlanLoad (0x82d57f58): a selected collection's parent loads before
+        // it and stays while a selected collection has it.
+        let mut parents = Vec::with_capacity(selected.len());
+        for entry in selected {
+            let id = crate::collection_resident_streamer::CollectionId(entry.id);
+            parents.push(self.resident.parent(id).map_err(E::Residency)?.map(|parent| parent.0));
+        }
         let span = profile::span(profile::TERRAIN_DEPART);
         let mut index = 0;
         let mut start = 0;
         while index < self.collections.len() {
             let (id, count) = self.collections[index];
-            if selected.iter().any(|entry| entry.id == id.0) || self.hulls.get(&id.0).is_some_and(|hull| hull.1) {
+            if selected.iter().any(|entry| entry.id == id.0)
+                || parents.contains(&Some(id.0))
+                || self.hulls.get(&id.0).is_some_and(|hull| hull.1)
+            {
                 start += count;
                 index += 1;
                 continue;
@@ -363,10 +373,10 @@ impl SelectedTerrainStartup {
         drop(span);
         let _span = profile::span(profile::TERRAIN_REQUEST);
         let next = self.hull_queue.pop_front().or_else(|| {
-            selected
-                .iter()
-                .find(|entry| !self.resident.was_requested(crate::collection_resident_streamer::CollectionId(entry.id)))
-                .map(|entry| entry.id)
+            let requested = |id: u64| self.resident.was_requested(crate::collection_resident_streamer::CollectionId(id));
+            selected.iter().zip(&parents).find_map(|(entry, parent)| {
+                parent.filter(|&parent| !requested(parent)).or_else(|| (!requested(entry.id)).then_some(entry.id))
+            })
         });
         if let Some(next) = next {
             self.resident

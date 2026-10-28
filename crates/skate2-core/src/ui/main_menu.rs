@@ -1,7 +1,8 @@
 //! FENISManager82615470 / StateMainMenu82778340 / MainMenu82678c20.
 //! This frontend retains the running free-skate session. The original offline
 //! Skate.Reel route is available from Online Options beside Free Skate/Extras.
-//! PC additions: the Exit to Desktop row and the Downloadable Content notice.
+//! PC additions: the Exit to Desktop row, and the Downloadable Content screen listing the linked
+//! downloadable content in place of the Marketplace (`dlc_menu`).
 use super::{freeskate_option, party_play};
 use crate::attribute_runtime::AttributeRuntimeVault;
 use skate2_formats::{attrib::string_hash64, ice_camera::CameraSet, mount::MountSet};
@@ -40,10 +41,6 @@ pub const LABELS: [&str; 8] = [
     "ID_MAIN_MENU_EXTRAS",
     "#Exit to Desktop",
 ];
-/// PC: the Downloadable Content row's sk8popup: its title, description and only option.
-/// `OnMenuSelectGame` 0x82681338 sets FE state 25, the Marketplace, only for a signed-in Xbox
-/// LIVE user.
-pub const DLC_NOTICE: [&str; 3] = ["ID_MAIN_MENU_DOWNLOADABLE_CONTENT", "#DLC linking coming soon.", "ID_COMMON_OK"];
 
 /// mainmenu.apt asks `ProfileCmdTranslator::sMethod_IsNewProfile`82604118
 /// for row 0: New Career while `ProfileBackEnd.mNewProfile` is set.
@@ -93,6 +90,12 @@ pub enum Selection {
     EnterPartyPlay(party_play::PartyGame),
     OpenExtras,
     Extras(super::extras::Action),
+    /// Row 4 (PC): FE state 25's screen; the owner builds it with the linked packs.
+    /// `OnMenuSelectGame` 0x82681338 sets that state, the Marketplace, only for a signed-in Xbox
+    /// LIVE user.
+    OpenDlc,
+    /// PC: its Link DLCs; the owner opens the file picker.
+    LinkDlc,
     /// PC: row 7, Exit to Desktop.
     ExitToDesktop,
     /// PC: Yes to the update offered (`update_prompt`).
@@ -137,8 +140,8 @@ pub struct Frame {
     pub lobby_browser: Option<super::lobby_browser::Snapshot>,
     /// `OnlineProfileManager::GetUserName`: the player's online nickname.
     pub online_nickname: String,
-    /// PC: the Downloadable Content notice (`DLC_NOTICE`) is open.
-    pub dlc_notice: bool,
+    /// PC: the open Downloadable Content screen.
+    pub dlc: Option<super::dlc_menu::Snapshot>,
     /// PC: the update's popup.
     pub update_prompt: Option<super::update_prompt::UpdatePrompt>,
 }
@@ -235,7 +238,7 @@ impl Presentation {
             scale,
             secondary,
             selected: state.selected,
-            menu_visible: state.settled && state.screen == Screen::MainMenu && state.extras.is_none(),
+            menu_visible: state.settled && state.screen == Screen::MainMenu && state.extras.is_none() && state.dlc.is_none(),
             ice_postfx,
             planes: [near, self.far],
             new_profile: state.new_profile,
@@ -249,7 +252,7 @@ impl Presentation {
             online_match: None,
             lobby_browser: None,
             online_nickname: String::new(),
-            dlc_notice: state.dlc_notice,
+            dlc: state.dlc.as_ref().map(super::dlc_menu::Controller::snapshot),
             update_prompt: state.update_prompt.clone(),
         })
     }
@@ -282,8 +285,8 @@ pub struct Controller {
     /// `online-config.json` had no nickname when Online was selected.
     pub nickname_needed: bool,
     pub skate_reel:Option<super::skate_reel::Controller>,
-    /// PC: the Downloadable Content notice is open.
-    pub dlc_notice: bool,
+    /// PC: FE state 25's screen, over the main menu as the original's replaces it.
+    pub dlc: Option<super::dlc_menu::Controller>,
     /// PC: the update's popup, and the release the player said No to, which is not offered again
     /// until the server refuses this version.
     pub update_prompt: Option<super::update_prompt::UpdatePrompt>,
@@ -314,7 +317,7 @@ impl Controller {
             nickname_prompt: None,
             nickname_needed: false,
             skate_reel:None,
-            dlc_notice: false,
+            dlc: None,
             update_prompt: None,
             update_declined: None,
             changelog: None,
@@ -333,7 +336,7 @@ impl Controller {
             && self.name_prompt.is_none()
             && self.nickname_prompt.is_none()
             && self.skate_reel.is_none()
-            && !self.dlc_notice
+            && self.dlc.is_none()
     }
     /// PC: the app's updater as it stands: a newer release is offered once the menu is idle
     /// (`FrontEndState_Popup::OnEnter` 0x826583d0 sounds `core_popup`), and the update's progress,
@@ -375,6 +378,7 @@ impl Controller {
             sounds.extend(party_play.take_sounds());
         }
         if let Some(extras) = self.extras.as_mut() { sounds.extend(extras.take_sounds()); }
+        if let Some(dlc) = self.dlc.as_mut() { sounds.extend(dlc.take_sounds()); }
         if let Some(reel)=&mut self.skate_reel {sounds.extend(reel.take_sounds());}
         sounds
     }
@@ -542,14 +546,19 @@ impl Controller {
             } else if action!=super::skate_reel::Action::None {reel.pending=action;}
             return Selection::None;
         }
-        if self.dlc_notice {
-            // sk8popup's one option neither moves nor sounds, and the notice is not cancellable:
-            // A closes it (FrontEndState_Popup::OnMenuSelect 0x82658598).
-            if focused && input.select {
-                self.sounds.push("FE_SOUND_CORE_A_BUTTON");
-                self.dlc_notice = false;
-            }
-            return Selection::None;
+        if let Some(dlc) = self.dlc.as_mut() {
+            return match dlc.update(input, focused) {
+                super::dlc_menu::Action::None => Selection::None,
+                super::dlc_menu::Action::Link => Selection::LinkDlc,
+                // OnUpdate 0x8265b990's SetState(22): the main menu again, its picker at row 0.
+                super::dlc_menu::Action::Back => {
+                    self.sounds.extend(dlc.take_sounds());
+                    self.dlc = None;
+                    self.selected = 0;
+                    self.intro_complete = false;
+                    Selection::None
+                }
+            };
         }
         if !focused || !self.intro_complete {
             return Selection::None;
@@ -583,13 +592,7 @@ impl Controller {
                 self.run_nis(TO_PARTY_PLAY, Screen::ToPartyPlay);
                 Selection::PartyPlay
             }
-            // PC: a notice in place of FE state 25. FrontEndState_Popup::OnEnter 0x826583d0
-            // sounds core_popup.
-            4 => {
-                self.dlc_notice = true;
-                self.sounds.push("FE_SOUND_CORE_POPUP");
-                Selection::None
-            }
+            4 => Selection::OpenDlc,
             6 => Selection::OpenExtras,
             7 => Selection::ExitToDesktop,
             _ => Selection::None,
@@ -655,10 +658,10 @@ mod tests {
         use crate::ui::update_prompt::{UpdatePrompt, UpdateStatus};
         let available = |version: &str| UpdateStatus::Available { version: version.into() };
         let mut menu = settled_menu();
-        menu.dlc_notice = true;
+        menu.dlc = Some(crate::ui::dlc_menu::Controller::new(Vec::new()));
         menu.set_update_status(&available("0.2.0"), "0.1.0");
-        assert_eq!(menu.update_prompt, None, "not over the notice");
-        menu.dlc_notice = false;
+        assert_eq!(menu.update_prompt, None, "not over the Downloadable Content screen");
+        menu.dlc = None;
         menu.set_update_status(&available("0.2.0"), "0.1.0");
         assert_eq!(menu.update_prompt, Some(UpdatePrompt::Offer { version: "0.2.0".into(), current: "0.1.0".into(), selected: 0 }));
         assert_eq!(menu.take_sounds(), ["FE_SOUND_CORE_POPUP"]);
@@ -724,20 +727,19 @@ mod tests {
     }
 
     #[test]
-    fn downloadable_content_opens_a_notice_that_only_a_closes() {
+    fn downloadable_content_opens_its_screen_and_b_returns_to_the_first_row() {
         let mut menu = settled_menu();
         menu.selected = 4;
-        assert_eq!(press(&mut menu, select()), Selection::None);
-        assert!(menu.dlc_notice);
-        assert_eq!(menu.take_sounds(), ["FE_SOUND_CORE_A_BUTTON", "FE_SOUND_CORE_POPUP"]);
-        for input in [up(), down(), cancel()] {
-            assert_eq!(press(&mut menu, input), Selection::None);
-        }
-        assert!(menu.dlc_notice);
-        assert_eq!(menu.selected, 4);
-        assert!(menu.take_sounds().is_empty());
-        assert_eq!(press(&mut menu, select()), Selection::None);
-        assert!(!menu.dlc_notice);
+        assert_eq!(press(&mut menu, select()), Selection::OpenDlc);
         assert_eq!(menu.take_sounds(), ["FE_SOUND_CORE_A_BUTTON"]);
+        menu.dlc = Some(crate::ui::dlc_menu::Controller::new(Vec::new()));
+        assert_eq!(press(&mut menu, select()), Selection::None, "nothing before the intro");
+        menu.dlc.as_mut().unwrap().intro_complete = true;
+        assert_eq!(press(&mut menu, select()), Selection::LinkDlc, "the only row is Link DLCs");
+        menu.dlc.as_mut().unwrap().picked(false);
+        assert_eq!(press(&mut menu, cancel()), Selection::None);
+        assert!(menu.dlc.is_none());
+        assert_eq!((menu.selected, menu.intro_complete), (0, false));
+        assert_eq!(menu.take_sounds(), ["FE_SOUND_CORE_A_BUTTON", "FE_SOUND_CORE_B_BUTTON"]);
     }
 }

@@ -6,10 +6,14 @@
 //! key it sends. The page runs no script, loads nothing else and is never cached, and it shows no
 //! player's address: its boxes send references that the panel keeps for the addresses it listed.
 //!
+//! The same port serves the public statistics at [`STATS_PATH`] ([`crate::stats`]) to anyone,
+//! with or without a key file: no address, no private game, no one outside a public game.
+//!
 //! The panel serves on threads of its own and asks the server's loop for what it shows and does
 //! ([`Request`]), so the loop never waits on a browser.
 
 use crate::moderation::{self, PanelKey};
+use crate::stats::{self, Stats};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -22,6 +26,11 @@ use std::time::{Duration, Instant};
 
 /// The panel's path.
 pub const PATH: &str = "/moderationpanel";
+/// The public statistics' path.
+pub const STATS_PATH: &str = "/serverstats";
+/// How long one reading of the statistics answers every request: a stream of requests asks the
+/// server's loop at most once in this time.
+const STATS_TIME: Duration = Duration::from_secs(1);
 /// Connections served at once; one past them is closed unanswered.
 const MAX_CONNECTIONS: usize = 8;
 /// How long a request may take to arrive whole, and one read or write to wait.
@@ -53,6 +62,8 @@ pub enum Request {
     View(Sender<View>),
     /// An action: the answer is its outcome, for the page.
     Act(Action, Sender<String>),
+    /// The public statistics.
+    Stats(Sender<Stats>),
 }
 
 /// An action of the panel.
@@ -102,8 +113,11 @@ pub struct View {
 pub type Log = Arc<dyn Fn(&str) + Send + Sync>;
 
 struct Panel {
-    key: PanelKey,
+    /// The moderation panel's key; without one only the statistics are served.
+    key: Option<PanelKey>,
     requests: Sender<Request>,
+    /// The statistics last read, and when.
+    stats: Mutex<Option<(Instant, Vec<u8>)>>,
     /// Each address's wrong keys in its window, and when the first came.
     failures: Mutex<HashMap<IpAddr, (u32, Instant)>>,
     /// The last action's outcome, shown on the next page.
@@ -118,16 +132,26 @@ struct Panel {
 }
 
 /// Opens the panel at `address` and serves it on threads of its own; the server's loop answers
-/// its requests from `requests`. The address it listens at.
+/// its requests from `requests`. Without a key only the statistics are served. The address it
+/// listens at.
 ///
 /// # Errors
 /// The system's random source failed, or the port could not be opened.
-pub fn start(address: SocketAddr, key: PanelKey, requests: Sender<Request>, log: Log) -> io::Result<SocketAddr> {
+pub fn start(address: SocketAddr, key: Option<PanelKey>, requests: Sender<Request>, log: Log) -> io::Result<SocketAddr> {
     let mut salt = [0; 32];
     getrandom::fill(&mut salt).map_err(|error| io::Error::other(format!("the system's random source failed: {error}")))?;
     let listener = TcpListener::bind(address)?;
     let listening = listener.local_addr()?;
-    let panel = Arc::new(Panel { key, requests, failures: Mutex::default(), notice: Mutex::default(), salt, shown: Mutex::default(), log });
+    let panel = Arc::new(Panel {
+        key,
+        requests,
+        stats: Mutex::default(),
+        failures: Mutex::default(),
+        notice: Mutex::default(),
+        salt,
+        shown: Mutex::default(),
+        log,
+    });
     std::thread::Builder::new().name("moderation panel".into()).spawn(move || serve(&listener, &panel))?;
     Ok(listening)
 }
@@ -250,6 +274,9 @@ fn read_request(stream: &mut impl Read, deadline: Instant) -> Result<HttpRequest
 
 impl Panel {
     fn respond(&self, peer: IpAddr, request: &HttpRequest, now: Instant) -> Response {
+        if request.path == STATS_PATH {
+            return if request.method == "GET" { self.stats(now) } else { Response::status(405) };
+        }
         if request.path != PATH {
             return Response::status(404);
         }
@@ -261,16 +288,36 @@ impl Panel {
         }
     }
 
+    /// The public statistics, read from the server's loop at most once in [`STATS_TIME`].
+    fn stats(&self, now: Instant) -> Response {
+        let mut kept = self.stats.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((at, body)) = kept.as_ref()
+            && now.saturating_duration_since(*at) < STATS_TIME
+        {
+            return Response::json(body.clone());
+        }
+        let (reply, answer) = mpsc::channel();
+        if self.requests.send(Request::Stats(reply)).is_err() {
+            return Response::status(503);
+        }
+        let Ok(stats) = answer.recv_timeout(ANSWER_TIME) else { return Response::status(503) };
+        let body = stats::json(&stats).into_bytes();
+        *kept = Some((now, body.clone()));
+        Response::json(body)
+    }
+
     /// The key the query holds when it is the panel's. The address's wrong keys are counted, and
-    /// the key of one that sent too many is not even compared.
+    /// the key of one that sent too many is not even compared. Without a key file no key is the
+    /// panel's.
     fn admit(&self, peer: IpAddr, query: &str, now: Instant) -> Option<String> {
+        let panel_key = self.key.as_ref()?;
         let mut failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
         failures.retain(|_, (_, first)| now.saturating_duration_since(*first) < FAILURE_WINDOW);
         if failures.get(&peer).is_some_and(|(count, _)| *count >= MAX_FAILURES) {
             return None;
         }
         let key = fields(query).into_iter().find(|(name, _)| name == "key").map(|(_, value)| value);
-        if let Some(key) = key.filter(|key| self.key.matches(key)) {
+        if let Some(key) = key.filter(|key| panel_key.matches(key)) {
             failures.remove(&peer);
             return Some(key);
         }
@@ -424,34 +471,43 @@ fn url(key: &str) -> String {
     format!("{PATH}?key={key}")
 }
 
-/// An answer: its status, the page it sends the browser on to, and its body.
+/// An answer: its status, the page it sends the browser on to, its body, and whether any page
+/// may read it (the public statistics).
 #[derive(Debug)]
 struct Response {
     status: u16,
     content_type: &'static str,
     location: Option<String>,
     body: Vec<u8>,
+    public: bool,
 }
 
 impl Response {
     fn status(status: u16) -> Self {
-        Self { status, content_type: "text/plain; charset=utf-8", location: None, body: reason(status).as_bytes().to_vec() }
+        Self { status, content_type: "text/plain; charset=utf-8", location: None, body: reason(status).as_bytes().to_vec(), public: false }
     }
 
     fn html(page: String) -> Self {
-        Self { status: 200, content_type: "text/html; charset=utf-8", location: None, body: page.into_bytes() }
+        Self { status: 200, content_type: "text/html; charset=utf-8", location: None, body: page.into_bytes(), public: false }
+    }
+
+    fn json(body: Vec<u8>) -> Self {
+        Self { status: 200, content_type: "application/json; charset=utf-8", location: None, body, public: true }
     }
 
     fn see_other(location: &str) -> Self {
-        Self { status: 303, content_type: "text/plain; charset=utf-8", location: Some(location.to_owned()), body: Vec::new() }
+        Self { status: 303, content_type: "text/plain; charset=utf-8", location: Some(location.to_owned()), body: Vec::new(), public: false }
     }
 
     /// The answer as sent: never cached, framed or followed by a referrer, and running nothing
-    /// but its own styles.
+    /// but its own styles; the public statistics readable from any page's script.
     fn bytes(&self) -> Vec<u8> {
         let mut head = format!("HTTP/1.1 {} {}\r\nContent-Type: {}\r\n", self.status, reason(self.status), self.content_type);
         if let Some(location) = &self.location {
             let _ = write!(head, "Location: {location}\r\n");
+        }
+        if self.public {
+            head.push_str("Access-Control-Allow-Origin: *\r\n");
         }
         head.push_str(
             "Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\n\
@@ -635,8 +691,21 @@ mod tests {
     /// Runs `test` against a panel whose server's loop shows one player and one ban and answers
     /// every action alike: the actions it was asked.
     fn served(test: impl FnOnce(&Panel)) -> Vec<Action> {
+        served_with(Some(PanelKey::from_text(KEY).unwrap()), test)
+    }
+
+    fn served_with(key: Option<PanelKey>, test: impl FnOnce(&Panel)) -> Vec<Action> {
         let (requests, receiver) = mpsc::channel();
-        let panel = Panel { key: PanelKey::from_text(KEY).unwrap(), requests, failures: Mutex::default(), notice: Mutex::default(), salt: [7; 32], shown: Mutex::default(), log: Arc::new(|_: &str| {}) };
+        let panel = Panel {
+            key,
+            requests,
+            stats: Mutex::default(),
+            failures: Mutex::default(),
+            notice: Mutex::default(),
+            salt: [7; 32],
+            shown: Mutex::default(),
+            log: Arc::new(|_: &str| {}),
+        };
         let view = View {
             players: vec![Player {
                 name: "O'Neil".into(),
@@ -661,6 +730,16 @@ mod tests {
                         actions.push(action);
                         let _ = reply.send("Done & dusted.".into());
                     }
+                    Request::Stats(reply) => {
+                        let game = crate::stats::PublicGame {
+                            challenge_type: crate::protocol::challenge::SKATE,
+                            challenge_key: 7,
+                            activity: None,
+                            in_progress: true,
+                            players: vec!["O'Neil".into()],
+                        };
+                        let _ = reply.send(Stats { players_online: 2, games: vec![game] });
+                    }
                 }
             }
             actions
@@ -668,6 +747,28 @@ mod tests {
         test(&panel);
         drop(panel);
         server.join().unwrap()
+    }
+
+    #[test]
+    fn the_statistics_need_no_key_and_name_no_address() {
+        for key in [Some(PanelKey::from_text(KEY).unwrap()), None] {
+            served_with(key, |panel| {
+                let now = Instant::now();
+                let response = panel.respond(ip("203.0.113.5"), &get(STATS_PATH), now);
+                assert_eq!((response.status, response.content_type), (200, "application/json; charset=utf-8"));
+                let body = String::from_utf8(response.body.clone()).unwrap();
+                assert!(body.contains("\"players_online\": 2") && body.contains("\"challenge_type\": \"S.K.A.T.E.\"") && body.contains("\"players\": [\"O'Neil\"]"));
+                assert!(!body.contains("10.0.0.2"));
+                assert!(String::from_utf8(response.bytes()).unwrap().contains("Access-Control-Allow-Origin: *"));
+                assert_eq!(panel.respond(ip("203.0.113.5"), &post(STATS_PATH, ""), now).status, 405);
+                for _ in 0..MAX_FAILURES + 2 {
+                    assert_eq!(panel.respond(ip("203.0.113.5"), &get(STATS_PATH), now).status, 200, "counted as no wrong key");
+                }
+            });
+        }
+        served_with(None, |panel| {
+            assert_eq!(panel.respond(ip("192.0.2.1"), &get(&format!("{PATH}?key={KEY}")), Instant::now()).status, 404, "no key file, no panel");
+        });
     }
 
     #[test]

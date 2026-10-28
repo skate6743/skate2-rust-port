@@ -16,6 +16,7 @@ struct Source {
     minimum: f32,
     settled: f32,
     fade: f32,
+    bail_limit: Option<f32>,
 }
 impl Source {
     fn new() -> Self {
@@ -29,6 +30,7 @@ impl Source {
             minimum: 2.0,
             settled: 1.0,
             fade: 3.0,
+            bail_limit: None,
         }
     }
     fn read(&mut self, name: &'static str) -> Result<(), &'static str> {
@@ -89,6 +91,21 @@ impl WipeoutRecoverySource for Source {
         self.read("dt")?;
         Ok(self.dt)
     }
+    fn turn_bail_limit(&mut self) -> Result<Option<f32>, Self::Error> {
+        Ok(self.bail_limit)
+    }
+}
+#[test]
+fn an_online_turns_limit_ends_a_wipeout_that_never_settles() {
+    let mut fields = WipeoutGroundFields::constructed();
+    fields.time_in_state = 3.0;
+    let mut source = Source::new();
+    try_manage_recovery(&mut fields, &mut source).unwrap();
+    assert!(!fields.auto_teleport_pending);
+    source.bail_limit = Some(2.5);
+    try_manage_recovery(&mut fields, &mut source).unwrap();
+    assert!(fields.auto_teleport_pending);
+    assert_eq!(fields.time_until_teleport.to_bits(), 3.0_f32.to_bits());
 }
 #[test]
 fn impulse_false_and_signed_limit_are_lazy_and_failed_force_preserves_counter() {

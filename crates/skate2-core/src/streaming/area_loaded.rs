@@ -5,7 +5,7 @@
 use crate::game_stream::StreamKind;
 use skate2_formats::{
     hash::rw_hash64_string,
-    stream::{CollectionSpace, high_detail_collection_filename},
+    stream::{CollectionSpace, DEFAULT_PRESENTATION_FOCUS_COLLECTIONS, MAX_FOCUS_ENTRIES, high_detail_collection_filename, merge_focus_collections},
     stream_xml::StreamXml,
 };
 use std::sync::Arc;
@@ -18,6 +18,9 @@ pub struct PresentationStreamArea {
     pub space: Arc<CollectionSpace>,
     /// Its stream XML, used with `kEnableStreamXml`.
     pub xml: Option<Arc<StreamXml>>,
+    /// A loaded additional world's presentation XSS, whose collections `FindCollections`
+    /// (`0x824dfea8`) merges with the first file's.
+    pub additional: Option<Arc<CollectionSpace>>,
     /// The focus radius.
     pub radius: f32,
     /// The high collections registered in the presentation.
@@ -32,15 +35,20 @@ impl PresentationStreamArea {
     #[must_use]
     pub fn is_area_loaded(&self, position: [f32; 3], radius: f32, xml_enabled: bool) -> bool {
         let loaded = |id: u64| {
-            Ok::<_, std::convert::Infallible>(
-                !self.space.collections.iter().any(|entry| entry.lod == 0 && entry.id == id) || self.resident.contains(&id),
-            )
+            let known = std::iter::once(&*self.space)
+                .chain(self.additional.as_deref())
+                .any(|space| space.collections.iter().any(|entry| entry.lod == 0 && entry.id == id));
+            Ok::<_, std::convert::Infallible>(!known || self.resident.contains(&id))
         };
         let wanted = |at: [f32; 3]| {
-            let picked = match self.xml.as_deref().filter(|_| xml_enabled) {
+            let mut picked = match self.xml.as_deref().filter(|_| xml_enabled) {
                 Some(xml) => xml.focus_collections(&self.space, at, self.radius, 16),
                 None => self.space.focus_collections(at, self.radius, 16),
             };
+            if let Some(more) = self.additional.as_deref() {
+                picked = merge_focus_collections([picked, more.focus_collections(at, self.radius, MAX_FOCUS_ENTRIES)]);
+                picked.truncate(DEFAULT_PRESENTATION_FOCUS_COLLECTIONS);
+            }
             Ok(picked.iter().map(|collection| collection.id).collect())
         };
         match is_area_loaded(position, radius, StreamKind::Presentation, loaded, wanted) {

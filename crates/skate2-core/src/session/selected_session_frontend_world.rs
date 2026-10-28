@@ -11,7 +11,7 @@ use super::{SelectedLiveError, SelectedLiveSession, SelectedLiveStage as Stage, 
 use crate::{
     actor_construction::selected_tick::{SelectedQueuedTickOutcome, SelectedTickNumerics, SelectedTickRequest},
     challenge::{
-        attrib_db::{AttribDb, CAREER_VAULTS},
+        attrib_db::AttribDb,
         unlockables::{self, Unlockables},
     },
     edit_skater_profile::EditSkaterProfileStore,
@@ -69,7 +69,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let mounts = Arc::clone(&assets.mounts);
         let vault = Arc::clone(&assets.vault);
         if self.freeskate.data.is_none() {
-            let db = Arc::new(AttribDb::load(&mounts, &CAREER_VAULTS).map_err(|e| error(Stage::Visual, e))?);
+            let db = Arc::new(AttribDb::load_career(&mounts).map_err(|e| error(Stage::Visual, e))?);
             let table = LocationTable::parse(&mounts.read_path(SIM_LOCATIONS).map_err(|e| error(Stage::Visual, e))?)
                 .map_err(|e| error(Stage::Visual, e))?;
             self.freeskate.data = Some((db, table));
@@ -111,6 +111,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         TE: Debug,
     {
         self.try_ensure_session_ai()?;
+        self.try_unload_frontend_additional_world()?;
         let position = [TRAINING_START[12], TRAINING_START[13], TRAINING_START[14]];
         let terrain = self.inner.terrain.as_mut().ok_or_else(|| error(Stage::TerrainResident, "terrain absent"))?;
         terrain.try_advance_asset_release().map_err(|e| error(Stage::TerrainResident, e))?;

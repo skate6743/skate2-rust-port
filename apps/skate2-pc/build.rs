@@ -1,6 +1,6 @@
 //! The build's secret: see `../build_secret.rs`. A development build makes it anew whenever
 //! anything the executable is built from changes. On Windows the executable also carries its
-//! icon, `skate2.ico`.
+//! icon, `skate2.ico`, and the window thread's stack size.
 
 #[path = "../build_secret.rs"]
 mod build_secret;
@@ -10,6 +10,10 @@ fn main() {
     let target = |key: &str, value: &str| std::env::var(key).is_ok_and(|actual| actual == value);
     if target("CARGO_CFG_TARGET_OS", "windows") && target("CARGO_CFG_TARGET_ENV", "msvc") {
         embed_icon("skate2.ico");
+        // The window thread loads the menus and builds the client by value, and with
+        // SKATE2_SERIAL_SIM it runs the simulation too: it gets the SIM thread's 16 MB, where
+        // Windows reserves 1 MB (Linux and macOS 8).
+        println!("cargo:rustc-link-arg-bins=/STACK:{}", 16 << 20);
     }
 }
 

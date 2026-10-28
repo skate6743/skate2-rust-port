@@ -467,6 +467,15 @@ impl EditSkaterFrontend {
         self.stop_slider();
         self.take_sounds()
     }
+    /// PC port: the receipt's lines leave the record as Edit Cart's (`UpdateReceiptList`) would
+    /// with none kept, as the online game closes the editor for the player: the skater keeps
+    /// only what it owns or bought.
+    pub(crate) fn drop_receipt(&mut self) -> RecordResult<()> {
+        if !self.shop.receipt().is_empty() {
+            self.shop.update_receipt_list(&self.db, &self.available_parts, &mut self.record, &self.undo, &[])?;
+        }
+        Ok(())
+    }
     fn action(&mut self, a: EditSkaterAction, e: &mut EditSkaterEffects) -> RecordResult<()> {
         use EditSkaterAction as A;
         use EditSkaterMenu as M;

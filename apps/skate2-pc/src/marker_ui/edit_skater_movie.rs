@@ -379,7 +379,7 @@ impl EditSkaterMovie {
                 "category" => (19, 18, 36.),
                 "slider" => (21, 22, 72.),
                 "selector" => (18, 21, 58.),
-                "morph" => (16, 36, 45.),
+                "morph" => (16, MORPH, 45.),
                 "color" => (17, 33, 58.),
                 _ => return Err(format!("unknown CAC highlight type {}", row.kind).into()),
             };
@@ -439,7 +439,7 @@ mod tests {
     fn original_cac_style_title_arrows_and_button_layout() {
         let game = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
         let mut mounts = MountSet::new();
-        for spec in SKATE2_ARCHIVES.iter().take(4) {
+        for spec in SKATE2_ARCHIVES.iter() {
             mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
         }
         let assets = Assets::load(&mounts).unwrap();
@@ -708,10 +708,7 @@ pub(super) fn highlight(
             // highlight_morph.SetState0021bd..21f8 switches the knob's own
             // timeline as well as the row; its initial frame is the lit state.
             clip.named(&["mKnob"])?.goto(assets, if selected { "on" } else { "off" })?;
-            let length = bounds(clip.named(&["mMorphLine"])?, assets)?.ok_or("CAC morph bounds")?;
-            let line = child(clip, "mMorphLine")?.entry.matrix;
-            child(clip, "mKnob")?.entry.matrix.tx =
-                line.tx + (length.right - length.left) * line.a * row.value as f32 / 100.;
+            morph_knob(clip, assets, row.value)?;
         }
         "color" => {
             let first = (row.value.max(0) as usize).saturating_sub(9);
@@ -765,6 +762,23 @@ pub(super) fn highlight(
         _ => return Err(format!("unsupported CAC control {}", row.kind).into()),
     }
     Ok(())
+}
+/// `highlight_morph`'s row (asset 16): Edit Skater's body and face morph knob.
+pub(super) const MORPH: u32 = 36;
+/// The morph knob at `value` (0 to 100) along its line.
+fn morph_knob(clip: &mut Clip, assets: &Assets, value: i32) -> RenderResult<()> {
+    let length = bounds(clip.named(&["mMorphLine"])?, assets)?.ok_or("CAC morph bounds")?;
+    let line = child(clip, "mMorphLine")?.entry.matrix;
+    child(clip, "mKnob")?.entry.matrix.tx = line.tx + (length.right - length.left) * line.a * value as f32 / 100.;
+    Ok(())
+}
+/// PC port: a morph row's title and knob refreshed without replaying its
+/// selection, as a Stick Settings deadzone moves.
+pub(super) fn morph_value(clip: &mut Clip, assets: &Assets, title: &str, value: i32) -> RenderResult<()> {
+    for label in ["mTitle", "mTitleglow"] {
+        text(clip.named(&[label, "TEXTLABEL"])?, title);
+    }
+    morph_knob(clip, assets, value)
 }
 /// highlight_category.SetTitle001538..155d alone: both title fields, then the
 /// right arrow immediately after the measured label.

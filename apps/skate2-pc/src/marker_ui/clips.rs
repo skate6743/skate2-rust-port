@@ -206,6 +206,12 @@ impl Clip {
                         // An empty action: its End alone.
                     } else if self.asset == super::replay_editor_movie::ASSET {
                         super::replay_editor_movie::action(self, action.offset)?;
+                    } else if self.asset == super::spectator_movie::ASSET {
+                        super::spectator_movie::action(self, action.offset)?;
+                    } else if self.asset == super::activity_overlay_movie::ASSET {
+                        super::activity_overlay_movie::action(self, action.offset)?;
+                    } else if self.asset == super::activity_signup_movie::ASSET {
+                        super::activity_signup_movie::action(self, action.offset)?;
                     } else if self.asset == super::contacts_movie::ASSET {
                         super::contacts_movie::action(self, action.offset)?;
                     } else if self.asset == super::trick_guide_movie::ASSET {
@@ -216,6 +222,8 @@ impl Clip {
                         super::skate_reel_movie::action(self,action.offset)?;
                     } else if self.asset == super::extras_movie::ASSET {
                         super::extras_movie::action(self, action.offset)?;
+                    } else if self.asset == super::dlc_movie::ASSET {
+                        super::dlc_movie::action(self, action.offset)?;
                     } else if self.asset == super::credits_movie::ASSET {
                         super::credits_movie::action(self, action.offset)?;
                     } else if (super::fmv_tutorial_movie::PLAYER..=super::fmv_tutorial_movie::HOM).contains(&self.asset) {
@@ -418,6 +426,9 @@ impl Clip {
                         || super::hud_dpo_movie::init_action(self.asset, character, actions.offset)
                         || super::hud_distance_movie::init_action(self.asset, character, actions.offset)
                         || super::hud_voting_movie::init_action(self.asset, character, actions.offset)
+                        || super::spectator_movie::init_action(self.asset, character, actions.offset)
+                        || super::activity_overlay_movie::init_action(self.asset, character, actions.offset)
+                        || super::activity_signup_movie::init_action(self.asset, character, actions.offset)
                         || super::end_challenge_movie::init_action(self.asset, character, actions.offset)
                         || super::challenge_failed_movie::init_action(self.asset, character, actions.offset)
                         || super::challenge_failed_small_movie::init_action(self.asset, character, actions.offset)
@@ -433,7 +444,8 @@ impl Clip {
                         || super::hom_annals_movie::init_action(self.asset, character, actions.offset)
                         || super::hom_skeleton_movie::init_action(self.asset, character, actions.offset)
                         || super::pause_movie::init_action(self.asset, character, actions.offset)
-                        || super::map_movie::init_action(self.asset, character, actions.offset)) {
+                        || super::map_movie::init_action(self.asset, character, actions.offset)
+                        || super::dlc_movie::init_action(self.asset, character, actions.offset)) {
                         return Err(format!(
                             "untranslated APT InitAction {}:{character} {:#x}",
                             self.asset, actions.offset

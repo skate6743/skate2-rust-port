@@ -3,7 +3,7 @@
 use super::{SelectedLiveError, SelectedLiveSession, SelectedLiveStage, SelectedSceneCharacterVisual, freeskate_viewer::Viewer};
 use crate::{
     challenge::{
-        attrib_db::{AttribDb, CAREER_VAULTS},
+        attrib_db::AttribDb,
         unlockables::{self, Unlockables},
     },
     edit_skater_profile::EditSkaterProfileStore,
@@ -22,6 +22,7 @@ const SIM_LOCATIONS: &str = "data\\content\\world\\stream\\BAM\\BAM_Sim.loc";
 fn error(e: impl std::fmt::Display) -> SelectedLiveError {
     SelectedLiveError::failed(SelectedLiveStage::Visual, e.to_string())
 }
+
 
 /// The free-skate front end's data and choices.
 #[derive(Default)]
@@ -52,7 +53,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     pub(super) fn open_freeskate_option(&mut self) -> Result<(), SelectedLiveError> {
         let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("free skate assets absent"))?.mounts);
         if self.freeskate.data.is_none() {
-            let db = Arc::new(AttribDb::load(&mounts, &CAREER_VAULTS).map_err(error)?);
+            let db = Arc::new(AttribDb::load_career(&mounts).map_err(error)?);
             let table = LocationTable::parse(&mounts.read_path(SIM_LOCATIONS).map_err(error)?).map_err(error)?;
             self.freeskate.data = Some((db, table));
         }
@@ -144,11 +145,19 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
         self.freeskate.pending_character = Some(game.character.marquee);
         self.apply_pending_character()?;
-        let (_, table) = self.freeskate.data.as_ref().ok_or_else(|| error("free skate data absent"))?;
-        let start = table
-            .find(&game.location.spawn)
-            .ok_or_else(|| error(format!("free skate start {} absent", game.location.spawn)))?;
-        self.map_travel = Some(start.transform);
+        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("free skate data absent"))?;
+        // UpdateGameSettings: a location whose world is not BAM is the additional location
+        // GameLoad loads before the skater starts there.
+        let world = freeskate_option::location_world(db, game.location.key).unwrap_or_else(|| crate::game::DEBUG_REFERENCE_WORLD_FILE.into());
+        let start = match table.find(&game.location.spawn) {
+            Some(start) => start.transform,
+            None => {
+                let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("free skate assets absent"))?.mounts);
+                super::world_travel::world_location(&mounts, &world, &game.location.spawn)?
+            }
+        };
+        self.map_travel_world = super::world_travel::TravelWorld::of_location(&world, game.location.key);
+        self.map_travel = Some(start);
         self.map_travel_presentation_ready = false;
         self.map_travel_dispatched = false;
         self.map_travel_on_board = true;
@@ -159,15 +168,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// `GM_PartyPlay` and `SetLocationName` of the challenge's `Location`, where the first player's
     /// skater starts. The other party members, the turns and the challenge are not ported yet.
     pub(super) fn start_party_play(&mut self, game: crate::ui::party_play::PartyGame) -> Result<(), SelectedLiveError> {
-        /// `challenge_global_data.Location` (`tLocationID`).
-        const CHALLENGE_GLOBAL_DATA: u64 = 0xA4F3_5B15_9D74_32B5;
-        const LOCATION: u64 = 0xF1C6_D5FA_4A23_951E;
-        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("party play data absent"))?;
-        let name = db
-            .attribute(CHALLENGE_GLOBAL_DATA, game.location.key, LOCATION)
-            .and_then(|location| location.text(0))
-            .ok_or_else(|| error("party play challenge location absent"))?;
-        let start = table.find(name).ok_or_else(|| error(format!("party play start {name} absent")))?.transform;
+        let (start, world) = self.party_challenge_start(game.location.key)?;
         self.set_game_mode(GM_PARTY_PLAY, None)?;
         self.create_party_players(&game)?;
         self.drop_career()?;
@@ -176,11 +177,41 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.apply_pending_character()?;
         self.party_play.game = Some(game.clone());
         self.party_play.spawn = Some((game, start));
+        self.map_travel_world = world;
         self.map_travel = Some(start);
         self.map_travel_presentation_ready = false;
         self.map_travel_dispatched = false;
         self.map_travel_on_board = true;
         Ok(())
+    }
+
+    /// A party challenge's start, its `challenge_global_data` `Location`, and the world of its world
+    /// location (`GetWorldFilename`), which, other than BAM, is the game's additional location
+    /// (`SetAdditionalLocation` in `EnterGame`).
+    pub(super) fn party_challenge_start(&self, global_data: u64) -> Result<([f32; 16], super::world_travel::TravelWorld), SelectedLiveError> {
+        /// `challenge_global_data.Location` (`tLocationID`) and its world location (an
+        /// `fe_locations` RefSpec).
+        const CHALLENGE_GLOBAL_DATA: u64 = 0xA4F3_5B15_9D74_32B5;
+        const LOCATION: u64 = 0xF1C6_D5FA_4A23_951E;
+        const WORLD_LOCATION: u64 = 0x6C81_4DB5_9F16_EBD2;
+        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("party play data absent"))?;
+        let name = db
+            .attribute(CHALLENGE_GLOBAL_DATA, global_data, LOCATION)
+            .and_then(|location| location.text(0))
+            .ok_or_else(|| error("party play challenge location absent"))?;
+        let world_location = db
+            .attribute(CHALLENGE_GLOBAL_DATA, global_data, WORLD_LOCATION)
+            .and_then(|world| world.ref_spec(0))
+            .map_or(u64::MAX, |(_, location)| location);
+        let world = freeskate_option::location_world(db, world_location).unwrap_or_else(|| crate::game::DEBUG_REFERENCE_WORLD_FILE.into());
+        let start = match table.find(name) {
+            Some(start) => start.transform,
+            None => {
+                let mounts = &self.inner.assets.as_ref().ok_or_else(|| error("party play assets absent"))?.mounts;
+                super::world_travel::world_location(mounts, &world, name)?
+            }
+        };
+        Ok((start, super::world_travel::TravelWorld::of_location(&world, world_location)))
     }
 
     /// `StateGameUnload::UnloadGameState` 0x82757cc8 entering as the quit reaches the main menu.

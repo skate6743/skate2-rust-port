@@ -4,7 +4,7 @@ use skate2_core::{mounted_character_scene::own_texture_arena, texture::NativeTex
 use skate2_formats::{
     apt::{ActionStream, Animation, BitmapFont, Geometry},
     localization::{Histogram, LanguageCategory, string_hash},
-    mount::{MountSet, MountedBig},
+    mount::{MountError, MountSet, MountedBig},
     rw4::Arena,
 };
 use std::collections::BTreeMap;
@@ -37,6 +37,8 @@ pub(super) struct Assets {
     cac_archive: MountedBig,
     /// `FrontEndManager::SetupBigFiles`826062e8's data/fe/locations.big.
     locations_archive: MountedBig,
+    /// The linked downloadable content's archives (`dlcbig:`), which hold its locations' images.
+    dlc_archives: Vec<std::sync::Arc<MountedBig>>,
     /// `screens.big`, for the DPO HUD's `dpoicons`.
     screens_archive: MountedBig,
     pub map_info: MapInfo,
@@ -46,7 +48,7 @@ pub(super) struct Assets {
     pub pro_film_pro_name:String,
     pub sponsor_labels: [String; 4],
     pub frontend_arguments: skate2_core::FrontendArguments,
-    pub movies: [MovieAsset; 116],
+    pub movies: [MovieAsset; 120],
     pub fonts: BTreeMap<String, Font>,
     pub credits_source: String,
     /// The Flash name of the first font group entry whose file is not
@@ -171,7 +173,18 @@ impl Assets {
         if self.textures.contains_key(&key) {
             return Ok((key, false));
         }
-        let loaded = textures(&self.locations_archive.read_path(&format!("data\\{path}.rx2"))?)?;
+        let entry = format!("data\\{path}.rx2");
+        let bytes = match self.locations_archive.read_path(&entry) {
+            Ok(bytes) => bytes,
+            // A downloadable content location's image is in its archives, past the game's.
+            Err(MountError::EntryNotFound(_)) => self
+                .dlc_archives
+                .iter()
+                .find_map(|archive| archive.read_path(&entry).ok())
+                .ok_or_else(|| format!("location image {image}.rx2 absent"))?,
+            Err(error) => return Err(error.into()),
+        };
+        let loaded = textures(&bytes)?;
         let name = format!("{image}.Texture");
         let mut texture = loaded
             .into_iter()
@@ -466,6 +479,10 @@ impl Assets {
             movie(&screens, "data\\fe\\source\\controls\\challengesignup_icon")?,
             movie(&screens, "data\\fe\\source\\screens\\onlinehub\\skateProfile")?,
             movie(&screens, "data\\fe\\source\\controls\\online_gamer_rank")?,
+            movie(&screens, "data\\fe\\source\\screens\\hudComponents\\spectator_mode")?,
+            movie(&screens, "data\\fe\\source\\screens\\hud2\\hud_freeskateactivity_overlay")?,
+            movie(&screens, "data\\fe\\source\\screens\\unranked\\freeskateactivity_signup")?,
+            movie(&screens, "data\\fe\\source\\screens\\main\\dlc")?,
         ];
         for (asset, expected) in movies.iter_mut().zip([
             0xf1d585f8u32,
@@ -584,6 +601,10 @@ impl Assets {
             0xed95_56a4,
             0x56ba_b8fa,
             0x0717_ecf4,
+            0xa968_491a,
+            0xabb9_425f,
+            0x749c_a799,
+            0xd5aa_4818,
         ]) {
             let fingerprint = asset.bytes.iter().fold(2166136261u32, |h, b| {
                 (h ^ u32::from(*b)).wrapping_mul(16777619)
@@ -635,6 +656,7 @@ impl Assets {
             "data\\fe\\source\\controls\\media_browser.rx2".into(),
             "data\\fe\\source\\controls\\mediathumb.rx2".into(),
             "data\\fe\\source\\screens\\main\\main_onlineoptions.rx2".into(),
+            "data\\fe\\source\\screens\\main\\dlc.rx2".into(),
             "data\\fe\\source\\screens\\skatereel\\skatereel_general.rx2".into(),
             "data\\fe\\source\\screens\\skatereel\\skatereel_photo.rx2".into(),
             "data\\fe\\source\\screens\\tricks\\trickguide.rx2".into(),
@@ -662,6 +684,8 @@ impl Assets {
             format!("{timer}.rx2"),
             "data\\fe\\source\\screens\\hud2\\bbtimer.rx2".into(),
             "data\\fe\\source\\screens\\hud2\\hud_online_eventlog2.rx2".into(),
+            "data\\fe\\source\\screens\\hud2\\hud_freeskateactivity_overlay.rx2".into(),
+            "data\\fe\\source\\screens\\unranked\\freeskateactivity_signup.rx2".into(),
             "data\\fe\\source\\screens\\unranked\\unranked_custom_match.rx2".into(),
             "data\\fe\\source\\screens\\unranked\\unranked_custom_freeskate.rx2".into(),
             "data\\fe\\source\\screens\\onlinehub\\onlineHubMenu.rx2".into(),
@@ -814,6 +838,10 @@ impl Assets {
                 localized.entry(hash).or_insert(decoded.units);
             }
         }
+        // PC: the linked downloadable content's language databases, after the game's.
+        for (hash, units) in skate2_core::dlc::strings(mounts) {
+            localized.entry(hash).or_insert(units);
+        }
         for label in [
             "ID_PHONELIST_TITLE",
             "ID_PHONELIST_GOTO_MARKER",
@@ -836,6 +864,7 @@ impl Assets {
         Ok(Self {
             cac_archive,
             locations_archive,
+            dlc_archives: mounts.dlc_archives(),
             screens_archive: screens,
             map_info,
             local_player_icon,
@@ -874,6 +903,14 @@ impl Assets {
             .values()
             .find(|font| font.file.eq_ignore_ascii_case(file))
             .ok_or_else(|| format!("font {file} absent").into())
+    }
+    /// The mounted downloadable content's strings, after the game's own (a link refreshing
+    /// them as `StateDLCFlow::LoadDLCLanguageDB` does), and its archives' images.
+    pub(super) fn add_dlc_strings(&mut self, mounts: &MountSet) {
+        self.dlc_archives = mounts.dlc_archives();
+        for (hash, units) in skate2_core::dlc::strings(mounts) {
+            self.localized.entry(hash).or_insert(units);
+        }
     }
     pub fn initial_text(&self, label: &str) -> Vec<u16> {
         if let Some(literal) = label.strip_prefix('#') {

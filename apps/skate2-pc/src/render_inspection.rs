@@ -96,6 +96,8 @@ pub(crate) struct Inspection {
     streaming: Option<crate::city_streaming::CityStreaming>,
     /// The hull loaders' registered presentation collections, as the session last gave them.
     hull_presentations: Vec<skate2_core::presentation::HullPresentation>,
+    /// The additional world the session holds loaded, as it last gave it.
+    additional_world: Option<String>,
     proxy_textures: Option<crate::proxy_texture_world::ProxyTextures>,
     queue: NativeRenderQueue,
     focus: [f32; 3],
@@ -131,6 +133,14 @@ pub(crate) struct Inspection {
     water_animation: crate::render_water_animation::WaterAnimation,
     diagnostic_techniques: DiagnosticTechniques,
     environment: Arc<EnvironmentLighting>,
+    /// `RenderMan::m_RenderLocation`'s world location (`None`: the default one).
+    render_location: Option<u64>,
+    /// The environment as loaded, at the default location.
+    loaded_environment: Option<Arc<EnvironmentLighting>>,
+    /// The game's and the downloadable content's vaults, read for the content's vault paths
+    /// listed, and the loaded environment with their collections added, which a location of the
+    /// content's names and which stays in place after it.
+    location_vaults: Option<(Vec<String>, Arc<skate2_core::challenge::attrib_db::AttribDb>, Arc<EnvironmentLighting>)>,
     environment_resources: Option<Arc<wgpu::BindGroup>>,
     // Keys use archive collection identity, never the moving scene index.
     mesh_cache: BTreeMap<(u64, usize, usize), GpuMesh>,
@@ -245,6 +255,7 @@ impl Inspection {
             textures: Some(textures),
             streaming: None,
             hull_presentations: Vec::new(),
+            additional_world: None,
             proxy_textures: None,
             queue,
             focus,
@@ -270,6 +281,9 @@ impl Inspection {
             water_animation: Default::default(),
             diagnostic_techniques,
             environment: Arc::new(environment),
+            render_location: None,
+            loaded_environment: None,
+            location_vaults: None,
             environment_resources: None,
             mesh_cache: BTreeMap::new(),
             texture_cache: BTreeMap::new(),
@@ -308,6 +322,31 @@ impl Inspection {
     pub(crate) fn environment(&self) -> &Arc<EnvironmentLighting> {
         &self.environment
     }
+    /// `RenderMan::UpdateRenderParams` 0x82852780 each frame: a world render location other than
+    /// the one shown (`GetWorldRenderLocation`, the session's `cMsgSetWorldRenderLocation` key)
+    /// changes `m_RenderLocation`, read through every vault the game has loaded.
+    pub(crate) fn set_world_render_location(&mut self, mounts: &MountSet, location: Option<u64>) -> RenderResult<()> {
+        if self.render_location == location {
+            return Ok(());
+        }
+        let loaded = Arc::clone(self.loaded_environment.get_or_insert_with(|| Arc::clone(&self.environment)));
+        let vaults = skate2_core::dlc::vaults(mounts);
+        if location.is_some() && self.location_vaults.as_ref().is_none_or(|(read, ..)| *read != vaults) {
+            let db = crate::vault_database(mounts)?;
+            let extended = Arc::new(loaded.with_vault_collections(mounts, &db)?);
+            self.location_vaults = Some((vaults, db, extended));
+        }
+        let base = self.location_vaults.as_ref().map_or(loaded, |(.., extended)| Arc::clone(extended));
+        let located = match (location, self.location_vaults.as_ref()) {
+            (Some(key), Some((_, db, _))) => base.with_world_render_location(db, key)?.map(Arc::new),
+            _ => None,
+        };
+        eprintln!("render location: {}", location.map_or_else(|| "default".to_owned(), |key| format!(
+            "{key:016x}{}", if located.is_some() { "" } else { " (no render_locations collection: the default)" })));
+        self.environment = located.unwrap_or(base);
+        self.render_location = location;
+        Ok(())
+    }
     pub(crate) fn enable_city_streaming(
         &mut self,
         mounts: std::sync::Arc<MountSet>,
@@ -321,6 +360,19 @@ impl Inspection {
     /// The session's registered hull presentation collections for the next city update.
     pub(crate) fn set_hull_presentations(&mut self, hulls: Vec<skate2_core::presentation::HullPresentation>) {
         self.hull_presentations = hulls;
+    }
+    /// The additional world the session holds loaded, whose files the next city update selects
+    /// from.
+    pub(crate) fn set_additional_world(&mut self, world: Option<String>) {
+        self.additional_world = world;
+    }
+    /// The additional world the city streaming may still hold collections of.
+    pub(crate) fn additional_world_held(&self) -> Option<String> {
+        self.streaming.as_ref()?.additional_world().map(str::to_owned)
+    }
+    /// The additional world the city streaming selects from.
+    pub(crate) fn additional_world_selected(&self) -> Option<String> {
+        self.streaming.as_ref()?.selected_world().map(str::to_owned)
     }
     /// The presentation stream for the session's `IsAreaLoaded`; none while a streaming
     /// generation holds the scene.
@@ -380,10 +432,14 @@ impl Inspection {
     ) -> RenderResult<bool> {
         if disabled { return Err("Map travel cannot move a disabled stream focus".into()); }
         self.update_city_streaming_at(renderer, scene, position, disabled, xml_enabled)?;
+        // An additional world's location can select no texture collection: its Pres files carry
+        // its textures.
         Ok(self.pending_gpu.is_none()
             && self.streaming.as_ref().is_some_and(|stream| !stream.is_pending())
             && self.scene.as_ref().is_some_and(|scene| scene.focus == position && !scene.collections.is_empty())
-            && self.textures.as_ref().is_some_and(|textures| textures.focus == position && !textures.collections.is_empty()))
+            && self.textures.as_ref().is_some_and(|textures| textures.focus == position
+                && (!textures.collections.is_empty()
+                    || self.streaming.as_ref().is_some_and(|stream| stream.texture_selection_empty(position, xml_enabled)))))
     }
 
     fn update_city_streaming_at(&mut self, renderer: &GpuRenderer, scene: &mut GpuScene,
@@ -427,6 +483,7 @@ impl Inspection {
             disabled,
             xml_enabled,
             &self.hull_presentations,
+            self.additional_world.as_deref(),
         )?
         else {
             return Ok(());
@@ -571,6 +628,9 @@ impl RenderWindowClient for Inspection {
             }
             None => None,
         };
+        // UpdateWorldPainterAttribs 0x82848c08: the WorldPainter keys only with the location's
+        // use_worldpainter, else its references.
+        let keys = keys.filter(|_| self.environment.use_worldpainter);
         let light_direction = self
             .environment
             .light_direction_at(self.sun_sample_position.unwrap_or(view_position));
@@ -874,6 +934,10 @@ enum TextureIdentity {
     Proxy(u64),
     /// `PostFX`'s main render target.
     MainTarget,
+    /// A stand-in for a channel the material leaves out ([`TextureResolver::absent`]).
+    Absent(&'static str),
+    /// A resident 2D texture uploaded as a cube ([`TextureResolver::as_cube`]).
+    ResidentCube(bool, u64, usize, usize),
 }
 
 /// One original-effect material sampler set, by effect and channel textures.
@@ -907,9 +971,97 @@ struct TextureResolver<'a> {
     uploaded: BTreeMap<TextureSource, Result<(TextureIdentity, GpuTexture), String>>,
     used: BTreeSet<(bool, u64, usize, usize)>,
     uploads: usize,
+    absent: BTreeMap<&'static str, GpuTexture>,
+    cubes: BTreeMap<TextureSource, (TextureIdentity, GpuTexture)>,
 }
 
 impl TextureResolver<'_> {
+    /// A sampled channel the material leaves out (some downloadable content world and city
+    /// surfaces have no normal or specular map). The original binds nothing for it
+    /// (`DispatchParamsHelper` skips a null `cTextureParam`), so the sampler keeps whatever
+    /// texture an earlier draw left there and the surface is still lit and shadowed. The port
+    /// stands in a flat normal map or an unlit specular mask (PC); any other absent channel
+    /// keeps the diagnostic path.
+    /// A 2D texture where the effect samples a cube. Some downloadable content materials bind a
+    /// plain texture to `environment` (DLC_School's `Suburbs_roadway_crosswalk`: the 64x64
+    /// `arrow` texture). The original has no type check: its cube fetch reads the 2D fetch
+    /// constant, the same image for every face, and the surface stays lit and shadowed. The
+    /// port uploads the square image as all six faces (PC); a non-square one stays refused.
+    fn as_cube(&mut self, guid: u64) -> RenderResult<Result<(TextureIdentity, GpuTexture), String>> {
+        let Some(source) = self
+            .table
+            .find(guid)
+            .and_then(|(_, slot)| slot.active)
+            .or_else(|| {
+                self.table
+                    .find(skate2_formats::hash::rw_hash64_string("missingtexture.Texture"))
+                    .and_then(|(_, slot)| slot.active)
+            })
+        else {
+            return Ok(Err(format!("GUID {guid:016x} absent")));
+        };
+        if let Some(found) = self.cubes.get(&source) {
+            return Ok(Ok(found.clone()));
+        }
+        let (high, handle) = match source {
+            TextureSource::Proxy(_) => return Ok(Err("PROXY texture bound as a cube".to_owned())),
+            TextureSource::Presentation(handle) => (false, handle),
+            TextureSource::High(handle) => (true, handle),
+        };
+        let texture = if high {
+            self.textures.texture(handle)
+        } else {
+            self.scene
+                .resident_collection(handle.collection_index)
+                .and_then(|c| c.arenas.get(handle.arena_index))
+                .and_then(|a| a.textures.get(handle.texture_index))
+        }
+        .ok_or("bound texture handle lost its retained owner")?;
+        if texture.width != texture.height {
+            return Ok(Err(format!("{}x{} texture bound as a cube", texture.width, texture.height)));
+        }
+        let collection_id = if high {
+            self.textures.collections[handle.collection_index].id
+        } else {
+            self.scene
+                .resident_collection(handle.collection_index)
+                .ok_or("texture collection owner absent")?
+                .id
+        };
+        let mut cube = texture.clone();
+        cube.texture_type = skate2_formats::material::TextureType::Cube;
+        cube.linear_levels = texture
+            .linear_levels
+            .iter()
+            .flat_map(|level| {
+                (0..6).map(move |face| skate2_formats::material::LinearTextureLevel { face, ..level.clone() })
+            })
+            .collect();
+        let identity = TextureIdentity::ResidentCube(high, collection_id, handle.arena_index, handle.texture_index);
+        let result = self
+            .renderer
+            .upload_native_texture(&cube)
+            .map(|gpu| (identity, gpu))
+            .map_err(|error| error.to_string());
+        if let Ok(pair) = &result {
+            self.cubes.insert(source, pair.clone());
+        }
+        Ok(result)
+    }
+
+    fn absent(&mut self, name: &str) -> RenderResult<Option<(TextureIdentity, GpuTexture)>> {
+        let (key, bgra): (&'static str, [u8; 4]) = match name {
+            "normal" | "normal2" => ("normal", [255, 128, 128, 255]),
+            "specular" | "specular2" => ("specular", [0, 0, 0, 255]),
+            _ => return Ok(None),
+        };
+        if !self.absent.contains_key(key) {
+            let texture = self.renderer.upload_native_texture(&solid_texture(key, bgra))?;
+            self.absent.insert(key, texture);
+        }
+        Ok(Some((TextureIdentity::Absent(key), self.absent[key].clone())))
+    }
+
     /// Outer error: retained ownership broke. Inner error: why this channel
     /// cannot be decoded. A missing referenced GUID uses the original boot
     /// asset (TextureMan::AddMaterial8282c838). An entirely absent channel is
@@ -988,6 +1140,36 @@ impl TextureResolver<'_> {
     }
 }
 
+/// A 1x1 A8R8G8B8 texture of one colour, in the uploader's BGRA byte order.
+fn solid_texture(name: &str, bgra: [u8; 4]) -> skate2_core::texture::NativeTexture {
+    skate2_core::texture::NativeTexture {
+        dictionary_index: 0,
+        guid: 0,
+        name: format!("absent {name}"),
+        texture_type: skate2_formats::material::TextureType::TwoDimensional,
+        endian: skate2_formats::material::TextureEndian::None,
+        width: 1,
+        height: 1,
+        depth: 1,
+        mip_levels: 1,
+        pixel_format: skate2_formats::material::PIXEL_FORMAT_A8R8G8B8,
+        packed_mips: false,
+        mip_data_offset: 0,
+        encoded_data: bgra.to_vec(),
+        linear_levels: vec![skate2_formats::material::LinearTextureLevel {
+            level: 0,
+            face: 0,
+            width: 1,
+            height: 1,
+            width_in_blocks: 1,
+            height_in_blocks: 1,
+            bytes_per_block: 4,
+            row_pitch: 4,
+            data: bgra.to_vec(),
+        }],
+    }
+}
+
 /// Per-generation original-effect material bindings, reused across
 /// generations by texture identity.
 struct MaterialBindings<'a> {
@@ -1031,10 +1213,25 @@ fn environment_material(
             Some(PresentationMaterialValue::ScalarConstant(_)) => {
                 return Ok(Err(format!("{effect:?}: {name} is a scalar")));
             }
-            None => return Ok(Err(format!("{effect:?}: no {name} channel"))),
+            None => {
+                let Some((identity, texture)) = resolver.absent(name)? else {
+                    return Ok(Err(format!("{effect:?}: no {name} channel")));
+                };
+                identities.push(identity);
+                textures.push(texture);
+                continue;
+            }
         };
         match resolver.resolve(guid)? {
             Ok((identity, texture)) => {
+                let (identity, texture) = if name == "environment" && !texture.is_cube() {
+                    match resolver.as_cube(guid)? {
+                        Ok(cube) => cube,
+                        Err(reason) => return Ok(Err(format!("{effect:?}: {name} {reason}"))),
+                    }
+                } else {
+                    (identity, texture)
+                };
                 identities.push(identity);
                 textures.push(texture);
             }
@@ -1341,6 +1538,8 @@ impl MapBuild {
             uploaded: BTreeMap::new(),
             used: BTreeSet::new(),
             uploads: 0,
+            absent: BTreeMap::new(),
+            cubes: BTreeMap::new(),
         };
         let mut bindings = MaterialBindings {
             renderer,

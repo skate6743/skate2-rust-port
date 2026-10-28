@@ -11,8 +11,9 @@ use crate::moderation::{self, BanList, PanelKey};
 use crate::panel;
 use crate::protocol::{
     ClientMessage, GameAttributes, GameResult, LobbyInfo, MAX_LOBBIES, MAX_PLAYERS, Phase, PlayNow, PlayNowMode, PlayerInfo, PlayerStats,
-    ServerMessage, challenge, leave, play_now, refuse, request, reset, timer, valid_chat, valid_nickname,
+    ServerMessage, challenge, leave, play_now, proposal, refuse, request, reset, timer, valid_chat, valid_nickname,
 };
+use crate::stats;
 use crate::transport::{self, Endpoint, PROTOCOL_VERSION, kind, read_header};
 use crate::words::WordList;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -45,12 +46,20 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(90);
 const SYNC_TIMEOUT: Duration = Duration::from_secs(45);
 /// How long the results wait for a player's `GameComplete` and `GameResults`.
 const RESULTS_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a `Stalled` report counts (PC port addition): a round that still waits sends its
+/// report again every second, so an old report, from a wait that has ended, joins no later one.
+const STALL_REPORT_FRESH: Duration = Duration::from_secs(3);
 /// `GameTimer(DisplayResults)`: seconds the results board shows.
 const DISPLAY_RESULTS: u64 = 4;
 /// How long after `GameExitPostChallenge` the server waits for the host's next attributes.
 const NEXT_CHALLENGE_GRACE: Duration = Duration::from_secs(5);
 /// `GameChange`'s countdown before the game moves.
 const CHANGE_DELAY: Duration = Duration::from_secs(2);
+/// How long the members a freeskate activity is proposed to have to accept it.
+const PROPOSAL_TIME: Duration = Duration::from_secs(15);
+/// How long an accepted activity waits for the members still on their way into the game's world
+/// (who joined during the proposal), so that it starts with them.
+const ARRIVAL_WAIT: Duration = Duration::from_secs(5);
 /// The chat flood limit: the lines a member's chat may relay in any `CHAT_WINDOW`; more are
 /// dropped.
 const CHAT_LINES: usize = 5;
@@ -127,6 +136,11 @@ impl Bucket {
     }
 }
 
+/// A duration in whole milliseconds, as messages carry it.
+fn millis(duration: Duration) -> u32 {
+    u32::try_from(duration.as_millis()).unwrap_or(u32::MAX)
+}
+
 /// The next id of a counter that wraps, passing over 0 and the ids still in use: four billion
 /// connections or games on, the counter comes round to ids that may still be held.
 fn next_id(counter: &mut u32, in_use: impl Fn(u32) -> bool) -> u32 {
@@ -145,6 +159,9 @@ struct User {
     /// The game version its hello named, which the lobby browser's games match.
     version: String,
     game: Option<u32>,
+    /// The online challenges its build has (`Content`, PC port addition): matchmaking and the
+    /// lobby browser offer it only games at them. Before it says, every game.
+    content: Option<BTreeSet<u64>>,
 }
 
 #[derive(Debug)]
@@ -172,6 +189,8 @@ struct Member {
     name: String,
     slot: u8,
     recipe: Option<Arc<Vec<u8>>>,
+    /// When the server last took the member's recipe.
+    recipe_at: Option<Instant>,
     frames: FrameReceiver,
     /// What this member holds of each other member's frames, by their user id.
     holds: HashMap<u64, AckState>,
@@ -191,9 +210,26 @@ struct Member {
 enum GamePhase {
     LobbySkate,
     Loading { participants: Vec<u64>, loaded: BTreeSet<u64>, deadline: Instant },
-    Challenge { participants: Vec<u64>, rounds: BTreeMap<u32, (BTreeSet<u64>, Instant)>, complete: BTreeSet<u64>, results: BTreeMap<u64, GameResult>, all_complete: bool, deadline: Option<Instant> },
+    /// `stalls`: each participant's last `Stalled` report, the player and tick its round waits on,
+    /// and when it came.
+    Challenge { participants: Vec<u64>, rounds: BTreeMap<u32, (BTreeSet<u64>, Instant)>, complete: BTreeSet<u64>, results: BTreeMap<u64, GameResult>, all_complete: bool, deadline: Option<Instant>, stalls: BTreeMap<u64, (u64, u32, Instant)> },
     Results { participants: Vec<u64>, until: Instant },
     NextChallenge { participants: Vec<u64>, until: Instant },
+}
+
+/// A freeskate activity proposed in an online free skate (`Message_GameProposal`).
+#[derive(Debug)]
+struct Proposal {
+    activity: u64,
+    proposer: u64,
+    /// The members in the game's world as it was proposed: it starts once every one of them
+    /// still in the game has accepted it.
+    invited: BTreeSet<u64>,
+    accepted: BTreeSet<u64>,
+    deadline: Instant,
+    /// When every member it was proposed to had accepted: the start waits from then, at most
+    /// [`ARRIVAL_WAIT`], for the members still on their way into the game's world.
+    accepted_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -208,11 +244,26 @@ struct Game {
     /// matchmaking hide the game from them, and it takes none of them again, whatever name they
     /// come back under.
     kicked: BTreeSet<IpAddr>,
+    /// The freeskate activity proposed and not yet started or timed out.
+    proposal: Option<Proposal>,
+    /// The freeskate activity the challenge is, from its load until the game is back in lobby
+    /// skate: no matchmaking or lobby browser offers the game meanwhile.
+    activity: Option<u64>,
 }
 
 impl Game {
     fn host(&self) -> Option<u64> {
         self.members.first().map(|member| member.user_id)
+    }
+
+    /// The freeskate activity under way.
+    const fn activity(&self) -> Option<u64> {
+        self.activity
+    }
+
+    /// The members in the game's world, in join order.
+    fn in_world(&self) -> Vec<u64> {
+        self.members.iter().filter(|member| member.in_world).map(|member| member.user_id).collect()
     }
 
     fn member(&self, user_id: u64) -> Option<&Member> {
@@ -579,6 +630,11 @@ impl ServerCore {
                     self.send(id, &ServerMessage::PlayNowResult { result: play_now::NO_MATCH });
                 }
             }
+            ClientMessage::Content(challenges) if reliable => {
+                if let Some(user) = self.connections.get_mut(&id).and_then(|connection| connection.user.as_mut()) {
+                    user.content = Some(challenges.into_iter().collect());
+                }
+            }
             ClientMessage::LeaveGame => self.leave_game(id, leave::QUIT, now),
             ClientMessage::Ping { time } if !reliable => self.send_unreliable(id, &ServerMessage::Pong { time }),
             ClientMessage::Frames(run) => {
@@ -625,7 +681,7 @@ impl ServerCore {
         let name = nickname.to_owned();
         (self.log)(&format!("connection {id} signed in as {name} ({user_id:016x})"));
         if let Some(connection) = self.connections.get_mut(&id) {
-            connection.user = Some(User { id: user_id, name, version: version.to_owned(), game: None });
+            connection.user = Some(User { id: user_id, name, version: version.to_owned(), game: None, content: None });
         }
         self.send(id, &ServerMessage::Welcome { user_id });
     }
@@ -639,7 +695,7 @@ impl ServerCore {
     /// picked. A free skate or private game is never ranked (`DoPlayNow` 0x827736b8). The search
     /// must be of the player's own version, a free skate searched as one and a challenge as one;
     /// a game with no one in it is never offered, nor one whose host kicked a player from the
-    /// searcher's address (PC port addition).
+    /// searcher's address, nor one playing a freeskate activity (PC port addition).
     fn play_now(&mut self, id: u32, user_id: u64, play: &PlayNow, now: Instant) {
         let Some(version) = self.connections.get(&id).and_then(|c| c.user.as_ref()).map(|user| user.version.clone()) else { return };
         let Some(address) = self.address(id) else { return };
@@ -659,6 +715,7 @@ impl ServerCore {
             self.leave_game(id, leave::QUIT, now);
         }
         let ranked = play.ranked && !play.private && !free_skate;
+        let content = self.connections.get(&id).and_then(|c| c.user.as_ref()).and_then(|user| user.content.as_ref());
         let found = if play.create || play.private {
             None
         } else {
@@ -674,6 +731,8 @@ impl ServerCore {
                         && !game.members.is_empty()
                         && !game.full()
                         && !game.kicked.contains(&address)
+                        && game.activity.is_none()
+                        && content.is_none_or(|content| content.contains(&attributes.challenge_key))
                         && match play.mode {
                             PlayNowMode::Quick => ranked || attributes.challenge_type != challenge::ONLINE_FREE_SKATE,
                             PlayNowMode::Custom | PlayNowMode::Freeskate => {
@@ -714,6 +773,8 @@ impl ServerCore {
                         session,
                         change: None,
                         kicked: BTreeSet::new(),
+                        proposal: None,
+                        activity: None,
                     },
                 );
                 (self.log)(&format!("game {game} created: type {} challenge {location:016x}", play.challenge_type));
@@ -724,25 +785,31 @@ impl ServerCore {
     }
 
     /// Whether the lobby browser lists a game to a player of `version` at `address`: public,
-    /// unranked, of the version, wherever a location change is taking it, and not one whose host
-    /// kicked a player from the address.
-    fn listed(game: &Game, version: &str, address: IpAddr) -> Option<GameAttributes> {
+    /// unranked, of the version, wherever a location change is taking it, not one whose host
+    /// kicked a player from the address, with no freeskate activity under way, and at a challenge
+    /// the player's build has (`content`, PC port addition).
+    fn listed(game: &Game, version: &str, address: IpAddr, content: Option<&BTreeSet<u64>>) -> Option<GameAttributes> {
         let attributes = game.upcoming_attributes();
         (attributes.game_version == version
             && !attributes.private
             && !attributes.ranked
             && !game.members.is_empty()
-            && !game.kicked.contains(&address))
+            && !game.kicked.contains(&address)
+            && game.activity.is_none()
+            && content.is_none_or(|content| content.contains(&attributes.challenge_key)))
         .then_some(attributes)
     }
 
     /// The lobby browser's listing (PC port addition): every game it lists to the player, the
     /// ones with room first, then the fuller and the older.
     fn lobbies(&self, id: u32) -> Vec<LobbyInfo> {
-        let Some(version) = self.connections.get(&id).and_then(|c| c.user.as_ref()).map(|user| user.version.as_str()) else { return Vec::new() };
+        let Some(user) = self.connections.get(&id).and_then(|c| c.user.as_ref()) else { return Vec::new() };
         let Some(address) = self.address(id) else { return Vec::new() };
-        let mut lobbies: Vec<(&Game, GameAttributes)> =
-            self.games.values().filter_map(|game| Some((game, Self::listed(game, version, address)?))).collect();
+        let mut lobbies: Vec<(&Game, GameAttributes)> = self
+            .games
+            .values()
+            .filter_map(|game| Some((game, Self::listed(game, &user.version, address, user.content.as_ref())?)))
+            .collect();
         lobbies.sort_by_key(|(game, _)| (game.full(), std::cmp::Reverse(game.members.len()), game.id));
         lobbies
             .into_iter()
@@ -767,9 +834,9 @@ impl ServerCore {
         if self.game_of(id).is_some() {
             self.leave_game(id, leave::QUIT, now);
         }
-        let Some(version) = self.connections.get(&id).and_then(|c| c.user.as_ref()).map(|user| user.version.clone()) else { return };
+        let Some((version, content)) = self.connections.get(&id).and_then(|c| c.user.as_ref()).map(|user| (user.version.clone(), user.content.clone())) else { return };
         let Some(address) = self.address(id) else { return };
-        let full = self.games.get(&game_id).filter(|game| Self::listed(game, &version, address).is_some()).map(Game::full);
+        let full = self.games.get(&game_id).filter(|game| Self::listed(game, &version, address, content.as_ref()).is_some()).map(Game::full);
         match full {
             None => self.send(id, &ServerMessage::PlayNowResult { result: play_now::NO_MATCH }),
             Some(true) => self.send(id, &ServerMessage::PlayNowResult { result: play_now::FULL }),
@@ -803,6 +870,7 @@ impl ServerCore {
             name: name.clone(),
             slot,
             recipe: None,
+            recipe_at: None,
             frames: FrameReceiver::default(),
             holds: HashMap::new(),
             acked_own: None,
@@ -821,6 +889,14 @@ impl ServerCore {
         };
         let recipes: Vec<(u64, Arc<Vec<u8>>)> =
             game.members.iter().filter_map(|member| Some((member.user_id, Arc::clone(member.recipe.as_ref()?)))).collect();
+        // A freeskate activity being proposed is shown to the joiner too, whom it takes if its
+        // skater is in the game's world by the start.
+        let pending = game.proposal.as_ref().map(|pending| ServerMessage::GameProposal {
+            kind: proposal::BROADCAST,
+            activity: pending.activity,
+            user_id: pending.proposer,
+            timeout: millis(pending.deadline.saturating_duration_since(now)),
+        });
         if let Some(connection) = self.connections.get_mut(&id)
             && let Some(user) = connection.user.as_mut()
         {
@@ -830,6 +906,9 @@ impl ServerCore {
         self.send(id, &joined);
         for (owner, data) in recipes {
             self.send(id, &ServerMessage::Recipe { user_id: owner, data: data.to_vec() });
+        }
+        if let Some(pending) = pending {
+            self.send(id, &pending);
         }
         self.broadcast(game_id, &ServerMessage::PlayerJoin(PlayerInfo { user_id, slot, name: name.clone() }), Some(user_id));
         (self.log)(&format!("{name} joined game {game_id} in slot {slot}"));
@@ -874,17 +953,25 @@ impl ServerCore {
 
     fn game_message(&mut self, game_id: u32, user_id: u64, message: ClientMessage, now: Instant) {
         match message {
-            // The game sends its skater once a game; another would only make every member build
-            // a skater again.
+            // The game sends its skater as it enters the world, and again as the player leaves the
+            // pre-game Edit Skater (PC port addition): the new one replaces it for every member
+            // and for later joiners. One closer than RECIPE_SPACING to the last is dropped, so no
+            // member can keep the others building skaters.
             ClientMessage::Recipe(data) => {
                 let data = Arc::new(data);
                 let Some(member) = self.games.get_mut(&game_id).and_then(|game| game.member_mut(user_id)) else { return };
-                if member.recipe.is_some() {
+                if member.recipe_at.is_some_and(|at| now.saturating_duration_since(at) < RECIPE_SPACING) {
                     return;
                 }
-                member.recipe = Some(Arc::clone(&data));
+                let changed = member.recipe.replace(Arc::clone(&data)).is_some();
+                member.recipe_at = Some(now);
+                let name = member.name.clone();
                 self.broadcast(game_id, &ServerMessage::Recipe { user_id, data: data.to_vec() }, Some(user_id));
-                self.mark_in_world(game_id, user_id);
+                if changed {
+                    (self.log)(&format!("{name} changed skater in game {game_id}"));
+                } else {
+                    self.mark_in_world(game_id, user_id);
+                }
             }
             ClientMessage::Chat(text) => self.chat(game_id, user_id, text, now),
             ClientMessage::GameRequest { request, value } => self.game_request(game_id, user_id, request, value, now),
@@ -893,15 +980,19 @@ impl ServerCore {
                     self.next_challenge(game_id, Some(attributes), now);
                 }
             }
+            // No change of location while a freeskate activity is proposed (`HubStateOnlineHost::
+            // OnEvent` offers Host Options only without a proposal).
             ClientMessage::RequestChange { challenge_type, challenge_key } => {
                 let Some(game) = self.games.get_mut(&game_id) else { return };
-                if game.host() != Some(user_id) || !matches!(game.phase, GamePhase::LobbySkate) || game.change.is_some() {
+                if game.host() != Some(user_id) || !matches!(game.phase, GamePhase::LobbySkate) || game.change.is_some() || game.proposal.is_some() {
                     return;
                 }
                 game.change = Some((challenge_type, challenge_key, now + CHANGE_DELAY));
-                let delay = u32::try_from(CHANGE_DELAY.as_millis()).unwrap_or(u32::MAX);
+                let delay = millis(CHANGE_DELAY);
                 self.broadcast(game_id, &ServerMessage::GameChange { challenge_type, challenge_key, delay }, None);
             }
+            ClientMessage::GameProposal { kind: proposal::PROPOSE, activity } => self.propose_activity(game_id, user_id, activity, now),
+            ClientMessage::GameProposal { kind: proposal::ACCEPT, activity } => self.accept_activity(game_id, user_id, activity, now),
             ClientMessage::ChallengeLoaded => {
                 if let Some(GamePhase::Loading { participants, loaded, .. }) = self.games.get_mut(&game_id).map(|game| &mut game.phase)
                     && participants.contains(&user_id)
@@ -956,8 +1047,41 @@ impl ServerCore {
                 self.broadcast(game_id, &ServerMessage::ChallengeLeave { user_id }, None);
                 self.remove_participant(game_id, user_id, now);
             }
+            ClientMessage::Stalled { user_id: stalled, tick } => self.stalled(game_id, user_id, stalled, tick, now),
             _ => {}
         }
+    }
+
+    /// A S.K.A.T.E. participant's report that its round waits for another's facts at a tick (PC
+    /// port addition): once every other participant, at least two of them, has reported the same
+    /// player at the same tick within [`STALL_REPORT_FRESH`], that player's game has parted from
+    /// theirs (whose set trick a player copied decides whose turn comes next, so a game that
+    /// parted holds every round), and the challenge goes on without the player as after Leave
+    /// Challenge. Each participant counts once, by the connection it signed in on. Every console
+    /// then disconnects the player at the same tick: the facts the player sent before reach every
+    /// one of them ahead of the leave, and none after it.
+    fn stalled(&mut self, game_id: u32, reporter: u64, stalled: u64, tick: u32, now: Instant) {
+        let Some(game) = self.games.get_mut(&game_id) else { return };
+        if game.attributes.challenge_type != challenge::SKATE {
+            return;
+        }
+        let GamePhase::Challenge { participants, stalls, .. } = &mut game.phase else { return };
+        if reporter == stalled || !participants.contains(&reporter) || !participants.contains(&stalled) {
+            return;
+        }
+        stalls.insert(reporter, (stalled, tick, now));
+        let others: Vec<u64> = participants.iter().copied().filter(|&participant| participant != stalled).collect();
+        let waiting = |participant: &u64| {
+            stalls.get(participant).is_some_and(|&(player, at, when)| player == stalled && at == tick && now.saturating_duration_since(when) <= STALL_REPORT_FRESH)
+        };
+        if others.len() < 2 || !others.iter().all(waiting) {
+            return;
+        }
+        stalls.clear();
+        let name = game.member(stalled).map(|member| member.name.clone()).unwrap_or_default();
+        (self.log)(&format!("{name} left game {game_id}'s challenge: every other player's round waited on their facts at tick {tick}"));
+        self.broadcast(game_id, &ServerMessage::ChallengeLeave { user_id: stalled }, None);
+        self.remove_participant(game_id, stalled, now);
     }
 
     /// A member is in the game's world once the server holds both its recipe and a replay frame,
@@ -1036,14 +1160,15 @@ impl ServerCore {
             return;
         }
         match kind {
-            // FrontEndState_OnlineHubMenu::GoToStartChallenge 0x826617a0: two participants, the
-            // members in the game's world; one still on its way in stays in lobby skate, apart.
-            // No challenge starts while the location changes.
+            // FrontEndState_OnlineHubMenu::GoToStartChallenge 0x826617a0: two participants (one
+            // for Spot Battle and Hall of Meat, `challenge::min_participants`), the members in the
+            // game's world; one still on its way in stays in lobby skate, apart. No challenge
+            // starts while the location changes.
             request::START_GAME => {
                 let Some(game) = self.games.get_mut(&game_id) else { return };
                 let participants: Vec<u64> = game.members.iter().filter(|member| member.in_world).map(|member| member.user_id).collect();
                 if !matches!(game.phase, GamePhase::LobbySkate)
-                    || participants.len() < 2
+                    || participants.len() < challenge::min_participants(game.attributes.challenge_type)
                     || game.attributes.challenge_type == challenge::ONLINE_FREE_SKATE
                     || game.change.is_some()
                 {
@@ -1055,7 +1180,7 @@ impl ServerCore {
                 let slots = game.slots(&participants);
                 game.phase = GamePhase::Loading { participants, loaded: BTreeSet::new(), deadline: now + LOAD_TIMEOUT };
                 (self.log)(&format!("game {game_id}: challenge {session} loading"));
-                self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOAD_CHALLENGE, seed, session, participants: slots }, None);
+                self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOAD_CHALLENGE, seed, session, participants: slots, activity: 0 }, None);
             }
             request::CHANGE_PRIVATE_STATUS => {
                 let Some(game) = self.games.get_mut(&game_id) else { return };
@@ -1088,6 +1213,104 @@ impl ServerCore {
         }
     }
 
+    /// `GoToStartFreeskateActivity` 0x8266c728's `Message_GameProposal(PT_Propose)` (PC port
+    /// addition: the original's game server is not in the game): in an online free skate's lobby
+    /// skate, with no change of location counting down, no activity proposed and at least two
+    /// members in its world, the proposer one of them, the activity is proposed to every member in
+    /// its world (`PT_Broadcast`, with the time left to accept), the proposer having accepted.
+    fn propose_activity(&mut self, game_id: u32, user_id: u64, activity: u64, now: Instant) {
+        let Some(game) = self.games.get_mut(&game_id) else { return };
+        let invited: BTreeSet<u64> = game.in_world().into_iter().collect();
+        if game.proposal.is_some() {
+            return;
+        }
+        if game.attributes.challenge_type != challenge::ONLINE_FREE_SKATE
+            || !matches!(game.phase, GamePhase::LobbySkate)
+            || game.change.is_some()
+            || activity == 0
+            || !invited.contains(&user_id)
+            || invited.len() < 2
+        {
+            // The proposer hears its proposal went nowhere, as one no one accepted does; with
+            // another under way it hears that one's broadcast instead.
+            if let Some(connection) = game.member(user_id).map(|member| member.connection) {
+                self.send(connection, &ServerMessage::GameProposal { kind: proposal::TIMEOUT, activity, user_id: 0, timeout: 0 });
+            }
+            return;
+        }
+        let name = game.member(user_id).map(|member| member.name.clone()).unwrap_or_default();
+        game.proposal = Some(Proposal {
+            activity,
+            proposer: user_id,
+            invited,
+            accepted: BTreeSet::from([user_id]),
+            deadline: now + PROPOSAL_TIME,
+            accepted_at: None,
+        });
+        (self.log)(&format!("{name} proposed the activity {} in game {game_id}", stats::challenge_name(activity)));
+        let message = ServerMessage::GameProposal { kind: proposal::BROADCAST, activity, user_id, timeout: millis(PROPOSAL_TIME) };
+        self.broadcast(game_id, &message, None);
+    }
+
+    /// `PT_Accept` of the proposed activity: every member hears who accepted it
+    /// (`ID_ONLINE_EVENT_FREESKATE_ACCEPTED`), and it starts once every member it was proposed to
+    /// has.
+    fn accept_activity(&mut self, game_id: u32, user_id: u64, activity: u64, now: Instant) {
+        let Some(game) = self.games.get_mut(&game_id) else { return };
+        let Some(pending) = game.proposal.as_mut().filter(|pending| pending.activity == activity) else { return };
+        if !pending.accepted.insert(user_id) {
+            return;
+        }
+        let message = ServerMessage::GameProposal { kind: proposal::ACCEPT, activity, user_id, timeout: 0 };
+        self.broadcast(game_id, &message, None);
+        self.advance(game_id, now);
+    }
+
+    /// The proposed activity in lobby skate: the members it was proposed to who left no longer
+    /// count; it ends unstarted (`PT_Timeout`) once its time runs out, its proposer leaves or
+    /// fewer than two members are in the game's world. Once every member it was proposed to has
+    /// accepted, it loads for every member in the game's world, waiting at most [`ARRIVAL_WAIT`]
+    /// for those on their way in; a member not in it by then missed it (`PT_Missed`).
+    fn advance_proposal(&mut self, game_id: u32, now: Instant) {
+        let Some(game) = self.games.get_mut(&game_id) else { return };
+        if !matches!(game.phase, GamePhase::LobbySkate) {
+            return;
+        }
+        let in_world = game.in_world();
+        let arriving = game.members.iter().any(|member| !member.in_world);
+        let Some(pending) = game.proposal.as_mut() else { return };
+        pending.invited.retain(|invited| game.members.iter().any(|member| member.user_id == *invited));
+        let accepted = pending.invited.iter().all(|invited| pending.accepted.contains(invited));
+        let activity = pending.activity;
+        let over = !in_world.contains(&pending.proposer) || in_world.len() < 2 || (!accepted && now >= pending.deadline);
+        if over {
+            game.proposal = None;
+            (self.log)(&format!("game {game_id}: the activity {} was not accepted", stats::challenge_name(activity)));
+            self.broadcast(game_id, &ServerMessage::GameProposal { kind: proposal::TIMEOUT, activity, user_id: 0, timeout: 0 }, None);
+            return;
+        }
+        if !accepted {
+            return;
+        }
+        let since = *pending.accepted_at.get_or_insert(now);
+        if arriving && now.saturating_duration_since(since) < ARRIVAL_WAIT {
+            return;
+        }
+        game.proposal = None;
+        game.activity = Some(activity);
+        let seed = self.random.next_u32();
+        game.session = game.session.wrapping_add(1);
+        let session = game.session;
+        let slots = game.slots(&in_world);
+        let missed: Vec<u32> = game.members.iter().filter(|member| !in_world.contains(&member.user_id)).map(|member| member.connection).collect();
+        game.phase = GamePhase::Loading { participants: in_world, loaded: BTreeSet::new(), deadline: now + LOAD_TIMEOUT };
+        (self.log)(&format!("game {game_id}: the activity {} loading ({session})", stats::challenge_name(activity)));
+        self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOAD_CHALLENGE, seed, session, participants: slots, activity }, None);
+        for connection in missed {
+            self.send(connection, &ServerMessage::GameProposal { kind: proposal::MISSED, activity, user_id: 0, timeout: 0 });
+        }
+    }
+
     /// A participant left: the barriers stop waiting for them.
     fn remove_participant(&mut self, game_id: u32, user_id: u64, now: Instant) {
         if let Some(game) = self.games.get_mut(&game_id) {
@@ -1096,13 +1319,15 @@ impl ServerCore {
                     participants.retain(|participant| *participant != user_id);
                     loaded.remove(&user_id);
                 }
-                GamePhase::Challenge { participants, rounds, complete, results, .. } => {
+                GamePhase::Challenge { participants, rounds, complete, results, stalls, .. } => {
                     participants.retain(|participant| *participant != user_id);
                     for (arrived, _) in rounds.values_mut() {
                         arrived.remove(&user_id);
                     }
                     complete.remove(&user_id);
                     results.remove(&user_id);
+                    stalls.remove(&user_id);
+                    stalls.retain(|_, &mut (stalled, _, _)| stalled != user_id);
                 }
                 GamePhase::Results { participants, .. } | GamePhase::NextChallenge { participants, .. } => {
                     participants.retain(|participant| *participant != user_id);
@@ -1116,6 +1341,7 @@ impl ServerCore {
     /// Moves a game on once its barrier is met or timed out.
     fn advance(&mut self, game_id: u32, now: Instant) {
         let Some(game) = self.games.get_mut(&game_id) else { return };
+        let fewest = challenge::min_participants(game.attributes.challenge_type);
         match &mut game.phase {
             GamePhase::Loading { participants, loaded, deadline } => {
                 let everyone = participants.iter().all(|participant| loaded.contains(participant));
@@ -1123,17 +1349,19 @@ impl ServerCore {
                     return;
                 }
                 participants.retain(|participant| loaded.contains(participant));
-                if participants.len() < 2 {
+                if participants.len() < fewest {
                     (self.log)(&format!("game {game_id}: challenge cancelled, too few players loaded"));
                     game.phase = GamePhase::LobbySkate;
+                    game.activity = None;
                     let session = game.session;
-                    self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOBBY_SKATE, seed: 0, session, participants: [0; MAX_PLAYERS] }, None);
+                    self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOBBY_SKATE, seed: 0, session, participants: [0; MAX_PLAYERS], activity: 0 }, None);
                     return;
                 }
                 let participants = std::mem::take(participants);
                 let slots = game.slots(&participants);
                 let seed = self.random.next_u32();
                 let session = game.session;
+                let activity = game.activity.unwrap_or(0);
                 game.phase = GamePhase::Challenge {
                     participants,
                     rounds: BTreeMap::new(),
@@ -1141,16 +1369,18 @@ impl ServerCore {
                     results: BTreeMap::new(),
                     all_complete: false,
                     deadline: None,
+                    stalls: BTreeMap::new(),
                 };
                 (self.log)(&format!("game {game_id}: challenge {session} started"));
-                self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::CHALLENGE, seed, session, participants: slots }, None);
+                self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::CHALLENGE, seed, session, participants: slots, activity }, None);
             }
-            GamePhase::Challenge { participants, rounds, complete, results, all_complete, deadline } => {
+            GamePhase::Challenge { participants, rounds, complete, results, all_complete, deadline, .. } => {
                 if participants.is_empty() {
                     (self.log)(&format!("game {game_id}: challenge {} ended, every participant left it", game.session));
                     game.phase = GamePhase::LobbySkate;
+                    game.activity = None;
                     let session = game.session;
-                    self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOBBY_SKATE, seed: 0, session, participants: [0; MAX_PLAYERS] }, None);
+                    self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOBBY_SKATE, seed: 0, session, participants: [0; MAX_PLAYERS], activity: 0 }, None);
                     return;
                 }
                 let released: Vec<u32> = rounds
@@ -1217,8 +1447,9 @@ impl ServerCore {
                     let attributes = game.attributes.clone();
                     let session = game.session;
                     self.broadcast(game_id, &ServerMessage::GameAttributes(attributes), None);
-                    self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOBBY_SKATE, seed: 0, session, participants: [0; MAX_PLAYERS] }, None);
+                    self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOBBY_SKATE, seed: 0, session, participants: [0; MAX_PLAYERS], activity: 0 }, None);
                 }
+                self.advance_proposal(game_id, now);
             }
         }
     }
@@ -1236,16 +1467,20 @@ impl ServerCore {
             game.attributes.challenge_key = attributes.challenge_key;
         }
         game.phase = GamePhase::LobbySkate;
+        game.activity = None;
         let attributes = game.attributes.clone();
         let session = game.session;
         self.broadcast(game_id, &ServerMessage::GameAttributes(attributes), None);
-        self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOBBY_SKATE, seed: 0, session, participants: [0; MAX_PLAYERS] }, None);
+        self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOBBY_SKATE, seed: 0, session, participants: [0; MAX_PLAYERS], activity: 0 }, None);
     }
 
     /// A player's run of frames: kept as baselines, then coded for each other player against the
     /// frames that player holds. Until the server holds the player's recipe its runs go nowhere and
     /// are not acknowledged: the game sends its recipe with its first runs, and no one could show
-    /// the skater without it.
+    /// the skater without it. Every member sees every other (PC port addition): from a
+    /// challenge's load until the game is back in lobby skate, its participants and the members in
+    /// lobby skate (who joined during it, were not yet in the world at its start, did not load it,
+    /// or left it) each show the other side as ghosts, where the original showed neither the other.
     fn relay_frames(&mut self, id: u32, user_id: u64, run: &crate::frames::EncodedRun, now: Instant) {
         let Some(game_id) = self.game_of(id) else { return };
         let Some(game) = self.games.get_mut(&game_id) else { return };
@@ -1385,7 +1620,28 @@ impl ServerCore {
                 let outcome = self.moderation_action(action, now);
                 let _ = reply.send(outcome);
             }
+            panel::Request::Stats(reply) => {
+                let _ = reply.send(self.public_stats());
+            }
         }
+    }
+
+    /// The public statistics (PC port addition): how many players are signed in, and every game
+    /// that is not private with its players' nicknames in join order, oldest game first.
+    fn public_stats(&self) -> stats::Stats {
+        let games = self
+            .games
+            .values()
+            .filter(|game| !game.attributes.private && !game.members.is_empty())
+            .map(|game| stats::PublicGame {
+                challenge_type: game.attributes.challenge_type,
+                challenge_key: game.attributes.challenge_key,
+                activity: game.activity(),
+                in_progress: !matches!(game.phase, GamePhase::LobbySkate),
+                players: game.members.iter().map(|member| member.name.clone()).collect(),
+            })
+            .collect();
+        stats::Stats { players_online: self.players(), games }
     }
 
     /// The signed-in players, by name, and the bans in force.
@@ -1491,6 +1747,9 @@ impl ServerCore {
 
 /// How long a member may send neither a replay frame nor `Busy` before it is kicked.
 const INACTIVITY: Duration = Duration::from_secs(2);
+
+/// How long after a member's recipe the server takes another of it.
+const RECIPE_SPACING: Duration = Duration::from_secs(2);
 
 /// How often the ban lists' files are looked at for changes made by hand.
 const BAN_CHECK: Duration = Duration::from_secs(1);
@@ -1650,37 +1909,42 @@ pub fn run(config: &ServerConfig) -> std::io::Result<()> {
     }
 }
 
-/// Opens the moderation panel at the server's address when `server-config.json` names its port
-/// and `moderation-key.txt` holds a key: the requests it sends the server's loop.
+/// Opens the moderation panel at the server's address when `server-config.json` names its port,
+/// with the public statistics; without a key in `moderation-key.txt` only the statistics: the
+/// requests it sends the server's loop.
 fn start_panel(bind: SocketAddr, folder: &Path, console: &Console) -> Option<std::sync::mpsc::Receiver<panel::Request>> {
     let config = folder.join(moderation::CONFIG_FILE);
     let port = match moderation::panel_port(&config) {
         Ok(Some(port)) => port,
         Ok(None) => {
-            console.line(&format!("moderation panel: off, as {} names no moderation_panel_port", config.display()));
+            console.line(&format!("moderation panel and server stats: off, as {} names no moderation_panel_port", config.display()));
             return None;
         }
         Err(why) => {
-            console.line(&format!("moderation panel: off, as {why}"));
+            console.line(&format!("moderation panel and server stats: off, as {why}"));
             return None;
         }
     };
     let key = match PanelKey::read(&folder.join(moderation::KEY_FILE)) {
-        Ok(key) => key,
+        Ok(key) => Some(key),
         Err(why) => {
             console.line(&format!("moderation panel: off, as {why}"));
-            return None;
+            None
         }
     };
+    let panel_on = key.is_some();
     let (requests, receiver) = std::sync::mpsc::channel();
     let log = console.clone();
     match panel::start(SocketAddr::new(bind.ip(), port), key, requests, Arc::new(move |line: &str| log.line(line))) {
         Ok(address) => {
-            console.line(&format!("moderation panel on http://{address}{}?key=<the key in {}>", panel::PATH, moderation::KEY_FILE));
+            if panel_on {
+                console.line(&format!("moderation panel on http://{address}{}?key=<the key in {}>", panel::PATH, moderation::KEY_FILE));
+            }
+            console.line(&format!("server stats on http://{address}{}", panel::STATS_PATH));
             Some(receiver)
         }
         Err(error) => {
-            console.line(&format!("moderation panel: off, as it could not start on port {port} ({error})"));
+            console.line(&format!("moderation panel and server stats: off, as they could not start on port {port} ({error})"));
             None
         }
     }

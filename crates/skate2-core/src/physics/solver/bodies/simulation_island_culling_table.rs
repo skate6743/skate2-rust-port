@@ -227,3 +227,25 @@ mod tests {
         assert!(culled(&table, 4, 6) && culled(&table, 6, 4));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn culled(table: &BitTable, row: u32, column: u32) -> bool {
+        let index = table.columns * row + column;
+        table.words[(index >> 5) as usize] & (1 << (index & 31)) != 0
+    }
+
+    /// Groups 4 (a skateboard) and 7 (an off-board Skeleton): an online game's island culls
+    /// them, an off-board skater's own board included; a single player game's collides them.
+    #[test]
+    fn an_online_island_keeps_off_board_skaters_off_boards() {
+        let single = island_culling_table(FLAG_BOTH);
+        let online = island_culling_table(1);
+        for (a, b) in [(4, 7), (7, 4), (4, 4), (7, 7)] {
+            assert!(!culled(&single, a, b), "({a}, {b}) collides in a single player game");
+            assert!(culled(&online, a, b), "({a}, {b}) is culled online");
+        }
+    }
+}

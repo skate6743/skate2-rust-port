@@ -16,10 +16,15 @@ use crate::{presentation_restore::{PresentationSubmission,skater::SkaterFrame},
 use skate2_formats::{ice_camera::editor::EditableTake,mount::MountSet};
 use std::{collections::BTreeMap,sync::Arc};
 
-const MAGIC:&[u8;8]=b"SK2PCR01";
+/// Version 2 adds the world location (`SerializeReplayDataToDataBuffer` writes
+/// `sGameInfo.additionalWorldLocation`); a version 1 archive plays in the main world.
+const MAGIC:&[u8;8]=b"SK2PCR02";
+const MAGIC_V1:&[u8;8]=b"SK2PCR01";
 pub(super) struct Archive {
     pub take:EditableTake,
     pub film_pack:bool,
+    /// The `fe_locations` key of the additional world the footage was recorded in.
+    pub world_location:Option<u64>,
     pub hull_states:Vec<u8>,
     pub index:ReplaySystem,
     pub frames:BTreeMap<u32,Arc<ReplayFrame>>,
@@ -105,7 +110,7 @@ fn get_frame(r:&mut Reader<'_>,c:&mut Loaded)->Result<ReplayFrame> {
         world:RecordedWorld {dynamic_objects,vehicles,pedestrians,traffic_lights:Store::get(r)?},local_skater,players_recipe})
 }
 
-pub(super) fn encode(take:&EditableTake,film_pack:bool,hull_states:Vec<u8>,
+pub(super) fn encode(take:&EditableTake,film_pack:bool,world_location:Option<u64>,hull_states:Vec<u8>,
     index:&ReplaySystem,frames:&BTreeMap<u32,Arc<ReplayFrame>>)->Result<Vec<u8>> {
     let mut catalog=Catalog::default();let mut payload=Writer::default();
     index.num_frames_tracked().put(&mut payload);
@@ -114,7 +119,8 @@ pub(super) fn encode(take:&EditableTake,film_pack:bool,hull_states:Vec<u8>,
         put_frame(frames.get(&frame).ok_or("save replay frame missing")?,&mut payload,&mut catalog)?;
     }
     let mut output=Writer(MAGIC.to_vec());take.serialize().put(&mut output);
-    film_pack.put(&mut output);hull_states.put(&mut output);catalog.put(&mut output)?;
+    film_pack.put(&mut output);world_location.unwrap_or(u64::MAX).put(&mut output);
+    hull_states.put(&mut output);catalog.put(&mut output)?;
     output.0.extend_from_slice(&payload.0);
     let crc=skate2_formats::skater_profile::native_crc(&output.0);crc.put(&mut output);
     Ok(output.0)
@@ -123,9 +129,12 @@ pub(super) fn decode(data:&[u8],mounts:&MountSet,vault:&Arc<AttributeRuntimeVaul
     let length=data.len().checked_sub(4).ok_or("truncated replay header")?;
     let crc=u32::from_be_bytes(data[length..].try_into().map_err(|_|"replay checksum length")?);
     if skate2_formats::skater_profile::native_crc(&data[..length])!=crc {return Err("replay checksum mismatch".into());}
-    let mut r=Reader::new(&data[..length]);if r.bytes(8)?!=MAGIC {return Err("unsupported replay archive version".into());}
+    let mut r=Reader::new(&data[..length]);
+    let magic=r.bytes(8)?;
+    let located=if magic==MAGIC {true} else if magic==MAGIC_V1 {false} else {return Err("unsupported replay archive version".into())};
     let take=EditableTake::parse(&Vec::<u8>::get(&mut r)?)?;
     let film_pack=bool::get(&mut r)?;
+    let world_location=if located {Some(u64::get(&mut r)?).filter(|&key|key!=u64::MAX)} else {None};
     let hull_states=Vec::<u8>::get(&mut r)?;
     if hull_states.len()<12 || u32::from_be_bytes(hull_states[..4].try_into().unwrap())!=3
         || u32::from_be_bytes(hull_states[8..12].try_into().unwrap()) as usize>(hull_states.len()-12)/12 {
@@ -149,5 +158,5 @@ pub(super) fn decode(data:&[u8],mounts:&MountSet,vault:&Arc<AttributeRuntimeVaul
     let span=(index.last_frame_number_written()-index.oldest_frame_number_written()) as f32*(1.0/60.0);
     if take.length()!=span.max(1.5) {return Err("replay edit track does not match recorded frame span".into());}
     if r.offset!=r.data.len() {return Err("trailing replay data".into());}
-    Ok(Archive {take,film_pack,hull_states,index,frames})
+    Ok(Archive {take,film_pack,world_location,hull_states,index,frames})
 }

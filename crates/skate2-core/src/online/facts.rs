@@ -87,6 +87,11 @@ mod group {
     pub const BOARD: u32 = 1 << 26;
     /// `cMsgSkaterGrabbingObject`.
     pub const GRABBING: u32 = 1 << 27;
+    /// The rest of the state the objective natives read of their player (`IsOnGround`,
+    /// `SequenceCompleted`, `GetWipeoutDuration`, `IsManualing`, `NoseManualTime`,
+    /// `TailManualTime`, `IsWipingOut`): a challenge whose objective groups each read their own
+    /// player, every player's on every console (freeskate activities), reads it of every player.
+    pub const PLAYER_STATE: u32 = 1 << 28;
     /// What a challenge's objective groups read of their player's messages.
     pub const OBJECTIVES: u32 = GRIND | AIR | TRICKS | SEQUENCE | SEQUENCE_SCORE | POINTS | BOARD | GRABBING;
 }
@@ -251,6 +256,15 @@ impl FactsScope {
         if self.has(GRABBING) {
             shared.is_grabbing_object = frame.is_grabbing_object;
         }
+        if self.has(PLAYER_STATE) {
+            shared.sequence_completed_successfully = frame.sequence_completed_successfully;
+            shared.is_in_state_ground = frame.is_in_state_ground;
+            shared.moving_wipeout_duration = frame.moving_wipeout_duration;
+            shared.manual_length = frame.manual_length;
+            shared.manual_time = frame.manual_time;
+            shared.anim_trick_bits = frame.anim_trick_bits;
+            shared.wiping_out = frame.wiping_out;
+        }
         shared
     }
 }
@@ -285,12 +299,13 @@ pub fn standing(frame: &MissionFrame) -> MissionFrame {
 }
 
 /// The smooth values, in coding order.
-const SMOOTH: usize = 20;
+const SMOOTH: usize = 23;
 
 impl FactsScope {
     /// Whether the scope reads smooth value `index`: the tester's points always, the speeds, the
-    /// wipeout teleport's countdown and the bail's values with their groups. The others stay at
-    /// their defaults in the shared frame, and travel not at all.
+    /// wipeout teleport's countdown, the bail's values and the manual's and wipeout's durations
+    /// with their groups. The others stay at their defaults in the shared frame, and travel not at
+    /// all.
     const fn reads_smooth(self, index: usize) -> bool {
         use group::*;
         match index {
@@ -298,7 +313,8 @@ impl FactsScope {
             9 => self.has(DECK_SPEED),
             10 => self.has(SURFACE_SPEED),
             11 => self.has(WIPEOUT_ALMOST_OVER),
-            _ => self.has(HOM_BAIL),
+            12..=19 => self.has(HOM_BAIL),
+            _ => self.has(PLAYER_STATE),
         }
     }
 }
@@ -329,11 +345,18 @@ fn smooth(frame: &MissionFrame) -> [f32; SMOOTH] {
         bail.accumulated_air_drop_height,
         bail.max_air_drop_height,
         bail.bail_speed,
+        frame.manual_length,
+        frame.manual_time,
+        frame.moving_wipeout_duration,
     ]
 }
 
 fn set_smooth(frame: &mut MissionFrame, values: [f32; SMOOTH]) {
-    let [bx, by, bz, tx, ty, tz, cx, cy, cz, deck, surface, until, overall, moving, over, severe, rotation, accumulated, max, speed] = values;
+    let [bx, by, bz, tx, ty, tz, cx, cy, cz, deck, surface, until, overall, moving, over, severe, rotation, accumulated, max, speed, manual_length, manual_time, wipeout] =
+        values;
+    frame.manual_length = manual_length;
+    frame.manual_time = manual_time;
+    frame.moving_wipeout_duration = wipeout;
     frame.tester_base = [bx, by, bz];
     frame.tester_top = [tx, ty, tz];
     frame.tester_centre_of_mass = [cx, cy, cz];
@@ -533,7 +556,7 @@ fn i32r(r: &mut Reader<'_>) -> DecodeResult<i32> {
 }
 
 /// The frame's flags, one bit each in this order.
-fn flags(frame: &MissionFrame) -> [bool; 35] {
+fn flags(frame: &MissionFrame) -> [bool; 38] {
     let [f0, f1, f2] = frame.finished_pattern_matches;
     let [c0, c1, c2] = frame.current_pattern_matches;
     [
@@ -572,6 +595,9 @@ fn flags(frame: &MissionFrame) -> [bool; 35] {
         frame.performed_gesture.is_some(),
         frame.sequence_completed.is_some(),
         frame.sequence_completed.is_some_and(|sequence| sequence.successfully),
+        frame.sequence_completed_successfully,
+        frame.is_in_state_ground,
+        frame.wiping_out,
     ]
 }
 
@@ -715,6 +741,7 @@ fn layout(frame: &MissionFrame, sticky: &mut Sticky) -> Vec<u8> {
     i32w(&mut w, frame.current_gesture);
     w.u32(frame.finished_sequence_score);
     w.u32(frame.hom_score);
+    w.u32(frame.anim_trick_bits);
     i32w(&mut w, frame.banked_point_change);
     w.f32(frame.finished_grind_length);
     w.raw(&frame.trick_types_in_completed_sequence);
@@ -816,6 +843,9 @@ fn read_layout(data: &[u8]) -> DecodeResult<MissionFrame> {
         has_gesture,
         has_sequence,
         sequence_successfully,
+        sequence_completed_successfully,
+        is_in_state_ground,
+        wiping_out,
     ] = unpack(r.u64()?);
     let big: [bool; 30] = unpack(u64::from(r.u32()?));
     let mut frame = MissionFrame {
@@ -840,6 +870,9 @@ fn read_layout(data: &[u8]) -> DecodeResult<MissionFrame> {
         is_offboard_and_not_hippy_jumping,
         was_offboard_and_not_hippy_jumping,
         is_grabbing_object,
+        sequence_completed_successfully,
+        is_in_state_ground,
+        wiping_out,
         finished_pattern_matches: [f0, f1, f2],
         current_pattern_matches: [c0, c1, c2],
         big_trick_achieved: std::array::from_fn(|i| [big[2 * i], big[2 * i + 1]]),
@@ -849,6 +882,7 @@ fn read_layout(data: &[u8]) -> DecodeResult<MissionFrame> {
     frame.current_gesture = i32r(&mut r)?;
     frame.finished_sequence_score = r.u32()?;
     frame.hom_score = r.u32()?;
+    frame.anim_trick_bits = r.u32()?;
     frame.banked_point_change = i32r(&mut r)?;
     frame.finished_grind_length = f32r(&mut r)?;
     frame.trick_types_in_completed_sequence.copy_from_slice(r.raw(14)?);
@@ -968,6 +1002,9 @@ mod tests {
         let all = FactsScope::ALL.shared(&frame);
         assert_eq!(all.hom_bail.bone_damage_levels[4], 2);
         assert_eq!(all.hom_bail.save_image, None);
+        // A freeskate activity's objectives read every player's own state.
+        let activity = FactsScope::for_challenge_type(42).shared(&frame);
+        assert_eq!((activity.manual_time, activity.is_in_state_ground), (frame.manual_time, true));
     }
 
     #[test]

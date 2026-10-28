@@ -693,11 +693,22 @@ impl RemoteSkater {
     }
 
     /// Picks this local tick's remote moment and restores it: the presentation's frame, the
-    /// posed palette, the audio record and the owner's camera.
+    /// posed palette, the audio record and the owner's camera; with `body_bones`, the world
+    /// positions of the head and feet the local skater's scoring reads.
     ///
     /// # Errors
     /// Materials or a restore that fail.
-    pub(super) fn advance(&mut self, local_tick: u32, camera: [f32; 3], vault: &Arc<AttributeRuntimeVault>, cvars: &InputCvarReferences) -> Result<(), String> {
+    pub(super) fn advance(
+        &mut self,
+        local_tick: u32,
+        camera: [f32; 3],
+        body_bones: Option<[usize; 3]>,
+        vault: &Arc<AttributeRuntimeVault>,
+        cvars: &InputCvarReferences,
+    ) -> Result<(), String> {
+        if let Some(restore) = self.restore.as_mut() {
+            restore.body_bones = body_bones;
+        }
         self.stale = self.last_arrival.is_none_or(|arrival| local_tick.saturating_sub(arrival) > STALE_TICKS);
         let Some(time) = self.playout.next(local_tick) else { return Ok(()) };
         self.pass_hud(floor_tick(time));
@@ -818,6 +829,20 @@ impl RemoteSkater {
     /// The root of the skater shown, as `SkaterPresentation::GetSkaterRoot` reads it.
     pub(super) fn root(&self) -> Option<[f32; 3]> {
         self.shown().map(|shown| shown.root)
+    }
+
+    /// The skater shown as the local skater's scoring collects it: its head, hips and feet.
+    pub(super) fn scoring(&self) -> Option<crate::physical_player_phys_out::conditioners::scoring_external::RemoteScoringSkater> {
+        self.shown()?;
+        let restore = self.restore.as_ref()?;
+        let [head, left_foot, right_foot] = restore.body_points?;
+        Some(crate::physical_player_phys_out::conditioners::scoring_external::RemoteScoringSkater {
+            slot: self.slot,
+            head,
+            hips: restore.hips_position,
+            left_foot,
+            right_foot,
+        })
     }
 }
 

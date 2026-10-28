@@ -143,6 +143,10 @@ pub(crate) struct SelectedPresentationRuntime {
     /// `SkaterPresentation::GetHipsPos` 0x827e3ef0 for the published frame.
     published_hips_position: Option<[f32; 3]>,
     published_hips_forward: Option<[f32; 3]>,
+    /// The saved Hips the published frame packed with. `DoSimRestore` 0x827e7158 reads them
+    /// from this entity's own slot (`mIndex` +0x1E0, times 0xB0); every port entity shares one
+    /// `hips_transforms` row, which holds the last skater's once a tick has published them all.
+    published_hips: Option<AnimationMatrix>,
     /// The scene character's `mHipsPos` while a NIS borrows the entity.
     borrowed_hips_position: Option<[f32; 3]>,
     /// SkaterPresEntity `m_localBB` (+0xE0): the LOD 0 union from
@@ -241,6 +245,7 @@ impl SelectedPresentationRuntime {
             published_root: None,
             published_hips_position: None,
             published_hips_forward: None,
+            published_hips: None,
             borrowed_hips_position: None,
             local_bounds,
             published_bounds: None,
@@ -286,8 +291,7 @@ impl SelectedPresentationRuntime {
             return Ok(());
         }
         let root = self.published_root.ok_or("return cloth game root absent")?;
-        let hips = self.origin.lock().map_err(|_| "return cloth hips lock poisoned")?[0]
-            .ok_or("return cloth game hips absent")?;
+        let hips = self.published_hips.ok_or("return cloth game hips absent")?;
         let world = super::super::move_root::multiply(root, hips);
         let mut cloth_hips = hips;
         cloth_hips[3] = 0.;
@@ -456,6 +460,7 @@ impl SelectedPresentationRuntime {
         self.published_root = None;
         self.published_hips_position = None;
         self.published_hips_forward = None;
+        self.published_hips = None;
         self.published_bounds = None;
         self.render_inputs = None;
         self.submitted = None;
@@ -601,6 +606,7 @@ impl SelectedPresentationRuntime {
         self.published_root = Some(root);
         self.published_hips_position = Some(hips_position(root, hips));
         self.published_hips_forward = Some(hips_forward(root, hips));
+        self.published_hips = Some(hips);
         // SceneRenderView::Cull 0x828501c0..e0: m_BB is m_localBB plus the
         // m_MatLtoW translation row (+0x190), lane by lane.
         let translation = [local_to_world[12], local_to_world[13], local_to_world[14]];

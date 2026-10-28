@@ -13,6 +13,12 @@ fn error(e: impl std::fmt::Display) -> SelectedLiveError {
 }
 impl<T, C> SelectedLiveSession<T, C> {
     pub fn options_snapshot(&self) -> crate::ui::options::Snapshot { self.options_menu.snapshot() }
+    /// The pad slot of the controller that plays the game (`PlayerUI::mControllerIndex`), whose
+    /// sticks the Stick Settings pages show.
+    #[must_use]
+    pub fn controller_slot(&self) -> Option<usize> {
+        self.inner.bound_input.as_ref().map(|input| input.controller())
+    }
     /// Alt+Enter: Display Settings' Fullscreen flips and its chunk saves at once.
     ///
     /// # Errors
@@ -156,19 +162,24 @@ impl<T, C> SelectedLiveSession<T, C> {
         ) {
             return Err(error("Edit Skater requires completed player registration"));
         }
+        // The receipt's GetCash and LockedFilter's unlockables: the career's, online the
+        // profile's (PC port addition), else (the new career's skater, made before its career
+        // starts) a fresh SignPost's starting cash and the default unlocks.
+        let funds = match self.career_shop_funds() {
+            Some(funds) => Some(funds),
+            None if self.online.edit_skater => Some(self.online_shop_funds()?),
+            None => None,
+        };
         let assets = self
             .inner
             .assets
             .as_ref()
             .ok_or_else(|| error("CAC assets absent"))?;
-        // The receipt's GetCash and LockedFilter's unlockables: the career's, else (the new
-        // career's skater, made before its career starts) a fresh SignPost's starting cash and
-        // the default unlocks.
-        let (cash, unlockables) = match self.career_shop_funds() {
+        let (cash, unlockables) = match funds {
             Some(funds) => funds,
             None => {
-                use crate::challenge::attrib_db::{AttribDb, CAREER_VAULTS};
-                let db = AttribDb::load(&assets.mounts, &CAREER_VAULTS).map_err(error)?;
+                use crate::challenge::attrib_db::AttribDb;
+                let db = AttribDb::load_career(&assets.mounts).map_err(error)?;
                 (crate::challenge::signpost_progress::starting_cash(&db), crate::challenge::unlockables::Unlockables::new(&db))
             }
         };
@@ -340,7 +351,28 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
         // A new career's start travels under the fade and reveals once its skater has landed.
         self.frontend_reveal_pending = self.map_travel.is_none();
-        self.close_editor_shop(&purchases)?;
+        // PC port: the online game's editor sold against the profile's career, and its look goes
+        // to the other players once the local skater has it.
+        if std::mem::take(&mut self.online.edit_skater) {
+            self.online_close_editor_shop(&purchases)?;
+            self.online_character_changed();
+        } else {
+            self.close_editor_shop(&purchases)?;
+        }
         Ok(())
+    }
+
+    /// PC port: the online game closes the editor for the player (a round loading with it, a
+    /// change of location, a travel, the game ending), without the outro or the fade. The
+    /// receipt's lines leave the skater as Edit Cart's would with none kept, so it keeps only
+    /// what the player owns or bought, and the rest saves as Finish's would.
+    pub(super) fn close_edit_skater_for_player(&mut self) -> Result<(), SelectedLiveError> {
+        self.editor
+            .as_mut()
+            .ok_or_else(|| error("CAC owner absent"))?
+            .frontend
+            .drop_receipt()
+            .map_err(error)?;
+        self.finish_edit_skater()
     }
 }

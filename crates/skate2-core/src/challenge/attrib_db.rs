@@ -92,6 +92,9 @@ pub struct AttribDb {
     collection_reserve: HashMap<u64, u32>,
     /// Each class's collections in load order (Vault order, then export order).
     loaded: HashMap<u64, Vec<u64>>,
+    /// The downloadable content's unlock lists (category, `GetStringHash` id), read with its
+    /// vaults by [`AttribDb::load_career`].
+    dlc_unlocks: Vec<(u32, u32)>,
 }
 
 /// One resolved attribute, as `Attrib::Attribute`.
@@ -123,8 +126,27 @@ impl AttribDb {
             type_names: HashMap::new(),
             collection_reserve: HashMap::new(),
             loaded: HashMap::new(),
+            dlc_unlocks: Vec::new(),
         }
     }
+
+    /// The challenge system's database: [`CAREER_VAULTS`], then each vault of the mounted
+    /// downloadable content (`cVaultManager::StartDLCLoad` `0x82ab8b50` in the DLC flow), with
+    /// that content's unlock lists.
+    pub fn load_career(mounts: &MountSet) -> Result<Self> {
+        let dlc = crate::dlc::vaults(mounts);
+        let paths: Vec<&str> = CAREER_VAULTS.iter().copied().chain(dlc.iter().map(String::as_str)).collect();
+        let mut db = Self::load(mounts, &paths)?;
+        db.dlc_unlocks = crate::dlc::unlocks(mounts);
+        Ok(db)
+    }
+
+    /// The downloadable content's unlocks, in the order its lists name them.
+    #[must_use]
+    pub fn dlc_unlocks(&self) -> &[(u32, u32)] {
+        &self.dlc_unlocks
+    }
+
     pub fn load(mounts: &MountSet, paths: &[&str]) -> Result<Self> {
         let mut db = Self::empty();
         for path in paths {

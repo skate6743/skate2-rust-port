@@ -71,9 +71,66 @@ fn result_places(players: &[u64], rows: &[PlayerStats]) -> Vec<u64> {
 /// `GM_OnlineChallenge` and `GM_OnlineFreeSkate` as the session's game info has them.
 const GM_ONLINE_CHALLENGE: u32 = 5;
 const GM_ONLINE_FREE_SKATE: u32 = 4;
+/// `eChallengeTypes` S.K.A.T.E. and Own the Spot (the online Spot Battle).
+const SKATE: i32 = 4;
+const OWN_THE_SPOT: i32 = 9;
+/// PC port (user request): the longest a wipeout runs in their online rounds before its respawn.
+const TURN_BAIL_LIMIT: f32 = 5.0;
+/// PC port (user request): a player waiting through another's turn whose skater shows farther
+/// than this from the spot the challenge put them on (x and z) is not drawn on this console, so
+/// skating around through others' turns shows nothing to anyone; their own console still shows
+/// them.
+const SPOT_LIMIT: f32 = 4.0;
+/// Closer than this to the spot, the player has reached it.
+const SPOT_REACHED: f32 = 1.5;
+/// A spot not reached by then holds the player to it anyway.
+const SPOT_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
+/// PC port (user request): four seconds of simulation ticks. A S.K.A.T.E. round that waits this
+/// long at a challenge tick for one other player's facts tells the server
+/// (`ClientMessage::Stalled`), which takes the player out of the challenge once every other
+/// player's round waits on them there: whose set trick a player copied decides whose turn comes
+/// next, so a console whose game parted from the others' waits on another turn than theirs, and
+/// every one of them waits on it.
+const STALL_TICKS: u32 = 240;
+/// While the wait goes on, the round tells the server again every second of simulation ticks:
+/// the server counts a report only while it is fresh, so one from a wait that has ended cannot
+/// join later ones.
+const STALL_REPORT_TICKS: u32 = 60;
+
+/// Where the challenge last teleported a player of a turn-based round (see [`SPOT_LIMIT`]),
+/// whether their skater has shown there since, and whether this console now leaves it undrawn.
+#[derive(Clone, Copy, Debug)]
+struct Spot {
+    xz: [f32; 2],
+    at: std::time::Instant,
+    reached: bool,
+    hidden: bool,
+}
+
+fn distance_xz(root: [f32; 3], xz: [f32; 2]) -> f32 {
+    let (dx, dz) = (root[0] - xz[0], root[2] - xz[1]);
+    (dx * dx + dz * dz).sqrt()
+}
+
+/// The other player whose facts the round's next tick waits for (see [`STALL_TICKS`]) and the
+/// simulation ticks the round has waited for them there.
+#[derive(Clone, Copy, Debug)]
+struct Awaiting {
+    user_id: u64,
+    tick: u32,
+    waited: u32,
+}
+
+impl Awaiting {
+    /// The server has heard of the wait.
+    const fn reported(&self) -> bool {
+        self.waited >= STALL_TICKS
+    }
+}
 
 /// `GetChallengeColumnHeader` 0x82605a50 of a challenge type: S.K.A.T.E.'s letters, Death
-/// Race's time, otherwise trick points (online free skate's activities are not in the port).
+/// Race's time, otherwise trick points (a freeskate activity's by its type,
+/// [`crate::online::activities::column_header`]).
 const fn column_header(challenge_type: i32) -> &'static str {
     match challenge_type {
         4 | 5 => "ID_LEADERBOARD_LETTERS_HEADER",
@@ -136,12 +193,17 @@ pub(super) enum OnlineView {
     Scene,
     /// The camera of the player with this challenge index.
     Player(i32),
+    /// The camera of the player a free skate's Spectate watches (PC port addition).
+    Spectate(u64),
 }
 
 /// The round in progress.
 pub(super) struct Round {
     pub(super) session: u32,
     challenge: u64,
+    /// The freeskate activity the round plays (`mActivityKey`), whose objective groups each read
+    /// their own player.
+    activity: Option<crate::online::activities::Activity>,
     pub(super) stage: Stage,
     /// The players by challenge index (`GameReset`'s table).
     players: Vec<u64>,
@@ -176,6 +238,14 @@ pub(super) struct Round {
     contributors: u8,
     /// S.K.A.T.E., Spot Battle, Hall of Meat and 1-Up: one player plays at a time.
     turn_based: bool,
+    /// S.K.A.T.E. and Spot Battle: a wipeout lasts at most `TURN_BAIL_LIMIT` (PC port).
+    bail_limited: bool,
+    /// Each player's waiting spot in a turn-based round, by player index (PC port).
+    spots: [Option<Spot>; MAX_PLAYERS],
+    /// S.K.A.T.E.: a round that waits [`STALL_TICKS`] at a tick for one other player's facts
+    /// tells the server (PC port).
+    stall_reports: bool,
+    awaiting: Option<Awaiting>,
     /// How many runs of ticks each player has sent facts for, counted alike on every console.
     stints: [u32; MAX_PLAYERS],
     /// Each player's frame of the last tick it sent facts for.
@@ -226,10 +296,21 @@ pub(super) struct Round {
 
 impl Round {
     /// The round from `GameReset(LoadChallenge)`'s table, loading.
-    fn loading(session: u32, challenge: u64, players: Vec<u64>, local: i32, scope: FactsScope, turn_based: bool, stance: Arc<Mutex<[bool; MAX_PLAYERS]>>) -> Self {
+    #[expect(clippy::too_many_arguments, reason = "the reset's table and what the challenge type gives the round")]
+    fn loading(
+        session: u32,
+        challenge: u64,
+        activity: Option<crate::online::activities::Activity>,
+        players: Vec<u64>,
+        local: i32,
+        scope: FactsScope,
+        turn_based: bool,
+        stance: Arc<Mutex<[bool; MAX_PLAYERS]>>,
+    ) -> Self {
         Self {
             session,
             challenge,
+            activity,
             stage: Stage::Loading { sent: false },
             players,
             local,
@@ -247,6 +328,10 @@ impl Round {
             stalls: 0,
             contributors: u8::MAX,
             turn_based,
+            bail_limited: false,
+            spots: [None; MAX_PLAYERS],
+            stall_reports: false,
+            awaiting: None,
             stints: [0; MAX_PLAYERS],
             standing: Default::default(),
             votes: BTreeMap::new(),
@@ -402,7 +487,7 @@ impl Round {
 
     /// Whether `next_tick` would run `tick` with the round's pacing players as they stand now.
     fn tick_ready(&self, tick: u32) -> bool {
-        self.players.iter().enumerate().all(|(index, user_id)| {
+        self.players.iter().enumerate().all(|(index, &user_id)| {
             let player = i32::try_from(index).unwrap_or(i32::MAX);
             if self.disconnected.contains(&player) || !self.contributes(index) {
                 return true;
@@ -410,14 +495,63 @@ impl Round {
             if player == self.local {
                 return self.local_frames.contains_key(&tick);
             }
-            let stint = self.stints[index];
-            self.others.get(user_id).is_some_and(|facts| {
-                facts.frames.contains_key(&(stint, tick))
-                    || facts.left
-                    || facts.syncing.is_some_and(|(at, from)| at == stint && from <= tick)
-                    || facts.frames.range((stint, tick.saturating_add(1))..=(stint, u32::MAX)).next().is_some()
-            })
+            self.remote_ready(index, user_id, tick)
         })
+    }
+
+    /// Whether another player pacing the round lets `tick` run: its facts of the tick are in, it
+    /// left, it waits at a sync point from the tick on, or a later tick of its run is in.
+    fn remote_ready(&self, index: usize, user_id: u64, tick: u32) -> bool {
+        let stint = self.stints[index];
+        self.others.get(&user_id).is_some_and(|facts| {
+            facts.frames.contains_key(&(stint, tick))
+                || facts.left
+                || facts.syncing.is_some_and(|(at, from)| at == stint && from <= tick)
+                || facts.frames.range((stint, tick.saturating_add(1))..=(stint, u32::MAX)).next().is_some()
+        })
+    }
+
+    /// The first other player, by index, whose facts the next tick waits for; none while it
+    /// waits for the local skater's own.
+    fn awaited(&self) -> Option<u64> {
+        let tick = self.processed;
+        let mut awaited = None;
+        for (index, &user_id) in self.players.iter().enumerate() {
+            let player = i32::try_from(index).unwrap_or(i32::MAX);
+            if self.disconnected.contains(&player) || !self.contributes(index) {
+                continue;
+            }
+            if player == self.local {
+                if !self.local_frames.contains_key(&tick) {
+                    return None;
+                }
+            } else if awaited.is_none() && !self.remote_ready(index, user_id, tick) {
+                awaited = Some(user_id);
+            }
+        }
+        awaited
+    }
+
+    /// A simulation tick of the round's wait at its next tick for `awaited` (none: the round ran
+    /// a tick, or does not report its waits): once it has waited [`STALL_TICKS`] for the same
+    /// player at the same tick, and every [`STALL_REPORT_TICKS`] after while the wait goes on,
+    /// the player and tick to tell the server of.
+    fn watch_stall(&mut self, awaited: Option<u64>) -> Option<(u64, u32)> {
+        let Some(user_id) = awaited else {
+            self.awaiting = None;
+            return None;
+        };
+        let tick = self.processed;
+        match &mut self.awaiting {
+            Some(awaiting) if awaiting.user_id == user_id && awaiting.tick == tick => {
+                awaiting.waited += 1;
+                awaiting.waited.checked_sub(STALL_TICKS).is_some_and(|over| over % STALL_REPORT_TICKS == 0).then_some((user_id, tick))
+            }
+            awaiting => {
+                *awaiting = Some(Awaiting { user_id, tick, waited: 1 });
+                None
+            }
+        }
     }
 
     /// How many ticks from the next one are ready, up to `limit`; a tick's pacing can change
@@ -612,6 +746,19 @@ fn table(participants: &[u64; MAX_PLAYERS]) -> Vec<u64> {
     participants.iter().copied().take_while(|&user_id| user_id != 0).collect()
 }
 
+/// Whether a once-a-second diagnostic trace of a wait is due: the simulation may be paused,
+/// so no tick counts the time.
+fn trace_due() -> bool {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let now = std::time::Instant::now();
+    let Ok(mut last) = LAST.lock() else { return false };
+    if last.is_some_and(|at| now.duration_since(at) < std::time::Duration::from_secs(1)) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
 impl super::Online {
     /// Whether the round's Leave Challenge is offered: the local player plays it and has not
     /// finished it (PC port addition).
@@ -627,11 +774,17 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
 
     /// `GameReset` (`StateOnlineGame::HandleLobbySkateReset` 0x82776f90 and the challenge
-    /// states): a challenge loads, starts, or the game goes back to lobby skate.
-    pub(super) fn online_game_reset(&mut self, kind: u8, seed: u32, session: u32, participants: &[u64; MAX_PLAYERS]) -> Result<(), SelectedLiveError> {
+    /// states): a challenge loads, starts, or the game goes back to lobby skate. A freeskate
+    /// activity's reset names it (`mActivity`, `UpdateGameInfo` 0x827538c8's `mActivityKey`).
+    pub(super) fn online_game_reset(&mut self, kind: u8, seed: u32, session: u32, participants: &[u64; MAX_PLAYERS], activity: u64) -> Result<(), SelectedLiveError> {
         let players = table(participants);
         let local = self.online.user_id.and_then(|user_id| players.iter().position(|&player| player == user_id));
-        trace(format_args!("game reset {kind} session {session} players {players:016x?} local {local:?}"));
+        trace(format_args!("game reset {kind} session {session} players {players:016x?} local {local:?} activity {activity:016x}"));
+        // The activity proposed loads or starts: the proposal is over (`ResetFSAProposal` at the
+        // challenge's reset; PC port: at its load too, as the server's proposal ends there).
+        if kind != reset::LOBBY_SKATE {
+            self.online_reset_proposal()?;
+        }
         // UpdateGameInfo's ResetPlayers (0x82753b44): the scoring settings a challenge gave the
         // players, such as S.K.A.T.E.'s manuals that end a line, end with the reset.
         if let Some(player) = self.inner.player.as_ref() {
@@ -649,10 +802,13 @@ impl<T, C> SelectedLiveSession<T, C> {
         match kind {
             reset::LOAD_CHALLENGE => {
                 let Some(local) = local else { return Ok(()) };
+                // Into the challenge from watching another player: the view is the local skater's
+                // again as the load's screen goes up.
+                self.online_end_spectate()?;
                 if self.online.round.is_some() {
                     self.end_online_round()?;
                 }
-                self.start_online_round(session, players, local)?;
+                self.start_online_round(session, players, local, activity)?;
             }
             reset::CHALLENGE => {
                 let matches = self.online.round.as_ref().is_some_and(|round| round.session == session);
@@ -690,19 +846,114 @@ impl<T, C> SelectedLiveSession<T, C> {
         Ok(backend)
     }
 
-    /// `ChallengeLoadState`: the challenge system of the round and its assets.
-    fn start_online_round(&mut self, session: u32, players: Vec<u64>, local: usize) -> Result<(), SelectedLiveError> {
-        let (challenge, net_type) = self.online.game.as_ref().map(|game| (game.attributes.challenge_key, game.attributes.challenge_type)).ok_or_else(|| error("online game absent"))?;
-        let scope = catalog::game_challenge_type(net_type).map_or(FactsScope::ALL, FactsScope::for_challenge_type);
+    /// `ChallengeLoadState`: the challenge system of the round and its assets: the game's
+    /// challenge, or the freeskate activity its reset names (`OnlineFreeSkateActivity`, type 42,
+    /// whose facts carry everything and whose players play at once).
+    fn start_online_round(&mut self, session: u32, players: Vec<u64>, local: usize, activity: u64) -> Result<(), SelectedLiveError> {
+        let (location, net_type) = self.online.game.as_ref().map(|game| (game.attributes.challenge_key, game.attributes.challenge_type)).ok_or_else(|| error("online game absent"))?;
+        let activity = if activity == 0 { None } else { Some(self.online_round_activity(activity)?) };
+        let challenge = activity.as_ref().map_or(location, |activity| activity.key);
+        let game_type = if activity.is_some() { Some(crate::online::activities::CHALLENGE_TYPE) } else { catalog::game_challenge_type(net_type) };
+        let scope = game_type.map_or(FactsScope::ALL, FactsScope::for_challenge_type);
         let stance = Arc::new(Mutex::new([true; MAX_PLAYERS]));
         let backend = self.online_players_backend(&players, local, &stance)?;
         let local = i32::try_from(local).unwrap_or(0);
         let online = OnlineChallenge { local_player: local, players: i32::try_from(players.len()).unwrap_or(0), ..OnlineChallenge::default() };
         self.start_online_challenge_load(challenge, Arc::new(backend), online)?;
         trace(format_args!("loading challenge {challenge:016x} as player {local} of {}", players.len()));
-        let turn_based = catalog::game_challenge_type(net_type).is_some_and(|kind| matches!(kind, 4 | 9 | 31 | 32));
-        self.online.round = Some(Round::loading(session, challenge, players, local, scope, turn_based, stance));
+        let turn_based = game_type.is_some_and(|kind| matches!(kind, 4 | 9 | 31 | 32));
+        let mut round = Round::loading(session, challenge, activity, players, local, scope, turn_based, stance);
+        round.bail_limited = game_type.is_some_and(|kind| matches!(kind, SKATE | OWN_THE_SPOT));
+        round.stall_reports = game_type == Some(SKATE);
+        self.online.round = Some(round);
         Ok(())
+    }
+
+    /// A player the challenge teleported in a turn-based round (`AI.RepositionAI` and the teleport
+    /// manager's other moves, each console seeing every player's): the spot they wait on while
+    /// another player's turn plays.
+    pub(in super::super) fn online_note_spot(&mut self, player: i32, transform: [f32; 16]) {
+        let Some(round) = self.online.round.as_mut().filter(|round| round.turn_based) else { return };
+        let Some(slot) = usize::try_from(player).ok().and_then(|index| round.spots.get_mut(index)) else { return };
+        let hidden = slot.is_some_and(|spot| spot.hidden);
+        *slot = Some(Spot { xz: [transform[12], transform[14]], at: std::time::Instant::now(), reached: false, hidden });
+    }
+
+    /// Each frame of a turn-based round: the turn player has no spot, a waiting player whose
+    /// skater shows at theirs has reached it, and one who has reached it (or had the grace to) and
+    /// shows farther than [`SPOT_LIMIT`] from it while another's turn plays is not drawn.
+    pub(in super::super) fn update_spectator_spots(&mut self) {
+        let (turn, teleporting) = self
+            .career
+            .as_ref()
+            .and_then(|career| career.system.world().online.as_ref())
+            .map_or((None, [false; 8]), |online| (online.turn_player, online.teleporting));
+        let (Some(round), Some(game)) = (self.online.round.as_mut(), self.online.game.as_ref()) else { return };
+        if !round.turn_based {
+            return;
+        }
+        let turn = turn.and_then(|player| usize::try_from(player).ok());
+        if let Some(slot) = turn.and_then(|index| round.spots.get_mut(index)) {
+            *slot = None;
+        }
+        for remote in game.remotes.values() {
+            let Some(index) = round.player_index(remote.user_id) else { continue };
+            let Some(spot) = round.spots.get_mut(index).and_then(Option::as_mut) else { continue };
+            let Some(root) = remote.root() else { continue };
+            let distance = distance_xz(root, spot.xz);
+            if distance <= SPOT_REACHED {
+                spot.reached = true;
+            }
+            let hidden = turn.is_some_and(|turn| turn != index)
+                && !teleporting.get(index).copied().unwrap_or(false)
+                && (spot.reached || spot.at.elapsed() > SPOT_GRACE)
+                && distance > SPOT_LIMIT;
+            if hidden != spot.hidden {
+                trace(format_args!(
+                    "{} {} their spot through another's turn ({distance:.1} m): {}",
+                    game.name(remote.user_id),
+                    if hidden { "left" } else { "is back at" },
+                    if hidden { "not drawn" } else { "drawn" }
+                ));
+                spot.hidden = hidden;
+            }
+        }
+    }
+
+    /// Whether this console leaves a remote player's skater undrawn and unheard (see
+    /// [`Self::update_spectator_spots`]).
+    pub(in super::super) fn online_spot_hidden(&self, user_id: u64) -> bool {
+        self.online
+            .round
+            .as_ref()
+            .filter(|round| round.turn_based)
+            .and_then(|round| round.player_index(user_id).and_then(|index| round.spots.get(index).copied().flatten()))
+            .is_some_and(|spot| spot.hidden)
+    }
+
+    /// PC port (user request): in an online round of S.K.A.T.E. or Spot Battle a wipeout lasts at
+    /// most [`TURN_BAIL_LIMIT`] before its respawn, so Hall of Meat moves that keep the body going
+    /// cannot hold the next player's turn; elsewhere the original's timing holds.
+    pub(in super::super) fn sync_turn_bail_limit(&mut self) -> Result<(), SelectedLiveError> {
+        let limit = self.online.round.as_ref().filter(|round| round.bail_limited).map(|_| TURN_BAIL_LIMIT);
+        if limit == self.online.turn_bail_limit {
+            return Ok(());
+        }
+        if let Some(owner) = self.inner.world.as_ref() {
+            let world = owner.world.lock().map_err(|_| error("world lock poisoned"))?;
+            if let Some(services) = world.physical_world_services() {
+                services.game_info().try_set_turn_bail_limit(limit).map_err(|e| error(format!("{e:?}")))?;
+            }
+        }
+        trace(format_args!("wipeout limit {limit:?}"));
+        self.online.turn_bail_limit = limit;
+        Ok(())
+    }
+
+    /// Whether the round's objective groups each read their own player's state, every player's
+    /// on every console: a freeskate activity's.
+    pub(in super::super) fn online_round_per_player_objectives(&self) -> bool {
+        self.online.round.as_ref().is_some_and(|round| round.activity.is_some())
     }
 
     /// `GameReset(Challenge)` (`HandleLobbySkateReset` 0x82776f90): `PopAllStates`, then
@@ -733,7 +984,55 @@ impl<T, C> SelectedLiveSession<T, C> {
         career.online_random = Some(random);
         career.start_online_main_challenge(challenge);
         trace(format_args!("challenge {challenge:016x} started as player {local} of {count}"));
+        // ResetGame(newGame, useLocationSpawner): PlayerUI::ResetPlayer (0x828ad280) spawns the
+        // local skater at its spawn of the location `UpdateGameInfo` named, the activity's, else
+        // the game challenge's, under the loading screen: nothing of lobby skate (an air, a bail)
+        // carries into the challenge's presentation, where a bail with the online challenge's
+        // Hall of Meat effect (`IsHallOfMeatEffectEnabled` 0x827acbd0 outside free skate) would
+        // draw its treatment over the cutscene. An activity's players start there (its script
+        // has no sync point); the other challenges' first sync point moves them on. The game's
+        // new session marker goes to that spawn.
+        let spawn = self.online_spawn(challenge, u8::try_from(local).unwrap_or(0))?;
+        self.online_spawn_teleport(spawn)?;
+        self.online_spawn_marker(spawn, local)
+    }
+
+    /// `PlayerUI::ResetPlayer`'s spawn command for the local skater: at `transform`, on its
+    /// board.
+    fn online_spawn_teleport(&mut self, transform: [f32; 16]) -> Result<(), SelectedLiveError> {
+        let input = self.inner.bound_input.as_ref().ok_or_else(|| error("input absent"))?;
+        let player = &self.inner.player.as_ref().ok_or_else(|| error("player absent"))?.selected;
+        let regular = player.owners.services.settings.try_stance_byte(input.player_index()).map_err(error)?;
+        let marker = self.inner.session_marker.as_mut().ok_or_else(|| error("session marker absent"))?;
+        marker.teleport.send_flow(crate::session_marker::player_ui::TeleportToPosition {
+            transform: crate::skeleton_root_transforms::SkeletonRootMatrix::known(transform),
+            foot_forward: u32::from(regular != 0),
+            on_board: true,
+            session_marker: false,
+        });
         Ok(())
+    }
+
+    /// `PlayerUI::ResetPlayer` after its spawn command: the game's new session marker is not
+    /// valid yet, so `SetSessionMarker` (0x828acf30, forced, on the board) puts it at the spawn
+    /// with the UI's stance (`ReloadAttributeData` 0x828aa470), and `cMsgSetMarker` goes out for
+    /// the UI's player. Own the Spot, S.K.A.T.E. and Death Race games have no marker
+    /// (`CreateSessionMarker` 0x82729c28).
+    fn online_spawn_marker(&mut self, transform: [f32; 16], player: i32) -> Result<(), SelectedLiveError> {
+        let input = self.inner.bound_input.as_ref().ok_or_else(|| error("input absent"))?;
+        let settings = &self.inner.player.as_ref().ok_or_else(|| error("player absent"))?.selected.owners.services.settings;
+        let regular = settings.try_stance_byte(input.player_index()).map_err(error)?;
+        let Some(marker) = self.inner.session_marker.as_mut().and_then(|marker| marker.marker.as_mut()).filter(|marker| marker.get().is_none()) else {
+            return Ok(());
+        };
+        marker.set_forced(&crate::skeleton_root_transforms::SkeletonRootMatrix::known(transform), u32::from(regular != 0), true);
+        trace(format_args!("session marker at the spawn {:?}", [transform[12], transform[13], transform[14]]));
+        let local = self.inner.world.as_ref().ok_or_else(|| error("world absent"))?.world.lock()
+            .map_err(|_| error("world lock poisoned"))?
+            .local_skater_identity
+            .clone()
+            .ok_or_else(|| error("local skater identity absent"))?;
+        local.try_challenge_broadcaster().map_err(error)?.send_marker(true, player).map_err(error)
     }
 
     /// `StateManagerFrontEndBase::PopAllStates` (`0x82d69f18`): back to the idle HUD state, each
@@ -798,11 +1097,14 @@ impl<T, C> SelectedLiveSession<T, C> {
         let Some((attributes, slot)) = self.online.game.as_ref().filter(|game| game.entered).map(|game| (game.attributes.clone(), game.local_slot)) else { return Ok(()) };
         let start = self.online_location(&attributes, slot)?;
         self.online_load_area()?;
-        self.map_travel = Some(start);
-        self.map_travel_presentation_ready = false;
-        self.map_travel_dispatched = false;
-        self.map_travel_on_board = true;
-        self.frontend_fade.cover();
+        // GameLoad into the game challenge's world: an additional world's challenge loads it, a
+        // main world's unloads one held.
+        let world_location = self.online_challenge_world(attributes.challenge_key)?;
+        let world = match &world_location {
+            Some((location, file)) => self.world_operation(*location, Some(file.as_str())),
+            None => self.world_operation(u64::MAX, None),
+        };
+        self.start_world_travel(world.unwrap_or_default(), start, true);
         Ok(())
     }
 
@@ -844,23 +1146,32 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
 
     /// The remote skater the console follows: the player `Online.SwitchCamera` last switched to,
-    /// when that is another player's skater that shows.
+    /// when that is another player's skater that shows, or the one the pre-game lobby's Spectate
+    /// shows (PC port addition).
     pub(super) fn online_spectated(&self) -> Option<&super::remote_skater::RemoteSkater> {
+        let game = self.online.game.as_ref()?;
+        if let Some(spectate) = self.online.spectate.as_ref() {
+            return game.remotes.get(&spectate.shown()?).filter(|remote| remote.visible());
+        }
         let round = self.online.round.as_ref()?;
         let player = round.camera_player.filter(|&player| player != round.local)?;
         let user_id = *round.players.get(usize::try_from(player).ok()?)?;
-        self.online.game.as_ref()?.remotes.get(&user_id).filter(|remote| remote.visible())
+        game.remotes.get(&user_id).filter(|remote| remote.visible())
     }
 
     /// What an online game shows in place of the game camera, as it keeps simulating under a
     /// scene (`Net::ResumeGame`): a scene's camera while one plays (a challenge presentation's
-    /// NIS), else the camera of the other player `Online.SwitchCamera` follows.
+    /// NIS), else the camera of the other player `Online.SwitchCamera` follows or Spectate shows.
     fn online_view(&self) -> Option<(OnlineView, [f32; 16], f32)> {
         self.online.game.as_ref()?;
         if let (Some(scene), _) = self.career_nis_camera()
             && let Some(matrix) = scene.matrix
         {
             return Some((OnlineView::Scene, matrix, scene.fov));
+        }
+        if let Some(user_id) = self.online.spectate.as_ref().and_then(super::spectate::Spectate::shown) {
+            let camera = self.online_spectated()?.camera()?;
+            return Some((OnlineView::Spectate(user_id), camera.matrix, camera.fov));
         }
         let player = self.online.round.as_ref()?.camera_player?;
         let camera = self.online_spectated()?.camera()?;
@@ -915,9 +1226,13 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.online_spectated()?.root()
     }
 
-    /// The player whose skater the trick HUD follows: the one the console follows, as
-    /// `PhysOutModule_Hud::Update` (0x827c79b8) reads `GetLocal()`.
+    /// The player whose skater the trick HUD follows: the one the console follows in a round, as
+    /// `PhysOutModule_Hud::Update` (0x827c79b8) reads `GetLocal()`. The pre-game lobby's Spectate
+    /// shows no trick HUD.
     pub(in super::super) fn online_spectated_user(&self) -> Option<u64> {
+        if self.online.spectate.is_some() {
+            return None;
+        }
         self.online_spectated().map(|remote| remote.user_id)
     }
 
@@ -1001,9 +1316,13 @@ impl<T, C> SelectedLiveSession<T, C> {
         {
             game.participants.retain(|&participant| participant != local);
         }
-        // The local player abandons the round: the audio system's cMsgAbandonChallenge handler
-        // (QuitChallenge 0x824ff478) ends its mission music, and what its challenge gave the
-        // players' scoring ends as UpdateGameInfo's ResetPlayers (0x82753b44) ends it at a reset.
+        self.abandon_online_round()
+    }
+
+    /// The local player abandons the round: the audio system's cMsgAbandonChallenge handler
+    /// (QuitChallenge 0x824ff478) ends its mission music, and what its challenge gave the
+    /// players' scoring ends as UpdateGameInfo's ResetPlayers (0x82753b44) ends it at a reset.
+    fn abandon_online_round(&mut self) -> Result<(), SelectedLiveError> {
         self.quit_career_challenge_music();
         if let Some(player) = self.inner.player.as_ref() {
             player.selected.owners.services.settings.try_reset_scoring().map_err(error)?;
@@ -1011,28 +1330,50 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.end_online_round()
     }
 
-    /// `ChallengeLeave` (PC port addition): a player left the round for the pre-game lobby. To the
-    /// round's other players they leave as one who left the game does (their facts end, then they
-    /// disconnect) and their skater goes at once; the members waiting see them as themselves, no
-    /// longer a ghost. Everyone else's log names them.
-    pub(super) fn online_challenge_leave(&mut self, user_id: u64) {
+    /// The server took the local player out of a S.K.A.T.E. round that every other player's
+    /// round waited on (`ClientMessage::Stalled`): the local game leaves it as Leave Challenge
+    /// does, its facts no longer reaching anyone. After the local player's own Leave Challenge
+    /// the round has already ended.
+    fn online_taken_out_of_challenge(&mut self) -> Result<(), SelectedLiveError> {
+        if !self.online.round.as_ref().is_some_and(|round| matches!(round.stage, Stage::Running | Stage::Complete)) {
+            return Ok(());
+        }
+        trace(format_args!("taken out of the challenge: every other player's round waited on this console's facts"));
+        self.online.event_log.add(EventText::literal("You were removed from the challenge (out of sync).".to_owned()));
+        self.abandon_online_round()
+    }
+
+    /// `ChallengeLeave` (PC port addition): a player left the round for the pre-game lobby, or the
+    /// server took them out of it (`ClientMessage::Stalled`). To the round's other players they
+    /// leave as one who left the game does (their facts end, then they disconnect) and their
+    /// skater goes at once; the members waiting see them as themselves, no longer a ghost.
+    /// Everyone else's log names them. A local player still in the round was taken out of it.
+    pub(super) fn online_challenge_leave(&mut self, user_id: u64) -> Result<(), SelectedLiveError> {
         let local = Some(user_id) == self.online.user_id;
         let played = !local && self.online.round.as_ref().is_some_and(|round| round.players.contains(&user_id));
+        let stalled = played
+            && self.online.round.as_ref().and_then(|round| round.awaiting).is_some_and(|awaiting| awaiting.reported() && awaiting.user_id == user_id);
         if played {
             self.online_round_player_left(user_id);
         }
-        let Some(game) = self.online.game.as_mut() else { return };
+        let Some(game) = self.online.game.as_mut() else { return Ok(()) };
         game.participants.retain(|&participant| participant != user_id);
         if local {
-            return;
+            return self.online_taken_out_of_challenge();
         }
-        trace(format_args!("{} left the challenge", game.name(user_id)));
+        trace(format_args!("{} left the challenge{}", game.name(user_id), if stalled { ": every other player's round waited on their facts" } else { "" }));
         if played && let Some(remote) = game.remotes.get_mut(&user_id) {
             remote.hide();
         }
         if game.entered {
-            self.online.event_log.add(EventText::literal(format!("{} has left the challenge.", game.name(user_id))));
+            let line = if stalled {
+                format!("{} was removed from the challenge (out of sync).", game.name(user_id))
+            } else {
+                format!("{} has left the challenge.", game.name(user_id))
+            };
+            self.online.event_log.add(EventText::literal(line));
         }
+        Ok(())
     }
 
     /// The players pacing the next challenge tick (`Round::contributors`). Pins do not count:
@@ -1066,6 +1407,9 @@ impl<T, C> SelectedLiveSession<T, C> {
         match round.stage {
             Stage::Loading { sent } => {
                 if self.map_travel.is_some() {
+                    if trace_due() {
+                        trace(format_args!("challenge load waits for the travel"));
+                    }
                     return Ok(());
                 }
                 if !round.load_entered {
@@ -1075,6 +1419,10 @@ impl<T, C> SelectedLiveSession<T, C> {
                 let (local, challenge) = (round.local, round.challenge);
                 self.career_step(Some((Vec::new(), local, None)))?;
                 let streamed = !self.update_online_loading_screen(false)?;
+                if !sent && trace_due() {
+                    let assets = self.career.as_ref().is_some_and(|career| career.challenge_assets_loaded(challenge));
+                    trace(format_args!("challenge {challenge:016x} loading: streamed {streamed}, assets {assets}"));
+                }
                 if !sent && streamed && self.career.as_ref().is_some_and(|career| career.challenge_assets_loaded(challenge)) {
                     trace(format_args!("challenge loaded"));
                     self.online.send(ClientMessage::ChallengeLoaded);
@@ -1090,6 +1438,9 @@ impl<T, C> SelectedLiveSession<T, C> {
                 };
                 let streamed = !self.update_online_loading_screen(false)?;
                 let hulls = self.career.as_ref().is_some_and(|career| career.loading_challenge_hulls());
+                if !sent && trace_due() {
+                    trace(format_args!("round {sync_round} sync point waits: streamed {streamed}, hulls loading {hulls}"));
+                }
                 if !sent && streamed && !hulls {
                     trace(format_args!("round {sync_round} sync point reached"));
                     if let Some(sync) = self.online.round.as_mut().and_then(|round| round.sync.as_mut()) {
@@ -1105,14 +1456,14 @@ impl<T, C> SelectedLiveSession<T, C> {
 
     /// `ChallengeLoadState`'s Enter (`0x82771bfc`): "Pausing the sim!" (`kPAUSE_STATE_ONLINE`
     /// pulled and pushed, with `Net::PauseGame`), then `WaitForStreamer` at the local player's
-    /// `Net::GetStreamerPosition`, its spawn point at the challenge's location.
+    /// `Net::GetStreamerPosition`, its spawn point at the location of the round's challenge (the
+    /// activity's for a freeskate activity, `mActivityKey`).
     fn enter_online_challenge_load(&mut self) -> Result<(), SelectedLiveError> {
         if let Some(input) = self.inner.bound_input.as_ref() {
             input.try_set_online_pause(true).map_err(error)?;
         }
-        let attributes = self.online.game.as_ref().map(|game| game.attributes.clone()).ok_or_else(|| error("online game absent"))?;
-        let local = self.online.round.as_ref().map_or(0, |round| round.local);
-        let streamer = self.online_location(&attributes, u8::try_from(local).unwrap_or(0))?;
+        let (challenge, local) = self.online.round.as_ref().map(|round| (round.challenge, round.local)).ok_or_else(|| error("round absent"))?;
+        let streamer = self.online_spawn(challenge, u8::try_from(local).unwrap_or(0))?;
         self.online_wait_for_streamer([streamer[12], streamer[13], streamer[14]]);
         if let Some(round) = self.online.round.as_mut() {
             round.load_entered = true;
@@ -1186,7 +1537,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 self.produce_online_facts()?;
                 self.diagnostic_race_gates(local)?;
                 let completed = self.completed_frames;
-                let ticks = self.online.round.as_mut().map_or(0, |round| {
+                let (ticks, stalled) = self.online.round.as_mut().map_or((0, None), |round| {
                     let lead = round.ready_lead(CATCH_UP_LEAD + 1);
                     let (ticks, refilling) = pace(lead, round.refilling);
                     round.refilling = refilling;
@@ -1196,8 +1547,16 @@ impl<T, C> SelectedLiveSession<T, C> {
                     if completed % 600 == 0 && round.processed > 0 {
                         trace(format_args!("round at tick {}: {} ready, stalled {} of the last 600 ticks", round.processed, lead, std::mem::take(&mut round.stalls)));
                     }
-                    ticks
+                    // Only a round with no tick ready waits at its next tick, which every console
+                    // whose game matches the others' reaches with the same players pacing it.
+                    let awaited = if round.stall_reports && lead == 0 && round.running() && round.processed > 0 { round.awaited() } else { None };
+                    (ticks, round.watch_stall(awaited))
                 });
+                if let Some((user_id, tick)) = stalled {
+                    let name = self.online.game.as_ref().map(|game| game.name(user_id)).unwrap_or_default();
+                    trace(format_args!("the round has waited {STALL_TICKS} ticks or more at tick {tick} for {name}'s facts: telling the server"));
+                    self.online.send(ClientMessage::Stalled { user_id, tick });
+                }
                 for _ in 0..ticks {
                     let Some((frames, disconnects, own, presented)) = self.online.round.as_mut().filter(|round| round.running()).and_then(Round::next_tick) else { break };
                     if std::env::var_os("SKATE2_TRACE_ONLINE_INPUTS").is_some() {
@@ -1544,10 +1903,18 @@ impl<T, C> SelectedLiveSession<T, C> {
             round.stage = Stage::Complete;
         }
         let result = round.result.unwrap_or_default();
+        let activity = round.activity.as_ref().map(|activity| activity.key);
         if completing {
             self.online.send(ClientMessage::Complete);
         }
         self.online.send(ClientMessage::Results(result));
+        // ReportLocalPlayerResults: an activity the local player finished normally is completed.
+        if result.finish_reason == super::activity::NORMAL_COMPLETION
+            && let Some(key) = activity
+            && let Err(e) = self.online_activity_completed(key)
+        {
+            trace(format_args!("activity {key:016x} not marked completed: {e:?}"));
+        }
     }
 
     /// `GameFinalResults` (`StateOnlineGame::OnMessage(MT_GameFinalResults)` 0x8276b060): each
@@ -1581,8 +1948,35 @@ impl<T, C> SelectedLiveSession<T, C> {
             .collect();
         let net_type = game.attributes.challenge_type;
         let ranked = game.attributes.ranked;
-        let challenge_type = catalog::game_challenge_type(net_type).unwrap_or(0);
-        let board = OnlineResults::leaderboard(&lines, challenge_type);
+        let activity = round.activity.clone();
+        // An activity's results type and header follow its own type (its challenge type 42); a
+        // challenge's are Death Race's time or place and score.
+        let (challenge_type, results_type, header) = match activity.as_ref() {
+            Some(activity) => (
+                crate::online::activities::CHALLENGE_TYPE,
+                crate::online::activities::results_type(activity.kind, activity.accumulation),
+                crate::online::activities::column_header(activity.kind, activity.survival),
+            ),
+            None => {
+                let challenge_type = catalog::game_challenge_type(net_type).unwrap_or(0);
+                (challenge_type, if challenge_type == 19 { 3 } else { 0 }, column_header(challenge_type))
+            }
+        };
+        let mut board = OnlineResults::leaderboard(&lines, results_type);
+        // SetActiveResultsLeaderboard keeps what the script wrote into the final results: an
+        // activity's status column (`Results_SetPlayerStatus`), the same on every console.
+        if activity.is_some()
+            && let Some(career) = self.career.as_ref()
+        {
+            let scripted = &career.system.world().results.final_results;
+            for line in &lines {
+                let lua_index = places.get(line.player).and_then(|user_id| round.players.iter().position(|player| player == user_id));
+                if let (Some(status), Some(player)) = (lua_index.and_then(|index| scripted.players.get(index)).map(|player| player.status.clone()), board.players.get_mut(line.player)) {
+                    player.status = status;
+                }
+            }
+        }
+        let activity_won = activity.is_some() && rows.iter().find(|row| Some(row.user_id) == local).is_some_and(|row| row.result.finish_reason == super::activity::NORMAL_COMPLETION);
         let mut by_rank: Vec<(i32, usize)> = lines.iter().map(|line| (line.position, line.player)).collect();
         by_rank.sort_unstable();
         let mut cash = vec![0; places.len()];
@@ -1597,9 +1991,9 @@ impl<T, C> SelectedLiveSession<T, C> {
             title,
             icon,
             free_skate: matches!(challenge_type, 22 | 42),
-            activity_won: false,
+            activity_won,
             ranked,
-            column_header: column_header(challenge_type).to_owned(),
+            column_header: header.to_owned(),
             skate: matches!(challenge_type, 4 | 5),
             last_round: false,
             round: false,
@@ -1737,7 +2131,7 @@ mod tests {
     #[test]
     fn a_player_who_left_during_the_load_names_no_one_in_the_challenge() {
         let stance = std::sync::Arc::new(std::sync::Mutex::new([true; super::MAX_PLAYERS]));
-        let mut round = super::Round::loading(1, 0, vec![10, 20, 30], 0, super::FactsScope::ALL, false, stance);
+        let mut round = super::Round::loading(1, 0, None, vec![10, 20, 30], 0, super::FactsScope::ALL, false, stance);
         round.player_left(20);
         assert_eq!(round.notes().left, [1]);
         round.start(vec![10, 30], 0);
@@ -1749,5 +2143,38 @@ mod tests {
         round.leaving.clear();
         round.player_left(30);
         assert!(round.notes().left.is_empty());
+    }
+
+    /// A round waiting at a tick for one other player's facts tells the server after
+    /// `STALL_TICKS` of it, then every `STALL_REPORT_TICKS` while the wait goes on; a tick run,
+    /// or another player waited on, counts again.
+    #[test]
+    fn a_round_waiting_on_one_player_keeps_reporting_them() {
+        let stance = std::sync::Arc::new(std::sync::Mutex::new([true; super::MAX_PLAYERS]));
+        let mut round = super::Round::loading(1, 0, None, vec![10, 20, 30], 0, super::FactsScope::ALL, true, stance);
+        round.start(vec![10, 20, 30], 0);
+        round.processed = 50;
+        // Player 30's turn: its facts pace the round, and none came.
+        round.contributors = 0b100;
+        assert_eq!(round.awaited(), Some(30));
+        for _ in 1..super::STALL_TICKS {
+            assert_eq!(round.watch_stall(Some(30)), None);
+        }
+        assert_eq!(round.watch_stall(Some(30)), Some((30, 50)));
+        for _ in 1..super::STALL_REPORT_TICKS {
+            assert_eq!(round.watch_stall(Some(30)), None);
+        }
+        assert_eq!(round.watch_stall(Some(30)), Some((30, 50)), "again while the wait goes on");
+        assert_eq!(round.watch_stall(None), None);
+        assert!(round.awaiting.is_none());
+        assert_eq!(round.watch_stall(Some(20)), None);
+        assert_eq!(round.awaiting.map(|awaiting| awaiting.waited), Some(1));
+        // The local skater pacing the tick without its own facts yet waits on no one else.
+        round.contributors = 0b101;
+        assert_eq!(round.awaited(), None);
+        // A player who left lets the tick run.
+        round.contributors = 0b100;
+        round.player_left(30);
+        assert_eq!(round.awaited(), None);
     }
 }

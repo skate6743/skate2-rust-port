@@ -43,6 +43,21 @@ impl CareerSession {
         let locations = self.locations.lock().map_err(|_| error("location manager lock poisoned"))?;
         Ok(locations.spawn_location(hash_value32(name), index).unwrap_or_else(|| unknown_spawn_location(index)))
     }
+
+    /// A location of `world` for the local player before the world is loaded: the location
+    /// manager's spawn point, else the world's own location (its `_Sim.loc`).
+    pub(crate) fn world_spawn_point(
+        &self,
+        mounts: &skate2_formats::mount::MountSet,
+        world: &str,
+        name: &str,
+    ) -> Result<[f32; 16], SelectedLiveError> {
+        let known = self.locations.lock().map_err(|_| error("location manager lock poisoned"))?.is_valid(hash_value32(name));
+        if known {
+            return self.spawn_point(name, crate::challenge::players::OFFLINE_LOCAL_PLAYER_ID);
+        }
+        super::super::world_travel::world_location(mounts, world, name)
+    }
 }
 
 impl<T, C> SelectedLiveSession<T, C> {
@@ -174,12 +189,36 @@ impl<T, C> SelectedLiveSession<T, C> {
             career.system.start_main_challenge(challenge);
             return Ok(());
         };
-        trace(format_args!("teleport start {challenge:#018x} at {:?}", rows(transform)[3]));
-        self.frontend_fade.cover();
-        self.map_travel = Some(transform);
-        self.map_travel_presentation_ready = false;
-        self.map_travel_dispatched = false;
-        self.map_travel_on_board = true;
+        // TeleportLocalToWorldLocation into the challenge's world location.
+        let world_location = crate::challenge::stuff_menu::challenge_world_location(career.system.world(), challenge);
+        let world_file = world_location.and_then(|location| crate::challenge::stuff_menu::location_world_file(career.system.world(), location));
+        trace(format_args!("teleport start {challenge:#018x} at {:?} in {world_file:?}", rows(transform)[3]));
+        let world = self.world_operation(world_location.unwrap_or(u64::MAX), world_file.as_deref()).unwrap_or_default();
+        self.start_world_travel(world, transform, true);
+        Ok(())
+    }
+
+    /// `Teleport.ToWorldFileLocation`'s `cTeleportManager::TeleportLocalToWorldLocation`
+    /// (`0x828a91f8`): the location's spawn point for the local player off the board. Into another
+    /// world than the one held (`RequiresAdditionalWorldOperation`), the flow's teleport behind the
+    /// load screen puts the worlds in place first; otherwise it is the ordinary teleport.
+    pub(super) fn teleport_local_to_world_location(&mut self, world_location: u64, world_file: Option<&str>, location: &str) -> Result<(), SelectedLiveError> {
+        let Some(world) = self.world_operation(world_location, world_file) else {
+            return self.teleport_to_challenge_end_point(location);
+        };
+        if !self.additional_world_loadable(&world) {
+            eprintln!("career: teleport to {location} in the additional world location {world_file:?}, which the port cannot load");
+            return Ok(());
+        }
+        if self.inner.player.as_ref().and_then(|player| player.selected.actor.as_ref()).is_none() {
+            return Ok(());
+        }
+        let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("career assets absent"))?.mounts);
+        let career = self.career.as_ref().ok_or_else(|| error("career absent"))?;
+        let file = world_file.unwrap_or(crate::game::DEBUG_REFERENCE_WORLD_FILE);
+        let transform = career.world_spawn_point(&mounts, file, location)?;
+        trace(format_args!("teleport to {location} in {file} at {:?}, behind the load screen", rows(transform)[3]));
+        self.start_world_travel(world, transform, false);
         Ok(())
     }
 

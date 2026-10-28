@@ -144,6 +144,31 @@ fn a_tick_without_a_record_holds_the_newest_values() {
 }
 
 #[test]
+fn a_reactivation_while_following_takes_the_hall_of_meat_hud_down() {
+    use crate::ui::hom_scoring::{HomPhysicsFrame, HomScoringHud, ScreenState};
+    let mut hom = HomScoringHud::default();
+    let bail = HomPhysicsFrame { just_wiped_out: true, effect_enabled: true, bail_in_progress: true, ..Default::default() };
+    assert!(hom.advance(&bail, 0).commands.contains(&ScreenState::Show), "the local bail shows the HoM HUD");
+    let mut follower = HudFollower::default();
+    follower.pass(0, &HudRecord::default().words());
+    follower.take();
+    let local = PhysicsFrame { hom: HomPhysicsFrame { just_reactivated: true, ..Default::default() }, ..Default::default() };
+    let shown = followed_frames(&[], follower.latest(), local, names);
+    let commands: Vec<ScreenState> = shown.iter().flat_map(|frame| hom.advance(&frame.hom, 0).commands).collect();
+    assert!(commands.contains(&ScreenState::Hide), "the local respawn hides it while another player is followed");
+    assert!(!hom.visible());
+    let mut recorder = HudRecorder::default();
+    let mut follower = HudFollower::default();
+    recorder.record(&PhysicsFrame::default());
+    follower.pass(0, &recorder.words());
+    follower.take();
+    recorder.record(&PhysicsFrame { reactivated: true, ..Default::default() });
+    follower.pass(1, &recorder.words());
+    let shown = followed_frames(&follower.take(), follower.latest(), PhysicsFrame::default(), names);
+    assert!(shown.last().is_some_and(|frame| frame.hom.just_reactivated), "the followed skater's reactivation reaches the HoM HUD");
+}
+
+#[test]
 fn the_local_commands_ride_the_first_frame_only() {
     use crate::ui::trick_backend::BackendCommand;
     let frames = owner_frames();

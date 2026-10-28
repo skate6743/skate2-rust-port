@@ -10,7 +10,7 @@ use super::{
     lua::{Lua, LuaResult, NativeCall, NativeFn, Value},
     mission::{HomBail, MissionFrame},
     objective_data::ObjectiveData,
-    objectives::{self, Objective},
+    objectives::{self, Objective, PlayerState},
     system::World,
 };
 
@@ -20,6 +20,14 @@ fn objective(world: &World) -> Option<&Objective> {
     let closure = world.objective_closure?;
     let g = world.objectives.group_index(closure.group)?;
     world.objectives.groups[g].objectives.get(closure.objective)
+}
+
+/// The state of the evaluated objective's player, as `GetPhysOut(mPlayerID)` reads it: its own
+/// where the challenge keeps every player's (`World::player_states`), else the local player's.
+fn player(world: &World) -> &PlayerState {
+    objective(world)
+        .and_then(|o| world.player_states.iter().find(|(player, _)| *player == o.player))
+        .map_or(&world.player, |(_, state)| state)
 }
 
 fn objective_mut(world: &mut World) -> Option<&mut Objective> {
@@ -52,8 +60,7 @@ fn entered_volume_in_sequence(_: &mut Lua<World>, world: &mut World, call: &Nati
 fn is_in_volume(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let id = get_float(call, 0);
     boolean(
-        world
-            .player
+        player(world)
             .colliding_triggers
             .iter()
             .any(|&(guid, local)| objectives::is_trigger_volume(guid, id) || objectives::is_trigger_volume(local, id)),
@@ -63,53 +70,53 @@ fn is_in_volume(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
 // ---- ObjectiveLocomotion (PhysOut_Scoring2 / PhysOut_SkateboardMotion) ------
 
 fn is_on_board(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.onboard_or_hippy_jumping)
+    boolean(player(world).onboard_or_hippy_jumping)
 }
 
 fn is_off_board(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.offboard_and_not_hippy_jumping)
+    boolean(player(world).offboard_and_not_hippy_jumping)
 }
 
 /// `WentOnBoard` (`0x82d48e98`).
 fn went_on_board(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.was_offboard_and_not_hippy_jumping && world.player.onboard_or_hippy_jumping)
+    boolean(player(world).was_offboard_and_not_hippy_jumping && player(world).onboard_or_hippy_jumping)
 }
 
 /// `WentOffBoard` (`0x82d48f88`).
 fn went_off_board(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.was_onboard_or_hippy_jumping && world.player.offboard_and_not_hippy_jumping)
+    boolean(player(world).was_onboard_or_hippy_jumping && player(world).offboard_and_not_hippy_jumping)
 }
 
 /// `IsStoppped` (`0x82d49078`): surface speed at or under
 /// `kSkaterStopThreshold`.
 fn is_stopped(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.surface_speed <= world.stop_threshold)
+    boolean(player(world).surface_speed <= world.stop_threshold)
 }
 
 fn is_moving(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.surface_speed > world.stop_threshold)
+    boolean(player(world).surface_speed > world.stop_threshold)
 }
 
 fn get_speed(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    Ok(vec![Value::Number(world.player.surface_speed)])
+    Ok(vec![Value::Number(player(world).surface_speed)])
 }
 
 fn is_on_ground(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.on_ground)
+    boolean(player(world).on_ground)
 }
 
 fn is_in_air(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.in_air)
+    boolean(player(world).in_air)
 }
 
 fn is_in_sequence(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.in_sequence)
+    boolean(player(world).in_sequence)
 }
 
 /// `SequenceCompleted` (`0x82d48c08`): completed successfully and not by a
 /// teleport (`FILTERED_PHYSICS_STATE_TELEPORT`).
 fn sequence_completed(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.sequence_completed_successfully && !world.player.teleporting)
+    boolean(player(world).sequence_completed_successfully && !player(world).teleporting)
 }
 
 /// `GetNumPushes` (`0x82d48a58`).
@@ -122,7 +129,7 @@ fn get_num_pushes(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
 
 /// `GetWipeoutDuration` (`0x82d477b0`).
 fn get_wipeout_duration(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    Ok(vec![Value::Number(world.player.moving_wipeout_duration)])
+    Ok(vec![Value::Number(player(world).moving_wipeout_duration)])
 }
 
 // ---- Wipeout ----------------------------------------------------------------
@@ -130,27 +137,27 @@ fn get_wipeout_duration(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -
 /// `IsWipingOut` (`0x82d45b20`): `PhysOut_Filtered::mFilteredPhysicsState` is
 /// `FILTERED_PHYSICS_STATE_WIPEOUT` (4).
 fn is_wiping_out(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.wiping_out)
+    boolean(player(world).wiping_out)
 }
 
 // ---- Manual -----------------------------------------------------------------
 
 /// `IsManualing` (`0x82d452e8`): `PhysOut_Scoring2::mManualLength > 0`.
 fn is_manualing(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.manual_length > 0.0)
+    boolean(player(world).manual_length > 0.0)
 }
 
 /// `NoseManualTime` (`0x82d45668`): `mManualTime` while the current trick
 /// animation's `mIsNoseManual` bit (27) is set, else 0.
 fn nose_manual_time(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    let time = if (world.player.anim_trick_bits >> 27) & 1 == 1 { world.player.manual_time } else { 0.0 };
+    let time = if (player(world).anim_trick_bits >> 27) & 1 == 1 { player(world).manual_time } else { 0.0 };
     Ok(vec![Value::Number(time)])
 }
 
 /// `TailManualTime` (`0x82d45940`): `mManualTime` while `mIsTailManual` (bit
 /// 26) is set, else 0.
 fn tail_manual_time(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    let time = if (world.player.anim_trick_bits >> 26) & 1 == 1 { world.player.manual_time } else { 0.0 };
+    let time = if (player(world).anim_trick_bits >> 26) & 1 == 1 { player(world).manual_time } else { 0.0 };
     Ok(vec![Value::Number(time)])
 }
 
@@ -170,7 +177,7 @@ fn did_specific_trick(_: &mut Lua<World>, world: &mut World, call: &NativeCall) 
 /// `Attrib::StringToKey(name)`.
 fn did_specific_trick_this_frame(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let key = hash64(&get_string(call, 0).unwrap_or_default());
-    boolean(world.player.tricks_ended.contains(&key))
+    boolean(player(world).tricks_ended.contains(&key))
 }
 
 /// `DidSpecificTrickGroup(name)` (`0x82d4ae98`) ->
@@ -187,7 +194,7 @@ fn did_specific_trick_group(_: &mut Lua<World>, world: &mut World, call: &Native
 /// frame's `mTricksEnded`.
 fn did_specific_trick_group_this_frame(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let group = hash64(&get_string(call, 0).unwrap_or_default());
-    let tricks = world.player.tricks_ended.clone();
+    let tricks = player(world).tricks_ended.clone();
     let db = std::sync::Arc::clone(&world.db);
     boolean(tricks.into_iter().any(|t| world.trick_groups.is_trick_in_group(&db, t, group)))
 }
@@ -317,7 +324,7 @@ fn release_dmo_volume_tester(_: &mut Lua<World>, world: &mut World, call: &Nativ
 
 /// `IsGrabbingDMO()` (`0x82d45bf8`): `PhysOut_OffBoard::mIsGrabbingObject`.
 fn is_grabbing_dmo(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
-    boolean(world.player.grabbing_object)
+    boolean(player(world).grabbing_object)
 }
 
 // ---- ObjectiveSessionMarker -------------------------------------------------

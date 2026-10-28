@@ -58,6 +58,8 @@ pub(crate) mod outer_locality;
 pub(crate) mod post_category;
 #[path = "physical_player_phys_out_audio.rs"]
 pub(crate) mod audio;
+#[path = "physical_player_phys_out_rumble.rs"]
+pub(crate) mod rumble;
 #[path = "physical_player_phys_out_presentation.rs"]
 mod presentation;
 #[path = "physical_player_phys_out_prior_input.rs"]

@@ -119,6 +119,11 @@ pub(super) struct PostFx {
     luminance: Option<f32>,
     current_cube: u64,
     target_cube: u64,
+    /// The current and target cubes' texels, held while they blend: `UpdateColourCube` keeps the
+    /// cube resources it blends whatever the next scene's assets hold (a downloadable content
+    /// world's cube stays current over the front end's).
+    current_texels: Option<std::sync::Arc<[u8]>>,
+    target_texels: Option<std::sync::Arc<[u8]>>,
     cube_blend: f32,
     cube_pixels: Vec<u8>,
     /// Current cube, target cube and blend of the texels last uploaded.
@@ -379,6 +384,8 @@ impl PostFx {
             luminance: None,
             current_cube: 0,
             target_cube: 0,
+            current_texels: None,
+            target_texels: None,
             cube_blend: 1.,
             cube_pixels: vec![0; 32 * 32 * 32 * 4],
             uploaded_cube: None,
@@ -413,23 +420,21 @@ impl PostFx {
         };
         let initial = self.current_cube == 0;
         if initial {
+            let texels = assets.cubes.get(&key).ok_or("PostFX initial cube absent")?;
             self.current_cube = key;
             self.target_cube = key;
+            self.current_texels = Some(std::sync::Arc::clone(texels));
+            self.target_texels = Some(std::sync::Arc::clone(texels));
             self.cube_blend = 1.;
         } else if self.cube_blend >= 1. && key != self.current_cube {
+            self.target_texels = Some(std::sync::Arc::clone(assets.cubes.get(&key).ok_or("PostFX target cube absent")?));
             self.target_cube = key;
             self.cube_blend = 0.;
         } else if self.cube_blend >= 1. {
             return Ok(());
         }
-        let a = assets
-            .cubes
-            .get(&self.target_cube)
-            .ok_or("PostFX target cube absent")?;
-        let b = assets
-            .cubes
-            .get(&self.current_cube)
-            .ok_or("PostFX current cube absent")?;
+        let a = std::sync::Arc::clone(self.target_texels.as_ref().ok_or("PostFX target cube absent")?);
+        let b = std::sync::Arc::clone(self.current_texels.as_ref().ok_or("PostFX current cube absent")?);
         // VMXBlend2 uses vcuxwfp8, multiply+fmadd, then vcfpuxws8
         // (truncate). Preserve byte quantization before trilinear sampling.
         let t = (self.cube_blend + dt / 6.).min(1.);
@@ -462,6 +467,7 @@ impl PostFx {
         self.cube_blend = t;
         if self.cube_blend >= 1. {
             self.current_cube = self.target_cube;
+            self.current_texels = self.target_texels.clone();
         }
         Ok(())
     }

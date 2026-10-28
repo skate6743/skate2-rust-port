@@ -24,6 +24,8 @@ pub(crate) enum PhysicalSkeletonControllerError {
     Pair(SimulationSkeletonJumpPairError),
     Poisoned,
     Controller(SkeletonControllerError<SkeletonRuntimeStateError>),
+    /// A collision state transition, `SetUpRagdoll` included.
+    Transition(crate::dynamic_assembly_session::skater_pool::ragdoll::PairRagdollError<std::convert::Infallible>),
 }
 impl fmt::Display for PhysicalSkeletonControllerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -32,6 +34,7 @@ impl fmt::Display for PhysicalSkeletonControllerError {
             Self::Pair(e) => write!(f, "SkeletonController pair: {e}"),
             Self::Poisoned => f.write_str("SkeletonController lock poisoned"),
             Self::Controller(e) => write!(f, "{e}"),
+            Self::Transition(e) => write!(f, "{e}"),
         }
     }
 }
@@ -66,36 +69,6 @@ impl SkeletonControllerCollision for SkeletonNormalAssembly {
     fn set_offboard_air_collision(&mut self) -> Result<(), SkeletonControllerError<Self::Error>> {
         self.try_set_offboard_air_collision()
             .map_err(SkeletonControllerError::Collision)
-    }
-}
-
-/// The same Skeleton plus its owner's live cvar references for one transition;
-/// `SetOffBoardCollision` samples them between its Part stores.
-struct OwnerBoundCollision<'a> {
-    normal: &'a mut SkeletonNormalAssembly,
-    cvars: &'a crate::input_cvar_runtime::InputCvarReferences,
-}
-impl SkeletonControllerCollision for OwnerBoundCollision<'_> {
-    type Error = SkeletonRuntimeStateError;
-    fn set_ground_collision(&mut self) -> Result<(), Self::Error> {
-        self.normal.set_ground_collision()
-    }
-    fn collide_with_world_only(&mut self) -> Result<(), Self::Error> {
-        self.normal.collide_with_world_only()
-    }
-    fn collide_with_world_only_offboard(
-        &mut self,
-    ) -> Result<(), SkeletonControllerError<Self::Error>> {
-        self.normal.collide_with_world_only_offboard()
-    }
-    fn set_air_collision(&mut self) -> Result<(), SkeletonControllerError<Self::Error>> {
-        self.normal.set_air_collision()
-    }
-    fn set_offboard_air_collision(&mut self) -> Result<(), SkeletonControllerError<Self::Error>> {
-        self.normal.set_offboard_air_collision()
-    }
-    fn set_offboard_collision(&mut self) -> Result<(), SkeletonControllerError<Self::Error>> {
-        self.normal.try_set_offboard_collision(self.cvars)
     }
 }
 
@@ -155,6 +128,7 @@ impl PhysicalAssemblyWorld {
 
     /// Source raw controller stores survive a collision failure. Publication
     /// becomes stale before possible volume/group writes, including on failure.
+    /// Any `EnterState` mode can run, `SetUpRagdoll` with the wipeout entry's live cosine.
     pub(crate) fn try_pair_skeleton_collision_transition(
         &mut self,
         board: &SimulationSkaterAssemblyHandle,
@@ -162,35 +136,12 @@ impl PhysicalAssemblyWorld {
         transition: SkeletonCollisionTransition,
     ) -> Result<(), PhysicalSkeletonControllerError> {
         use PhysicalSkeletonControllerError as E;
+        let mut cosine = |angle: f32| Ok::<f32, std::convert::Infallible>(angle.cos());
         self.skaters
             .as_mut()
             .ok_or(E::MissingPool)?
-            .try_with_collision_pair(&self.backend, board, skeleton, |normal, owner| {
-                let mut controller = owner
-                    .skeleton_controller()
-                    .lock()
-                    .map_err(|_| E::Poisoned)?;
-                let normal = &mut OwnerBoundCollision {
-                    normal,
-                    cvars: &owner.inputs().cvars,
-                };
-                match transition {
-                    SkeletonCollisionTransition::Set(state) => {
-                        controller.try_set_collision_state(state, normal)
-                    }
-                    SkeletonCollisionTransition::InitAir => {
-                        controller.try_init_air_collision(normal)
-                    }
-                    SkeletonCollisionTransition::StartWorldOnly => {
-                        controller.try_start_world_only(normal)
-                    }
-                    SkeletonCollisionTransition::StopWorldOnly => {
-                        controller.try_stop_world_only(normal)
-                    }
-                }
-                .map_err(E::Controller)
-            })
-            .map_err(E::Pair)?
+            .try_pair_collision_transition(&mut self.backend, board, skeleton, &mut cosine, transition)
+            .map_err(E::Transition)
     }
 }
 

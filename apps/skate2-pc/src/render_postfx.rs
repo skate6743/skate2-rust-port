@@ -1,12 +1,47 @@
 //! Authored PostFX inputs. Shared with the existing WorldPainter/environment
 //! owner; cube files are loaded through the existing mounted BIG reader.
 use crate::{gpu_renderer::RenderResult, render_environment::VaultReader};
+use skate2_core::challenge::attrib_db::AttribDb;
 use skate2_formats::{attrib::string_hash64, mount::MountSet};
 use std::{collections::BTreeMap, sync::Arc};
 
 pub(crate) const DEFAULT_BLOOM: u64 = 0x3c71d6b414304f99;
 pub(crate) const DEFAULT_EXPOSURE: u64 = 0x2b00cf9bb190ce8d;
 pub(crate) const DEFAULT_CUBE: u64 = 0xd7edbd362d7d2152;
+/// `colour_cube`'s file name.
+const CUBE_FILE_KEY: u64 = 0xbe88128a30be926e;
+/// A `post_fx` bloom collection's threshold, saturation, coarse, medium and fine intensity.
+const BLOOM_KEYS: [u64; 5] = [0x1c226b5fdd1a430d, 0x9ef7c9eade67e97c, 0x8e28805b5a916828, 0xf3dcd6b381bce484, 0x88ebac70289b826d];
+/// A `rendering` auto-exposure collection's four values.
+const EXPOSURE_KEYS: [u64; 4] = [0x1458f4fd2118e6cf, 0x971d1dc6e522cf09, 0xa3bc00dbc916b065, 0x9807fa11bf89a40e];
+
+/// A colour cube's 32^3 RGB file, decoded once per name; `None` when the file is not mounted (the
+/// vault includes unreleased locations, e.g. X Games). ASyncLoad/UpdateColourCube retain the
+/// current cube when the requested asset has not loaded. Never invent a LUT.
+fn cube_rgba(mounts: &MountSet, name: String, files: &mut BTreeMap<String, Arc<[u8]>>) -> RenderResult<Option<Arc<[u8]>>> {
+    if let Some(bytes) = files.get(&name) {
+        return Ok(Some(bytes.clone()));
+    }
+    let bytes = match mounts.read_path(&format!("data/colourcubes/{name}")) {
+        Ok(bytes) => bytes,
+        Err(skate2_formats::mount::MountError::EntryNotFound(_)) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if bytes.len() != 32 * 32 * 32 * 3 {
+        return Err(format!(
+            "colour cube {name}: expected32^3 RGB bytes, got{}",
+            bytes.len()
+        )
+        .into());
+    }
+    // Blender expands directly into the native tiled texture.
+    // The PC volume texture needs linear order instead.
+    let rgba = crate::render_postfx_math::decode_cube(&bytes)
+        .ok_or("colour cube volume layout")?;
+    let rgba: Arc<[u8]> = rgba.into();
+    files.insert(name, rgba.clone());
+    Ok(Some(rgba))
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct Assets {
@@ -157,6 +192,42 @@ impl Assets {
         frame.bloom = [blend(frame.bloom[0],self.hom.bloom[0]),blend(frame.bloom[1],self.hom.bloom[1]),0.,1.,1.];
     }
 
+    /// The colour cube, bloom and auto-exposure collections of every vault `db` holds that these
+    /// lack: the downloadable content's, which its render locations name.
+    pub(crate) fn add_vault_collections(&mut self, mounts: &MountSet, db: &AttribDb) -> RenderResult<()> {
+        let cube = string_hash64("colour_cube");
+        let mut files = BTreeMap::new();
+        for &key in db.collections(cube) {
+            if self.cubes.contains_key(&key) {
+                continue;
+            }
+            let Some(name) = db.attribute(cube, key, CUBE_FILE_KEY).and_then(|value| value.text(0)).filter(|name| !name.is_empty()) else {
+                continue;
+            };
+            if let Some(rgba) = cube_rgba(mounts, name.to_owned(), &mut files)? {
+                self.cubes.insert(key, rgba);
+            }
+        }
+        let float = |class: u64, key: u64, attribute: u64| db.attribute(class, key, attribute).and_then(|value| value.f32(0));
+        let post = string_hash64("post_fx");
+        for &key in db.collections(post) {
+            if !self.blooms.contains_key(&key)
+                && let [Some(a), Some(b), Some(c), Some(d), Some(e)] = BLOOM_KEYS.map(|attribute| float(post, key, attribute))
+            {
+                self.blooms.insert(key, [a, b, c, d, e]);
+            }
+        }
+        let rendering = string_hash64("rendering");
+        for &key in db.collections(rendering) {
+            if !self.exposures.contains_key(&key)
+                && let [Some(a), Some(b), Some(c), Some(d)] = EXPOSURE_KEYS.map(|attribute| float(rendering, key, attribute))
+            {
+                self.exposures.insert(key, [a, b, c, d]);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn read(
         vault: &VaultReader<'_>,
         mounts: &MountSet,
@@ -168,62 +239,28 @@ impl Assets {
         let mut cubes = BTreeMap::new();
         let mut files: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
         for key in vault.collection_keys(cube) {
-            let name = vault.string(cube, key, 0xbe88128a30be926e)?;
+            let name = vault.string(cube, key, CUBE_FILE_KEY)?;
             if name.is_empty() {
                 continue;
             } // ASyncLoad8284dad4 rejects empty filenames.
-            let rgba = if let Some(bytes) = files.get(&name) {
-                bytes.clone()
-            } else {
-                let bytes = match mounts.read_path(&format!("data/colourcubes/{name}")) {
-                    Ok(bytes) => bytes,
-                    // The vault includes unreleased locations (e.g. X Games).
-                    // ASyncLoad/UpdateColourCube retain the current cube when
-                    // the requested asset has not loaded. Never invent a LUT.
-                    Err(skate2_formats::mount::MountError::EntryNotFound(_)) => continue,
-                    Err(error) => return Err(error.into()),
-                };
-                if bytes.len() != 32 * 32 * 32 * 3 {
-                    return Err(format!(
-                        "colour cube {name}: expected32^3 RGB bytes, got{}",
-                        bytes.len()
-                    )
-                    .into());
-                }
-                // Blender expands directly into the native tiled texture.
-                // The PC volume texture needs linear order instead.
-                let rgba = crate::render_postfx_math::decode_cube(&bytes)
-                    .ok_or("colour cube volume layout")?;
-                let rgba: Arc<[u8]> = rgba.into();
-                files.insert(name, rgba.clone());
-                rgba
-            };
+            let Some(rgba) = cube_rgba(mounts, name, &mut files)? else { continue };
             cubes.insert(key, rgba);
         }
         let mut blooms = BTreeMap::new();
         for key in vault.collection_keys(post) {
-            blooms.insert(
-                key,
-                [
-                    vault.floats::<1>(post, key, 0x1c226b5fdd1a430d)?[0],
-                    vault.floats::<1>(post, key, 0x9ef7c9eade67e97c)?[0],
-                    vault.floats::<1>(post, key, 0x8e28805b5a916828)?[0],
-                    vault.floats::<1>(post, key, 0xf3dcd6b381bce484)?[0],
-                    vault.floats::<1>(post, key, 0x88ebac70289b826d)?[0],
-                ],
-            );
+            let mut bloom = [0.0; 5];
+            for (value, attribute) in bloom.iter_mut().zip(BLOOM_KEYS) {
+                *value = vault.floats::<1>(post, key, attribute)?[0];
+            }
+            blooms.insert(key, bloom);
         }
         let mut exposures = BTreeMap::new();
         for key in vault.collection_keys(rendering) {
-            exposures.insert(
-                key,
-                [
-                    vault.floats::<1>(rendering, key, 0x1458f4fd2118e6cf)?[0],
-                    vault.floats::<1>(rendering, key, 0x971d1dc6e522cf09)?[0],
-                    vault.floats::<1>(rendering, key, 0xa3bc00dbc916b065)?[0],
-                    vault.floats::<1>(rendering, key, 0x9807fa11bf89a40e)?[0],
-                ],
-            );
+            let mut exposure = [0.0; 4];
+            for (value, attribute) in exposure.iter_mut().zip(EXPOSURE_KEYS) {
+                *value = vault.floats::<1>(rendering, key, attribute)?[0];
+            }
+            exposures.insert(key, exposure);
         }
         let matrix_key = 0x2d9c5e5c45ce93dc; // PostFXconstructor8283980c.
         let matrix = crate::render_postfx_math::colour_matrix(

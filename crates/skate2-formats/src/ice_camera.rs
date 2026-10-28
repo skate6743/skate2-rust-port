@@ -444,6 +444,21 @@ impl CameraSet {
         Ok(result)
     }
 
+    /// PC port: a later ICE file's groups (downloadable content's `ice_NNN.bin`) that this set
+    /// lacks, in their order. The game's own groups stay this set's.
+    pub fn add_new_groups(&mut self, other: Self) {
+        let Self { mut groups, order } = other;
+        for key in order {
+            if self.groups.contains_key(&key) {
+                continue;
+            }
+            if let Some(takes) = groups.remove(&key) {
+                self.order.push(key);
+                self.groups.insert(key, takes);
+            }
+        }
+    }
+
     fn take(&self, group: (u32, u32), index: usize) -> &Take {
         &self.groups[&group][index]
     }

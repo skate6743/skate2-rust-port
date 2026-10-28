@@ -17,9 +17,10 @@ const MAX_UNPACKED: u64 = 4 << 30;
 /// Top-level names in the game's folder an update never replaces: the player's settings and
 /// saves, the dedicated server's private word list, settings, moderation key and ban lists, and
 /// the update's own files.
-const PROTECTED: [&str; 10] = [
+const PROTECTED: [&str; 11] = [
     "config.json",
     "online-config.json",
+    "controller_config.json",
     "saves",
     "badwords.txt",
     "server-config.json",

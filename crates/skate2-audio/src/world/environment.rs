@@ -297,6 +297,11 @@ impl Ambience {
             ],
         );
         let Some(voice) = self.voice else { return };
+        // PC port: the bed starts silent, where its fade-in starts, until `ProcessUpdate` sets its
+        // gain. The original played it at the Gain's default of 1.0 until then, an update at full
+        // volume whatever the profile's; the PC's first frames come far apart, and with a profile
+        // at no volume that was a blast of ambience at boot.
+        ctx.core.set_attribute(PluginRef { voice, index: VOICE_GAIN }, 0, 0.0);
         let params = PlayParams {
             stream_path: Some(format!("{STREAMS}{}", info.filename).replace('/', "\\")),
             ram_sample: Some(info.snr.clone()),
