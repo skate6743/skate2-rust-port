@@ -251,7 +251,7 @@ impl SkateboardContactSurface {
         if !entry.in_contact || entry.winner.is_some_and(|old| normal_y > old.normal_y) {
             entry.winner = Some(SkateboardSurfaceWinner {
                 normal_y,
-                physics_type: (surface >> 7) & 31,
+                physics_type: physics_surface_type(surface),
             });
         }
         entry.in_contact = true;
@@ -273,6 +273,15 @@ impl SkateboardContactSurface {
         }
         Ok(choose_count_winner(&counts))
     }
+}
+
+/// A contact surface word's `ePhysicsSurfaceType` (bits 7 to 11). PC port: a linked Skate 3 data
+/// folder's surfaces name types past Skate 2's last, Wipeout (9): Skate 3 votes among 1 to 13
+/// (0x82c08818 in its title update 3) and its `SurfacePhysics::Dispatch` (0x82d86018) rides
+/// every type past 6 as smooth, as these are here; Skate 2's counts have room for 11.
+pub(crate) fn physics_surface_type(surface: u32) -> u32 {
+    let kind = (surface >> 7) & 31;
+    if kind > 9 && crate::skate3::linked().is_some() { 1 } else { kind }
 }
 
 fn choose_count_winner(counts: &[u32; 12]) -> u32 {

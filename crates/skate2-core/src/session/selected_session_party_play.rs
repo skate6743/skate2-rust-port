@@ -205,7 +205,19 @@ impl<T, C> SelectedLiveSession<T, C> {
             .unwrap_or_default();
         let created = created_skater_record()?.is_some();
         let characters = freeskate_option::characters(&db, &world.unlockables, created.then_some(name.as_str()));
-        let locations = [Game::SpotBattle, Game::Skate, Game::Hom].map(|game| party_play::locations(&db, &world.unlockables, game, &points));
+        let mut locations = Game::ALL.map(|game| party_play::locations(&db, &world.unlockables, game, &points));
+        // PC port: a linked Skate 3 data folder's games of each kind follow the game's own
+        // (`crate::skate3`), titled in Skate 3's English as the online Map Pool's are.
+        if let Some(data) = crate::skate3::linked() {
+            for (game, list) in Game::ALL.into_iter().zip(locations.iter_mut()) {
+                let Some(net_type) = crate::online::catalog::net_challenge_type(game.challenge_type()) else { continue };
+                list.extend(data.online_spots(net_type).into_iter().map(|spot| party_play::Location {
+                    key: spot.key,
+                    title: format!("#{}", spot.title),
+                    image: crate::skate3::LOCATION_IMAGE.to_owned(),
+                }));
+            }
+        }
         let menu = self.main_menu.as_mut().ok_or_else(|| error("main menu absent"))?;
         menu.party_play = Some(party_play::Controller::new(characters, locations));
         Ok(())

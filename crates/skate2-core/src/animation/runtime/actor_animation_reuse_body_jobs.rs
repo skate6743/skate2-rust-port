@@ -30,6 +30,8 @@ impl AnimationJobWork for SegmentWork {
                 .as_ref()
                 .ok_or(BindPoseError::MissingBindPose)?;
             match code {
+                AnimationJobCode::SetData => tree.load_external_range(&mut state.tree_sqts,
+                    &self.body.database.hierarchy,self.segment.external_sqts.clone())?,
                 AnimationJobCode::FetchVbr => {
                     for (slot, fetch) in &tree.fetches[self.segment.fetches.clone()] {
                         let values = match fetch {
@@ -53,7 +55,8 @@ impl AnimationJobWork for SegmentWork {
                 _ => return Err(BindPoseError::UnsupportedSetup),
             }
             if self.final_segment
-                && (code == AnimationJobCode::SqtBlend || self.segment.operations.is_empty())
+                && (code==AnimationJobCode::SqtBlend || (self.segment.operations.is_empty() &&
+                    (code==AnimationJobCode::FetchVbr || (self.segment.fetches.is_empty() && code==AnimationJobCode::SetData))))
             {
                 state.sqt = state.tree_sqts[usize::from(tree.output()?)].take();
             }
@@ -100,10 +103,16 @@ impl BufferedBodyCommands {
                 segment: segment.clone(),
                 final_segment: index + 1 == segments.len(),
             });
+            let set=!segment.external_sqts.is_empty();
             let fetch = !segment.fetches.is_empty();
             let blend = !segment.operations.is_empty();
             let reuse = !segment.copies.is_empty();
-            shapes.push((fetch, blend, reuse));
+            shapes.push((set,fetch,blend,reuse));
+            if set {
+                let job=next_job(self.set_pool.as_mut().ok_or(BindPoseError::BufferedOwnerRequired)?)?;
+                configure(&job,Some(AnimationJobCode::SetData),b"ACSsetData")?;
+                stages.push((job,Some(Arc::clone(&view) as Arc<dyn AnimationJobWork>)));
+            }
             if fetch {
                 let job = next_job(
                     self.fetch_pool
@@ -179,7 +188,7 @@ impl BufferedBodyCommands {
             .scheduler
             .as_ref()
             .ok_or(AnimationExecutionError::MissingBackend)?;
-        backend.submit_body_segments(
+        backend.submit_body_segments_with_set(
             &self.body_pending.as_ref().expect("retained body").jobs,
             &shapes,
         )?;

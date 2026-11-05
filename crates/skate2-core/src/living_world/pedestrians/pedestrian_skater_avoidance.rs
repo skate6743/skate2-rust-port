@@ -164,7 +164,9 @@ impl SkaterModifier {
                 .map_err(|e|format!("skater avoid mesh: {e:?}"))?;
             if !cell.is_valid() { return Ok(None); }
             let candidate_cost = cell.cost_and_centroid().ok_or("skater avoid candidate mesh absent")?.0;
-            let current_cost = rig.mesh_info.cell.cost_and_centroid().ok_or("skater avoid current mesh absent")?.0;
+            // `GetCost` reads the rig's cell unchecked (`0x82e8fa40`); PC port: off the mesh
+            // (Skate 3's has gaps) it costs most.
+            let current_cost = rig.mesh_info.cell.cost_and_centroid().map_or(f32::MAX, |(cost, _)| cost);
             if candidate_cost > current_cost { return Ok(None); }
         }
         let id = create_avoid_packet(queue,large,direction)?;

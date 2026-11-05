@@ -45,7 +45,7 @@ impl<N: ReckoningNumeric> Source<'_, N> {
         key: u64,
     ) -> Result<f32, GroundWipeoutRuntimeError<N::Error>> {
         let pointer = self.air_attribute_pointer(key)?;
-        self.attribute_value(&pointer)
+        self.wipeout_float(&pointer)
     }
     fn air_frame_threshold(&mut self) -> Result<i32, GroundWipeoutRuntimeError<N::Error>> {
         use GroundWipeoutRuntimeError as E;
@@ -200,8 +200,8 @@ impl<N: ReckoningNumeric> Source<'_, N> {
                 //1634 arms pointer,1648 body pointer,1650 arms load,1658 body load.
                 let arms_pointer = self.air_attribute_pointer(ARMS)?;
                 let body_pointer = self.air_attribute_pointer(BODY)?;
-                let arms = self.attribute_value(&arms_pointer)?;
-                let body = self.attribute_value(&body_pointer)?;
+                let arms = self.wipeout_float(&arms_pointer)?;
+                let body = self.wipeout_float(&body_pointer)?;
                 if leaves::contact_force(self, skeleton_scalar * body, arms)? {
                     self.request(0)?;
                     if self.air_display_debug()? {

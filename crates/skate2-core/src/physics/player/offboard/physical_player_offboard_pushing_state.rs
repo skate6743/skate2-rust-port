@@ -441,11 +441,15 @@ impl PhysicalAssemblyWorld {
                         s.target_push_normal = Some(neg(hands[2]));
                         s.last_push_normal = s.target_push_normal;
                         s.target_x_direction = Some(neg(hands[0]));
-                        let attrs = need(s.attribs.as_ref(), "Pushing attributes")?;
-                        s.world_grab_z =
-                            Some(read_floats::<1>(attrs, 0x5e35_db02_be69_7a58).map_err(error)?[0]);
-                        s.world_grab_y =
-                            Some(read_floats::<1>(attrs, 0x02f0_3da5_1050_c8b3).map_err(error)?[0]);
+                        let (grab_z, grab_y) = {
+                            let attrs = need(s.attribs.as_ref(), "Pushing attributes")?;
+                            (
+                                read_floats::<1>(attrs, 0x5e35_db02_be69_7a58).map_err(error)?[0],
+                                read_floats::<1>(attrs, 0x02f0_3da5_1050_c8b3).map_err(error)?[0],
+                            )
+                        };
+                        s.world_grab_z = Some(grab_z);
+                        s.world_grab_y = Some(grab_y);
                         Ok(())
                     })
                 })

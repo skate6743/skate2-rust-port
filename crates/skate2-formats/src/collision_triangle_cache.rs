@@ -28,6 +28,14 @@ impl PreparedMeshTriangles {
             units,
         })
     }
+    /// Borrow this immutable mesh's already validated cluster and unit decode.
+    /// Both slices retain serialized order. A consumer must use the same mesh
+    /// owner; this does not admit reuse across resident mesh occurrences.
+    #[must_use]
+    pub fn cluster_units(&self) -> (&[MeshCluster], &[Vec<MeshUnit>]) {
+        (&self.clusters, &self.units)
+    }
+
     /// Expands ranges with the original helper: no sorting or deduplication.
     /// # Errors
     /// Returns the original selected range/unit/vertex validation error.

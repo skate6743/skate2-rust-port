@@ -420,6 +420,11 @@ pub struct Sk8EmitterSystem {
     dlc_file_index: i32,
     next_status_id: u32,
     freed: VecDeque<VolumeStatus>,
+    /// PC port: the camera is in a linked Skate 3 district, which stands where the city's
+    /// volumes were placed. TU3 loads only the district's own emitter files there
+    /// (`reverb_downtown.ems` and the like, not ported), so none of the city's volumes holds the
+    /// camera: its reverb is the district's painted one.
+    skate3_district: bool,
 }
 
 impl Default for Sk8EmitterSystem {
@@ -464,7 +469,13 @@ impl Sk8EmitterSystem {
             dlc_file_index: -1,
             next_status_id: 1,
             freed: VecDeque::new(),
+            skate3_district: false,
         }
+    }
+
+    /// PC port: whether the camera is in a linked Skate 3 district (`skate3_district`).
+    pub fn set_skate3_district(&mut self, district: bool) {
+        self.skate3_district = district;
     }
 
     /// The emitter steps of `AudioSystem::Initialize` 0x82509c18 after `emitter_utility.abk`
@@ -583,7 +594,9 @@ impl Sk8EmitterSystem {
             for status in &mut self.volume_statuses {
                 status.touched = false;
             }
-            self.search_oct_tree(camera, io);
+            if !self.skate3_district {
+                self.search_oct_tree(camera, io);
+            }
             self.remove_untouched(states, io);
             self.update_volume_list(states, io);
             self.update_music_volumes(io.vault);

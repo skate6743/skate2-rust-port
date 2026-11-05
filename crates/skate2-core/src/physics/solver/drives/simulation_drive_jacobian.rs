@@ -1875,9 +1875,13 @@ fn try_prepare_active_drive_island_batch_with_backend_and_reservation<
         return Err(SimulationDriveIslandBatchPreparationError::IslandMapFrameMismatch);
     }
 
-    let snapshots = drive_pool
+    let mut snapshots = drive_pool
         .try_active_build_snapshots_for_phase(phase)
         .map_err(SimulationDriveIslandBatchPreparationError::Pool)?;
+    snapshots.retain(|snapshot| {
+        !phase.is_externally_driven(snapshot.body_a.observation())
+            && !phase.is_externally_driven(snapshot.body_b.observation())
+    });
     let capacity = snapshots.len();
     let mut island_counts = [0_usize; SIMULATION_ISLAND_CAPACITY];
 

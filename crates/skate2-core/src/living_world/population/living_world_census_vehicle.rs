@@ -148,6 +148,18 @@ impl VehicleCensusFrame<'_> {
             )
             .map_err(error)?;
         }
+        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        if *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_VEHICLES").is_some())
+            && CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 120 == 0
+        {
+            eprintln!(
+                "vehicle census banned={banned} enable={:#x} max={:?} roster={} center={center:?}",
+                self.living.census.enable,
+                self.living.census.max_vehicles,
+                self.living.grind_vehicle_entities.as_deref().map_or(0, |entities| entities.captured_member_count()),
+            );
+        }
         Ok(())
     }
     /// Null results are normal source rejection, distinct from a missing owner

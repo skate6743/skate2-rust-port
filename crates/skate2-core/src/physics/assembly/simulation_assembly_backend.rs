@@ -23,6 +23,10 @@
 //! a required transaction step; `DynamicAssemblySession` keeps its handles
 //! private and maintains the precondition.
 
+#[cfg(feature = "skate3-runtime")]
+#[path = "skate3_player_backend.rs"]
+mod skate3_player_backend;
+
 #[cfg(test)]
 use crate::simulation_rigid_body_pool::SimulationInertia;
 use crate::{

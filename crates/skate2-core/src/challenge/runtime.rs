@@ -6,7 +6,7 @@
 use super::{
     attrib_db::AttribDb,
     attrib_lua::push_data_providers,
-    keys::{class, hash32},
+    keys::{class, hash32, hash64},
     lua::{Lua, LuaResult, NativeCall, Value, stdlib::check_string},
     system::{Event, Field, Message, Output, World},
 };
@@ -272,8 +272,7 @@ impl Delivery<'_> {
                         Field::Bool(b) => Value::Boolean(*b),
                         Field::Text(s) => Value::string(s),
                         Field::Pointer(p) => Value::LightUserData(*p),
-                        #[expect(clippy::cast_precision_loss, reason = "(float)(double)u64")]
-                        Field::Key(k) => Value::Number(*k as f64 as f32),
+                        Field::Key(k) => Value::Number(crate::skate3::id_float(*k)),
                         Field::Nil => Value::Nil,
                     };
                     lua.table_mut(t).set_str(name, v);
@@ -389,7 +388,13 @@ fn execute_scripted_handler(lua: &mut Lua<World>, world: &mut World, graph: usiz
     if !world.attached.contains(&handler) {
         attach(lua, world, handler);
     }
-    let name = format!("h_{handler:016X}");
+    let name = if skate3_handler(lua, world, graph, handler) {
+        format!("h_skate3_{handler:016X}")
+    } else if fixed_handler(lua, world, handler) {
+        format!("h_fix_{handler:016X}")
+    } else {
+        format!("h_{handler:016X}")
+    };
     let function = lua.get_global(&name);
     if let Err(e) = lua.call(world, &function, args) {
         let activity = &world.activities.activities[graph];
@@ -398,6 +403,52 @@ fn execute_scripted_handler(lua: &mut Lua<World>, world: &mut World, graph: usiz
         eprintln!("career script error in {context}: {e}");
         world.output(Output::ScriptError { context, error: e.to_string() });
     }
+}
+
+/// PC port: whether the handler is one a linked Skate 3 data folder's game of its type runs
+/// through Skate 3's own rules (`script_fixes::SKATE3_HANDLERS`, whose source loads once, after
+/// the shipped handlers it calls); without its wrapper defined the shipped handler runs.
+fn skate3_handler(lua: &mut Lua<World>, world: &mut World, graph: usize, handler: u64) -> bool {
+    use super::script_fixes::{SKATE3_HANDLERS, SKATE3_SOURCE};
+    let Some(&(_, net_type)) = SKATE3_HANDLERS.iter().find(|&&(key, _)| key == handler) else { return false };
+    let key = world.activities.activities[graph].key;
+    if !crate::skate3::linked().is_some_and(|data| data.online_spot(key).is_some_and(|spot| spot.net_type == net_type)) {
+        return false;
+    }
+    let chunk = hash64("PC port: skate3_handlers");
+    if world.attached.insert(chunk) {
+        for &(shipped, _) in &SKATE3_HANDLERS {
+            if !world.attached.contains(&shipped) {
+                attach(lua, world, shipped);
+            }
+        }
+        let loaded = lua.load_source(SKATE3_SOURCE.as_bytes(), "skate3_handlers")
+            .and_then(|main| lua.call(world, &main, &[]).map(|_| ()));
+        if let Err(e) = loaded {
+            world.output(Output::ScriptError { context: "attach skate3_handlers".to_owned(), error: e.to_string() });
+        }
+    }
+    !lua.get_global(&format!("h_skate3_{handler:016X}")).is_nil()
+}
+
+/// PC port: whether the handler runs through the port's wrapper of it
+/// (`script_fixes::FIXED_HANDLERS`, whose source loads once; the shipped handlers a wrapper
+/// calls attach first); without its wrapper defined the shipped handler runs.
+fn fixed_handler(lua: &mut Lua<World>, world: &mut World, handler: u64) -> bool {
+    use super::script_fixes::{FIXED_HANDLERS, FIXES_SOURCE};
+    let Some(&(_, other)) = FIXED_HANDLERS.iter().find(|&&(key, _)| key == handler) else { return false };
+    if !world.attached.contains(&other) {
+        attach(lua, world, other);
+    }
+    let chunk = hash64("PC port: script_fixes");
+    if world.attached.insert(chunk) {
+        let loaded = lua.load_source(FIXES_SOURCE.as_bytes(), "script_fixes")
+            .and_then(|main| lua.call(world, &main, &[]).map(|_| ()));
+        if let Err(e) = loaded {
+            world.output(Output::ScriptError { context: "attach script_fixes".to_owned(), error: e.to_string() });
+        }
+    }
+    !lua.get_global(&format!("h_fix_{handler:016X}")).is_nil()
 }
 
 fn handler_name(db: &AttribDb, handler: u64) -> String {

@@ -59,6 +59,8 @@ pub(crate) enum SelectedSessionFrameError<S, R, F, C, N, O> {
     ),
     Palette(CharacterPaletteError),
     Materials(CharacterMaterialError),
+    #[cfg(feature = "skate3-runtime")]
+    Skate3(String),
 }
 
 /// A skater after the first in `SkaterManager`'s list, with its own presentation.
@@ -226,6 +228,14 @@ impl SelectedSessionFrame<'_> {
                 presentation_observer,
             )
             .map_err(E::Presentation)?;
+        static TRACE_ROOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *TRACE_ROOT.get_or_init(|| std::env::var_os("SKATE2_TRACE_PRESENTATION_ROOT").is_some()) {
+            eprintln!(
+                "presentation root: root={:?} hips={:?}",
+                self.presentation_runtime.published_root_position(),
+                self.presentation_runtime.published_hips_position(),
+            );
+        }
         if self.presentation_runtime.published_peer().is_some() {
             self.presentation_runtime.palette().map_err(E::Palette)?;
             self.presentation_runtime.materials().map_err(E::Materials)?;

@@ -92,6 +92,15 @@ impl WorldPainterLayerAsset {
         }
     }
 
+    /// PC port: the 64-bit dictionary entry for a lookup index, which a linked Skate 3
+    /// district's layer holds as its region's collection key, low word first (TU3 0x82c0eac0).
+    pub(crate) fn region_key(&self, index: u16) -> Result<u64, LayerAssetError> {
+        dictionary_region_key(
+            self.dictionary()?.ok_or(LayerAssetError::NullDictionary)?,
+            index,
+        )
+    }
+
     /// The palette region word for a dictionary lookup index.
     pub(crate) fn region_word(&self, index: u16) -> Result<u32, LayerAssetError> {
         dictionary_region_word(
@@ -204,6 +213,22 @@ pub(crate) fn dictionary_region_word(
     let slot = table + usize::from(index) * 8;
     let entry = usize::try_from(word(dictionary, slot)?).map_err(|_| LayerAssetError::NodeIndex)?;
     word(dictionary, entry)
+}
+
+/// PC port: [`dictionary_region_word`]'s entry read whole, as Skate 3's key.
+pub(crate) fn dictionary_region_key(
+    dictionary: &[u8],
+    index: u16,
+) -> Result<u64, LayerAssetError> {
+    let total = word(dictionary, 0)?;
+    if u32::from(index) >= total {
+        return Err(LayerAssetError::DictionaryIndex { index, total });
+    }
+    let table = usize::try_from(word(dictionary, 12)?).map_err(|_| LayerAssetError::NodeIndex)?;
+    let slot = table + usize::from(index) * 8;
+    let entry = usize::try_from(word(dictionary, slot)?).map_err(|_| LayerAssetError::NodeIndex)?;
+    // TU3 0x82c0eac0 returns `(entry[1] << 32) | entry[0]`: the key's low word comes first.
+    Ok((u64::from(word(dictionary, entry + 4)?) << 32) | u64::from(word(dictionary, entry)?))
 }
 
 /// `WorldPainter::quad` (dynamic initializer 0x82f89fe0): child centre

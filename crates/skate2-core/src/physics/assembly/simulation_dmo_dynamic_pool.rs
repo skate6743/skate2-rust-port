@@ -224,6 +224,10 @@ impl SimulationDmoAssemblyCandidate {
     pub(crate) fn is_attached(&self) -> bool {
         self.parts.is_attached()
     }
+    /// The LivingWorld entity this body was created for, once attached.
+    pub(crate) const fn entity_id(&self) -> Option<u32> {
+        self.entity_id
+    }
 
     pub(crate) fn part_transforms(&self) -> impl ExactSizeIterator<Item = &[f32; 16]> {
         self.parts.part_transforms()

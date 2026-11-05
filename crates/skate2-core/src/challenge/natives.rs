@@ -190,6 +190,21 @@ fn frontend_open_photo_selection(_: &mut Lua<World>, world: &mut World, call: &N
     none()
 }
 
+/// PC port: the calling activity is a linked Skate 3 data folder's game, which runs Skate 2's
+/// challenge over its own spot (`crate::skate3`).
+pub(crate) fn is_skate3_spot(world: &World) -> bool {
+    world.closure.is_some_and(|activity| {
+        crate::skate3::linked().is_some_and(|data| data.online_spot(world.activities.activities[activity].key).is_some())
+    })
+}
+
+/// PC port: a scene the calling Skate 3 game cannot play. Skate 2's scenes are cut at San
+/// Vanelona's spots and would film them there, so it goes as a definition that names no scene;
+/// Skate 3's own (`crate::skate3::is_scene`) play at its spots.
+pub(crate) fn is_skate2_scene_at_skate3_spot(world: &World, scene: &str) -> bool {
+    is_skate3_spot(world) && !crate::skate3::is_scene(scene)
+}
+
 /// `NIS.PreloadNIS(definition, ...)` (`0x8289b9a8`): the named scenes of the leading
 /// `tNISPlaybackDefinition`s, `NISManager::PreloadNISList`.
 fn nis_preload(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
@@ -197,7 +212,7 @@ fn nis_preload(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     for index in 0..call.len() {
         let Value::LightUserData(_) = call.arg(index) else { break };
         let scene = attrib_location(&world.pointers, call.arg(index)).and_then(|at| world.db.text_at(at)).unwrap_or_default();
-        if !scene.is_empty() {
+        if !scene.is_empty() && !is_skate2_scene_at_skate3_spot(world, scene) {
             scenes.push(scene.to_owned());
         }
     }
@@ -440,7 +455,7 @@ fn location_name(world: &World, value: &Value) -> Option<String> {
 
 /// `cLocationManager::GetLocationPosition` (`0x82a8e330`).
 fn location_position(world: &World, name: &str) -> [f32; 3] {
-    world.locations.get(&hash_value32(name)).map_or(world.default_location, |t| [t[12], t[13], t[14]])
+    world.location(hash_value32(name)).map_or(world.default_location, |t| [t[12], t[13], t[14]])
 }
 
 /// `AI.SkaterDistanceFromLocation(player, location)` (`0x8288de40`).
@@ -869,7 +884,7 @@ fn challenge_manager_switch_challenge_camera(_: &mut Lua<World>, world: &mut Wor
     let active = get_bool(call, 0);
     let mut matrix = IDENTITY_AXES;
     if active {
-        let location = location_name(world, call.arg(1)).and_then(|name| world.locations.get(&hash_value32(&name)).copied());
+        let location = location_name(world, call.arg(1)).and_then(|name| world.location(hash_value32(&name)));
         let Some(orientation) = location else { return none() };
         matrix = orientation;
     }
@@ -1428,7 +1443,7 @@ fn nis_enter_using_definition(_: &mut Lua<World>, world: &mut World, call: &Nati
     let skip_enabled = get_bool_or(call, 3, true);
     let restore_streamer = get_bool_or(call, 4, false);
     let scene = world.db.text_at(definition).unwrap_or_default().to_owned();
-    if scene.is_empty() {
+    if scene.is_empty() || is_skate2_scene_at_skate3_spot(world, &scene) {
         world.send(Event::NisChallengeNotify { notification: 1 });
         return none();
     }

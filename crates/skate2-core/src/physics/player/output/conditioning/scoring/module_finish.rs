@@ -100,6 +100,12 @@ impl ScoreModule {
         if holder.pending_air_period.landing_was_sketchy {
             factor *= scalar(&self.states, 0x62b9_c3da_a846_e240)?;
         }
+        // TU3 RewardAirSequence82DA32F0..3304 applies the authored clean
+        // factor AFTER the sketchy branch. Keep S2's independent policy intact.
+        #[cfg(feature = "skate3-runtime")]
+        if self.states.skate3_enabled() && holder.skate3_clean_landing {
+            factor *= scalar(&self.states, 0x5a2d_1476_f086_90ec)?;
+        }
         holder.reward_air(factor, out);
         Ok(())
     }
@@ -113,6 +119,7 @@ impl ScoreModule {
             .as_ref()
             .ok_or(ScoreError::Missing("score reset"))?;
         let multiplier_active = state.is_multiplier_active;
+        let just_entered_wipeout = state.just_entered_wipeout;
         let scale;
         let flags;
         {
@@ -150,6 +157,8 @@ impl ScoreModule {
             let raw = (holder.air_sequence_score_pending + holder.air_sequence_score)
                 + holder.sequence_score;
             let points = if scale >= 1.0 { raw } else { raw * scale };
+            trace_score(format_args!("sequence end: wipeout {} runout {} worthy {} scale {scale} points {points}",
+                just_entered_wipeout, out.is_running_out, f.activity_worthy));
             let mut multiplier = 1.0;
             let line = self
                 .line_timer
@@ -227,5 +236,21 @@ impl ScoreModule {
             }
         }
         Ok(())
+    }
+}
+
+/// `SKATE2_TRACE_SCORE_SEQUENCE`: collector changes and sequence endings.
+pub(super) fn trace_score(message: std::fmt::Arguments<'_>) {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    if !*TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_SCORE_SEQUENCE").is_some()) {
+        return;
+    }
+    let text = message.to_string();
+    if let Ok(mut last) = LAST.lock() {
+        if *last != text {
+            eprintln!("score: {text}");
+            *last = text;
+        }
     }
 }

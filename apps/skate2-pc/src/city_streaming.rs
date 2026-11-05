@@ -9,7 +9,7 @@
 use crate::{
     gpu_renderer::{GpuTextureUploader, RenderResult},
     proxy_texture_world::ProxyTextures,
-    proxy_world::SharedProxyWorld,
+    proxy_world::{ProxyWorldOwner, SharedProxyWorld},
     render_streams::{RenderStreamFile, RenderStreams},
 };
 use skate2_core::{
@@ -177,6 +177,26 @@ fn register_proxies(
     Ok(Some(owner.revision()?))
 }
 
+/// PC port: a linked Skate 3 data folder's district's own proxy world (`<District>_100_Proxy`,
+/// `skate2_core::skate3`), drawn in `PROXY`'s place while the district is selected. The districts'
+/// proxy streams name the same tiles' proxies (each its own low-detail view of the city), so one
+/// is registered at a time: it stays through San Vanelona until another district's replaces it.
+/// It follows every high collection the scene registers from the scene it started with, as
+/// `PROXY` does.
+struct DistrictProxy {
+    stream: &'static str,
+    proxy: SharedProxyWorld,
+    /// Its revision when the installed scene took its proxies; none before.
+    revision: Option<u64>,
+}
+
+/// A Skate 3 high collection's tile (`cPres_<x>_<z>_high`), which names its proxy.
+fn high_collection_tile(name: &str) -> Option<(i32, i32)> {
+    let name = name.rsplit(['\\', '/']).next()?.trim_end_matches(".xsf");
+    let (x, z) = name.strip_prefix("cPres_")?.strip_suffix("_high")?.split_once('_')?;
+    Some((x.parse().ok()?, z.parse().ok()?))
+}
+
 pub(crate) struct CityStreaming {
     pub(crate) mounts: Arc<MountSet>,
     pub(crate) catalog: WorldStreamCatalog,
@@ -185,7 +205,17 @@ pub(crate) struct CityStreaming {
     proxy_revision: Option<u64>,
     sources: Option<(FocusSource, FocusSource)>,
     additional: Option<AdditionalSources>,
+    district_proxy: Option<DistrictProxy>,
+    district_proxy_load: Option<DistrictProxyLoad>,
     pending: Option<mpsc::Receiver<Loaded>>,
+}
+
+/// A district proxy world loaded off the render thread: the stream file, its high collections'
+/// tiles and its geometry and textures. Activation waits for the installed scene.
+type DistrictProxyLoaded = (SharedProxyWorld, ProxyTextures, crate::proxy_texture_world::ProxyGeometry);
+enum DistrictProxyLoad {
+    Loading(&'static str, mpsc::Receiver<Result<DistrictProxyLoaded, String>>),
+    Ready(&'static str, DistrictProxyLoaded),
 }
 
 impl CityStreaming {
@@ -202,8 +232,94 @@ impl CityStreaming {
             proxy_revision: None,
             sources: None,
             additional: None,
+            district_proxy: None,
+            district_proxy_load: None,
             pending: None,
         }
+    }
+
+    /// The selected Skate 3 district's loaded proxy world.
+    fn selected_district_proxy(&self) -> Option<&DistrictProxy> {
+        let wanted = self.exclusive().and_then(|world| skate2_core::skate3::district_spec(&world.world))?.proxy;
+        self.district_proxy.as_ref().filter(|district| district.stream == wanted)
+    }
+
+    /// PC port: the selected Skate 3 district's proxy world, loaded when the district is selected
+    /// and another's (or none) is: the other's world and `textures` go first, its stream unloaded
+    /// from the catalog, then its `<District>_100_Proxy` loads (geometry and textures, under the
+    /// travel's fade), the district's high collections mapped onto it by tile and the installed
+    /// scene's registered. Nothing while a generation is loading.
+    pub(crate) fn sync_district_proxy(
+        &mut self,
+        uploader: GpuTextureUploader,
+        scene: Option<&PresentationScene>,
+        textures: &mut Option<ProxyTextures>,
+    ) -> RenderResult<()> {
+        let Some(stream) = self.exclusive().and_then(|world| skate2_core::skate3::district_spec(&world.world)).map(|spec| spec.proxy) else {
+            return Ok(());
+        };
+        if self.district_proxy.as_ref().is_some_and(|district| district.stream == stream) {
+            return Ok(());
+        }
+        if let Some(DistrictProxyLoad::Loading(loading, receive)) = &self.district_proxy_load {
+            let loading = *loading;
+            match receive.try_recv() {
+                Ok(result) => {
+                    self.district_proxy_load = (loading == stream).then(|| result.map(|loaded| DistrictProxyLoad::Ready(loading, loaded))).transpose()?;
+                }
+                Err(mpsc::TryRecvError::Empty) => return Ok(()),
+                Err(mpsc::TryRecvError::Disconnected) => return Err("district proxy loader stopped without completion".into()),
+            }
+        }
+        let Some(scene) = scene.filter(|_| self.pending.is_none()) else { return Ok(()) };
+        if !matches!(&self.district_proxy_load, Some(DistrictProxyLoad::Ready(ready, _)) if *ready == stream) {
+            // The geometry and textures load on a worker (under the travel's fade); the render
+            // thread keeps presenting meanwhile.
+            self.district_proxy = None;
+            *textures = None;
+            let tiles: Vec<(u64, i32, i32)> = self.exclusive().map_or_else(Vec::new, |world| {
+                world.pres.file.map.collections.iter()
+                    .filter_map(|entry| high_collection_tile(&entry.filename).map(|(x, z)| (entry.id, x, z)))
+                    .collect()
+            });
+            let mounts = Arc::clone(&self.mounts);
+            let catalog = self.catalog.clone();
+            let (send, receive) = mpsc::sync_channel(1);
+            thread::Builder::new()
+                .name("district-proxy-loader".into())
+                .spawn(move || {
+                    let result = (|| -> RenderResult<DistrictProxyLoaded> {
+                        let shared = ProxyWorldOwner::load_shared_stream(&mounts, stream)?;
+                        let order = {
+                            let mut owner = shared.lock().map_err(|_| "district proxy world lock poisoned")?;
+                            for &(id, x, z) in &tiles {
+                                owner.add_high_collection(id, x, z)?;
+                            }
+                            owner.collection_ids()
+                        };
+                        let (loaded, geometry) = ProxyTextures::load(mounts, catalog, uploader, &order, stream)?;
+                        Ok((shared, loaded, geometry))
+                    })()
+                    .map_err(|error| error.to_string());
+                    let _ = send.send(result);
+                })?;
+            self.district_proxy_load = Some(DistrictProxyLoad::Loading(stream, receive));
+            return Ok(());
+        }
+        let Some(DistrictProxyLoad::Ready(_, (shared, loaded, geometry))) = self.district_proxy_load.take() else {
+            unreachable!("checked ready above")
+        };
+        {
+            let mut owner = shared.lock().map_err(|_| "district proxy world lock poisoned")?;
+            owner.activate(geometry)?;
+            for collection in &scene.collections {
+                owner.high_registered(collection.id)?;
+            }
+            eprintln!("{stream} activated: {} registered proxies", owner.registered_collections().len());
+        }
+        self.district_proxy = Some(DistrictProxy { stream, proxy: shared, revision: None });
+        *textures = Some(loaded);
+        Ok(())
     }
 
     /// The additional world whose collections the presentation may hold: the one it selects
@@ -221,9 +337,46 @@ impl CityStreaming {
         self.additional.as_ref().filter(|world| !world.leaving)
     }
 
+    /// PC port: the selected additional world when it is a linked Skate 3 district, which stands
+    /// where San Vanelona does: the selections take from it alone and BAM's proxies are not drawn.
+    fn exclusive(&self) -> Option<&AdditionalSources> {
+        self.selectable().filter(|world| skate2_core::skate3::is_district_world(&world.world))
+    }
+
+    /// PC port: the Pres and Tex collections of a linked Skate 3 district streaming in or still
+    /// leaving, and its proxy world's, which draw Skate 3's world programs with Skate 3's texture
+    /// IDs whatever world the session stands in this frame.
+    pub(crate) fn skate3_collections(&self) -> BTreeSet<u64> {
+        let mut collections: BTreeSet<u64> = self
+            .additional
+            .iter()
+            .filter(|world| skate2_core::skate3::is_district_world(&world.world))
+            .flat_map(|world| {
+                let tex = world.tex.iter().flat_map(|tex| tex.file.map.collections.iter());
+                world.pres.file.map.collections.iter().chain(tex).map(|entry| entry.id)
+            })
+            .collect();
+        if let Some(district) = &self.district_proxy
+            && let Ok(proxy) = district.proxy.lock()
+        {
+            collections.extend(proxy.collection_ids());
+        }
+        // And its loose sky and water (`crate::sync_loose_world`).
+        if let Some(spec) = self.exclusive().and_then(|world| skate2_core::skate3::district_spec(&world.world)) {
+            collections.insert(crate::loose_world_id(spec.loose));
+        }
+        collections
+    }
+
     /// The Pres and Tex selections at `position` over every file.
     fn select(&self, position: [f32; 3], xml_enabled: bool) -> Option<(Vec<FocusCollection>, Vec<FocusCollection>)> {
         let (pres, tex) = self.sources.as_ref()?;
+        if let Some(district) = self.exclusive() {
+            let mut selected = district.pres.select(position, xml_enabled);
+            selected.truncate(DEFAULT_PRESENTATION_FOCUS_COLLECTIONS);
+            let textures = district.tex.as_ref().map_or_else(Vec::new, |tex| tex.select(position, xml_enabled));
+            return Some((selected, textures));
+        }
         let more = self.selectable();
         Some((
             merged_selection(
@@ -290,6 +443,7 @@ impl CityStreaming {
             additional: self.selectable().map(|world| Arc::clone(&world.pres.space)),
             radius: pres.radius,
             resident: scene.collections.iter().map(|collection| collection.id).collect(),
+            exclusive: self.exclusive().is_some(),
         })
     }
 
@@ -324,6 +478,7 @@ impl CityStreaming {
             self.catalog.clone(),
             uploader,
             &order,
+            "PROXY",
         )?;
         let mut owner = self.proxy.lock().map_err(|_| "PROXY world lock poisoned")?;
         owner.activate(geometry)?;
@@ -361,6 +516,9 @@ impl CityStreaming {
                     *scene = Some(loaded_scene);
                     *textures = Some(loaded_textures);
                     self.proxy_revision = proxy_revision;
+                    for district in &mut self.district_proxy {
+                        district.revision = Some(district.proxy.lock().map_err(|_| "district proxy world lock poisoned")?.revision()?);
+                    }
                     return Ok(Some(render_state));
                 }
                 Err(mpsc::TryRecvError::Empty) => return Ok(None),
@@ -383,6 +541,11 @@ impl CityStreaming {
             }
             None => false,
         };
+        let mut district_changed = false;
+        for district in &self.district_proxy {
+            district_changed |= Some(district.proxy.lock().map_err(|_| "district proxy world lock poisoned")?.revision()?) != district.revision;
+        }
+        let proxy_changed = proxy_changed || district_changed;
         let focus_enabled = !disabled && !position.iter().any(|x| x.is_nan());
         // A hull registration change also needs a new draw list.
         let hulls_changed = scene.as_ref().is_some_and(|scene| {
@@ -457,12 +620,23 @@ impl CityStreaming {
         let mounts = Arc::clone(&self.mounts);
         let proxy = Arc::clone(&self.proxy);
         let proxy_active = self.proxy_revision.is_some();
+        let exclusive = self.exclusive().is_some();
+        let loose_world = self.exclusive().and_then(|world| skate2_core::skate3::district_spec(&world.world));
+        let district_proxies: Vec<SharedProxyWorld> = self.district_proxy.iter().map(|district| Arc::clone(&district.proxy)).collect();
+        let selected_proxy = self.selected_district_proxy().map(|district| Arc::clone(&district.proxy));
         let hulls = hulls.to_vec();
         let (send, receive) = mpsc::sync_channel(1);
         thread::Builder::new()
             .name("city-resource-loader".into())
             .spawn(move || {
+                let started = std::time::Instant::now();
+                let mut steps: Vec<(&str, f64)> = Vec::new();
+                let mut mark = |name: &'static str, from: &mut std::time::Instant| {
+                    steps.push((name, from.elapsed().as_secs_f64() * 1000.));
+                    *from = std::time::Instant::now();
+                };
                 let result = (|| -> RenderResult<_> {
+                    let mut step = std::time::Instant::now();
                     let mut transition = None;
                     if let Some((selected_pres, selected_tex, pres_streams, tex_streams)) = moved {
                         transition = Some(crate::move_runtime_presentation_selection(
@@ -472,6 +646,7 @@ impl CityStreaming {
                             &pres_streams,
                             &selected_pres,
                         )?);
+                        mark("presentation", &mut step);
                         crate::move_runtime_texture_selection(
                             &mut texture_owner,
                             &mounts,
@@ -480,22 +655,50 @@ impl CityStreaming {
                             &selected_tex,
                         )?;
                         scene_owner.bind_resident_textures(&texture_owner);
+                        mark("textures", &mut step);
                     }
                     if crate::hull_presentation::sync(&mut scene_owner, &mounts, &hulls)? {
                         crate::bind_runtime_material_attributes(&mounts, &mut scene_owner)?;
                         scene_owner.bind_resident_textures(&texture_owner);
                     }
+                    mark("hulls", &mut step);
+                    // PC port: a Skate 3 district's own sky and water stand for San Vanelona's.
+                    if crate::sync_loose_world(&mut scene_owner, &mounts, loose_world) {
+                        crate::bind_runtime_material_attributes(&mounts, &mut scene_owner)?;
+                        scene_owner.bind_resident_textures(&texture_owner);
+                    }
+                    mark("loose world", &mut step);
                     let proxy_revision = register_proxies(
                         &proxy,
                         proxy_active,
                         transition.as_ref(),
                         &mut scene_owner,
                     )?;
+                    // A Skate 3 district stands where San Vanelona does: its own proxies, none of
+                    // BAM's. The loaded district's proxy world follows every registration as
+                    // `PROXY` does; its registered proxies are drawn while it is selected.
+                    for district in &district_proxies {
+                        register_proxies(district, true, transition.as_ref(), &mut scene_owner)?;
+                    }
+                    if exclusive {
+                        scene_owner.proxies = match &selected_proxy {
+                            Some(district) => district.lock().map_err(|_| "district proxy world lock poisoned")?.registered_collections(),
+                            None => Vec::new(),
+                        };
+                    } else if !district_proxies.is_empty() {
+                        scene_owner.proxies = proxy.lock().map_err(|_| "PROXY world lock poisoned")?.registered_collections();
+                    }
+                    mark("proxies", &mut step);
                     let render_state =
                         crate::render_inspection::build_render_state(&scene_owner, &mounts)?;
+                    mark("render state", &mut step);
                     Ok((scene_owner, texture_owner, render_state, proxy_revision))
                 })()
                 .map_err(|error| error.to_string());
+                if std::env::var_os("SKATE2_TRACE_CITY_STREAM").is_some() {
+                    let steps: Vec<String> = steps.iter().map(|(name, ms)| format!("{name} {ms:.1}")).collect();
+                    eprintln!("city streaming: loader {:.1} ms: {}", started.elapsed().as_secs_f64() * 1000., steps.join(", "));
+                }
                 let _ = send.send(result);
             })?;
         self.pending = Some(receive);

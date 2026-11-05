@@ -272,6 +272,14 @@ impl Aems {
             let offset = rd32(&bank.file, header + (sample_number as isize + 3) as usize * 4);
             DataRef { bytes: bank.file.clone(), offset: header.wrapping_add(offset as usize) }
         });
+        if let Some(elapsed) = crate::splicer::trace_elapsed() {
+            let module = self.banks.get(instance.bank).and_then(Option::as_ref).and_then(|own| own.modules.get(instance.module)).map_or(0, |m| m.id);
+            // FNV-1a of the sample's first bytes: the same audio in two banks hashes alike.
+            let hash = sample.as_ref().and_then(|s| s.bytes.get(s.offset..)).map_or(0, |bytes| {
+                bytes.iter().take(512).fold(0x811c_9dc5_u32, |hash, &byte| (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193))
+            });
+            eprintln!("{elapsed:9.3} aems play {}#{module} sample {sample_number} data {hash:08x}", bank.name);
+        }
         let inputs = usize::from(rd8(&instance.data, at + 0xE));
         let Some(id) = sample.and_then(|sample| self.create_sample_player(core, sample, priority, azimuths)) else {
             self.reset_player_outputs(core, slot, at);

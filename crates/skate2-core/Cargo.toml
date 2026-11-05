@@ -5,7 +5,19 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["skate3-runtime"]
+# PC Skate 3 physics (Physics Settings): the source player, its scoring and gestures.
+skate3-runtime = ["skate3-source"]
+skate3-source = []
+
 [dependencies]
+glam = "=0.30.10"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+skate3-core = { package = "skate-core", path = "../../vendor/skate3-engine/crates/skate-core" }
+skate_data = { package = "skate-data", path = "../../vendor/skate3-engine/crates/skate-data" }
+skate_dynamics = { package = "skate-dynamics", path = "../../vendor/skate3-engine/crates/skate-dynamics" }
 skate2-formats = { path = "../skate2-formats" }
 skate2-net = { path = "../skate2-net" }
 

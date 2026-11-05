@@ -122,7 +122,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let mut cards = Vec::with_capacity(lobbies.len());
         for lobby in lobbies {
             if let Entry::Vacant(entry) = lists.entry(lobby.challenge_type) {
-                entry.insert(self.online_challenge_list(lobby.challenge_type)?);
+                entry.insert(self.online_challenge_list_all(lobby.challenge_type)?);
             }
             let Some(known) = lists.get(&lobby.challenge_type).and_then(|list| list.iter().find(|known| known.key == lobby.challenge_key)) else {
                 continue;
@@ -130,7 +130,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             cards.push(Lobby {
                 game: lobby.game,
                 title: known.title.clone(),
-                image: format!("{}_sm", known.image),
+                image: crate::skate3::small_location_image(&known.image),
                 mode: catalog::challenge_title(lobby.challenge_type),
                 phase: (lobby.challenge_type != challenge::ONLINE_FREE_SKATE)
                     .then_some(if lobby.phase == Phase::LobbySkate { LobbyPhase::PreGame } else { LobbyPhase::InGame }),

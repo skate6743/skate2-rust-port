@@ -30,6 +30,7 @@ mod sdl_pad_platform;
 )]
 mod windows_selected_input;
 
+use rayon::prelude::*;
 use simulation_collection_runtime_probe::{
     NotificationRuntime as SimulationNotificationCorpusRuntime,
     Runtime as SimulationCollectionCorpusRuntime,
@@ -218,6 +219,7 @@ mod panic_report;
 mod game_root;
 mod game_update;
 mod dlc_link;
+mod skate3_link;
 mod input_fuzz;
 mod live_skating_client;
 mod live_skating_view;
@@ -241,6 +243,15 @@ mod render_shadows;
 mod render_water_animation;
 mod render_window;
 mod render_world_painter;
+mod weather;
+mod weather_audio;
+mod weather_hydrology;
+mod weather_puddles;
+mod weather_rain;
+mod weather_runtime;
+mod weather_splashes;
+mod weather_world;
+mod rain_lightning;
 mod render_postfx;
 mod render_postfx_math;
 mod vehicle_render;
@@ -297,7 +308,10 @@ fn main() -> ExitCode {
     {
         let player = game_update::player_launch();
         if player || env::args().any(|argument| argument == "--live-skating") {
-            skate2_core::diagnostics::set_quiet(player || env::args().any(|argument| argument == "--quiet"));
+            // A launch with a trace asked for (any SKATE2_TRACE_* variable) writes its output,
+            // the player's own launch included.
+            let tracing = env::vars_os().any(|(name, _)| name.to_string_lossy().starts_with("SKATE2_TRACE"));
+            skate2_core::diagnostics::set_quiet((player || env::args().any(|argument| argument == "--quiet")) && !tracing);
             skate2_core::diagnostics::read_trace::install();
             let failed = |error: String| {
                 std::eprintln!("controlled skating test failed: {error}");
@@ -731,7 +745,7 @@ fn mount_reference_archives(root: &std::path::Path) -> ProbeResult<MountSet> {
     let mut mounts = MountSet::new();
     for spec in &SKATE2_ARCHIVES {
         let path = spec.path_under(root);
-        if !path.is_file() {
+        if !skate2_formats::host_path::is_file(&path) {
             continue;
         }
         mounts.push(MountedBig::open(path, spec.use_external_header)?);
@@ -3580,6 +3594,8 @@ fn bind_runtime_material_attributes(
     // state is guessed. Character/vehicle material parsing is unchanged.
     let known = vault_collection_keys(mounts)?;
     let content = if skate2_core::dlc::vaults(mounts).is_empty() { None } else { Some(vault_database(mounts)?) };
+    // PC port: a linked Skate 3 district's world materials are collections of Skate 3's database.
+    let skate3 = skate2_core::skate3::linked();
     for effect in scene
         .resident_collections_mut()
         .flat_map(|collection| &mut collection.arenas)
@@ -3589,7 +3605,11 @@ fn bind_runtime_material_attributes(
         if !effect
             .attribute_class_id
             .zip(effect.material_variant_id)
-            .is_some_and(|key| known.contains(&key) || content.as_ref().is_some_and(|db| db.has_collection(key.0, key.1)))
+            .is_some_and(|key| {
+                known.contains(&key)
+                    || content.as_ref().is_some_and(|db| db.has_collection(key.0, key.1))
+                    || skate3.as_ref().is_some_and(|data| data.db.has_collection(key.0, key.1))
+            })
         {
             let serialized_name = std::mem::take(&mut effect.serialized_name);
             *effect =
@@ -3770,7 +3790,13 @@ pub(crate) fn vault_database(mounts: &MountSet) -> Result<std::sync::Arc<skate2_
 /// ("default" for a null pointer, as `CreateEffectListFromMaterialKey` leaves it) and the
 /// `DrawOrder` reference's `GUID`.
 fn resolve_vault_material(mounts: &MountSet, class: u64, collection: u64) -> Result<PresentationMaterialBinding, Box<dyn std::error::Error>> {
-    let db = vault_database(mounts)?;
+    let content = vault_database(mounts)?;
+    // PC port: else a linked Skate 3 district's, in Skate 3's database.
+    let skate3 = skate2_core::skate3::linked();
+    let db = match skate3.as_ref() {
+        Some(data) if !content.has_collection(class, collection) => &*data.db,
+        _ => &*content,
+    };
     if !db.has_collection(class, collection) {
         return Err(format!("missing material collection {class:016x}:{collection:016x}").into());
     }
@@ -12670,17 +12696,21 @@ fn move_runtime_texture_selection(
             .ok_or("texture unload targets an absent collection")?;
         scene.collections.remove(index);
     }
+    let mut requests = Vec::new();
     while let Some(request) = queue.take_next_load() {
-        let focus_collection = selected
-            .iter()
-            .find(|entry| entry.id == request.id)
-            .ok_or("texture load targets an absent focus entry")?;
-        scene.collections.push(load_texture_collection(
-            mounts,
-            collections,
-            focus_collection,
-        )?);
+        requests.push(request);
     }
+    let loaded = requests
+        .par_iter()
+        .map(|request| {
+            let focus_collection = selected
+                .iter()
+                .find(|entry| entry.id == request.id)
+                .ok_or("texture load targets an absent focus entry")?;
+            load_texture_collection(mounts, collections, focus_collection).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    scene.collections.extend(loaded);
     for collection in &mut scene.collections {
         let selected_entry = selected
             .iter()
@@ -12743,18 +12773,16 @@ fn load_runtime_presentation_scene_at(mounts:&MountSet,location_name:&str,focus:
         return Err("initial presentation queue did not dispatch the focus set".into());
     }
     let dependencies = load_presentation_dependencies(mounts, &collections, &selected, Vec::new())?;
-    let mut runtime_collections = Vec::with_capacity(selected.len());
-    for request in requests {
-        let focus_collection = selected
-            .iter()
-            .find(|entry| entry.id == request.id)
-            .ok_or_else(|| format!("unknown presentation request {:016x}", request.id))?;
-        runtime_collections.push(load_presentation_collection(
-            mounts,
-            &collections,
-            focus_collection,
-        )?);
-    }
+    let mut runtime_collections = requests
+        .par_iter()
+        .map(|request| {
+            let focus_collection = selected
+                .iter()
+                .find(|entry| entry.id == request.id)
+                .ok_or_else(|| format!("unknown presentation request {:016x}", request.id))?;
+            load_presentation_collection(mounts, &collections, focus_collection).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     runtime_collections.sort_by(|left, right| left.distance_xz.total_cmp(&right.distance_xz));
     let mut scene = PresentationScene {
         dependencies,
@@ -12811,9 +12839,64 @@ fn load_loose_presentation_assets(
 fn load_loose_presentation_collection(
     mounts: &MountSet,
 ) -> Result<PresentationCollection, Box<dyn std::error::Error>> {
-    let mut arenas = Vec::with_capacity(LOOSE_PRESENTATION_ASSETS.len());
-    for path in LOOSE_PRESENTATION_ASSETS {
-        let bytes = mounts.read_path(path)?;
+    load_loose_world_collection(mounts, mounts, &LOOSE_PRESENTATION_ASSETS)
+}
+
+/// The host cache identity of a loose world collection: its model paths together. University's
+/// sky keeps Skate 2's file names (`DIST_skybox`) in Skate 3's data, so the sky path alone would
+/// name Skate 2's own loose world and the district's would never replace it.
+fn loose_world_id(paths: &[&str]) -> u64 {
+    string_hash64(&paths.join("|"))
+}
+
+/// PC port: the loose sky and water ([`LOOSE_PRESENTATION_ASSETS`]) of the world the scene
+/// stands in: a linked Skate 3 district's own (`skate2_core::skate3::DistrictSpec::loose`, read
+/// from its data) while one is selected, Skate 2's otherwise. True when they changed.
+pub(crate) fn sync_loose_world(
+    scene: &mut PresentationScene,
+    mounts: &MountSet,
+    district: Option<&'static skate2_core::skate3::DistrictSpec>,
+) -> bool {
+    let paths: &[&str] = district.map_or(&LOOSE_PRESENTATION_ASSETS[..], |spec| spec.loose);
+    let wanted = loose_world_id(paths);
+    if scene.loose.iter().any(|collection| collection.id == wanted) {
+        return false;
+    }
+    let worlds: Vec<u64> = std::iter::once(&LOOSE_PRESENTATION_ASSETS[..])
+        .chain(skate2_core::skate3::DISTRICTS.iter().map(|spec| spec.loose))
+        .map(loose_world_id)
+        .collect();
+    let Some(index) = scene.loose.iter().position(|collection| worlds.contains(&collection.id)) else { return false };
+    let loaded = match district {
+        Some(_) => match skate2_core::skate3::linked() {
+            Some(data) => load_loose_world_collection(&data.mounts, mounts, paths),
+            None => Err("skate 3 data unlinked".into()),
+        },
+        None => load_loose_world_collection(mounts, mounts, paths),
+    };
+    match loaded {
+        Ok(collection) => {
+            scene.loose[index] = collection;
+            true
+        }
+        Err(error) => {
+            eprintln!("loose world {} not loaded ({error}); the last one stays", paths[1]);
+            false
+        }
+    }
+}
+
+/// The loose world models `paths` (`LooseAssetHelper::LoadAssets`: one arena each) from
+/// `read`, their materials bound through `bind`'s attributes.
+fn load_loose_world_collection(
+    read: &MountSet,
+    bind: &MountSet,
+    paths: &[&str],
+) -> Result<PresentationCollection, Box<dyn std::error::Error>> {
+    let mounts = bind;
+    let mut arenas = Vec::with_capacity(paths.len());
+    for &path in paths {
+        let bytes = read.read_path(path)?;
         let resources = Rw4Arena::split_file_resources(&bytes)?;
         let arena = Rw4Arena::parse(&resources)?;
         arenas.push(
@@ -12832,7 +12915,7 @@ fn load_loose_presentation_collection(
         light_probes: Vec::new(),
         navigation: Vec::new(),
         // Host cache identity only; distinct from every stream collection GUID.
-        id: string_hash64(LOOSE_PRESENTATION_ASSETS[1]),
+        id: loose_world_id(paths),
         name: "OneOffLoadTexture loose assets".to_owned(),
         position: [0.0; 3],
         distance_xz: 0.0,
@@ -12892,6 +12975,7 @@ fn load_boot_presentation_collection(
         instances: Vec::new(),
         anti_frustums: Vec::new(),
         emitter_waypoints: Vec::new(),
+        visual_indicators: Vec::new(),
     };
     Ok(PresentationCollection {
         light_probes: Vec::new(),
@@ -12969,7 +13053,8 @@ fn load_presentation_collection(
     let payload = xsf.get(collection.payload_offset as usize..)
         .ok_or("presentation collection payload offset")?;
     let file = skate2_formats::stream::CollectionPayload::parse(payload, collection.asset_count)?;
-    let metadata = AssetToc::parse(&mounts.read_path(&stream.asset_toc_path())?)?;
+    // The stream's asset table is read only for a collection with navigation, which needs it.
+    let mut metadata: Option<AssetToc> = None;
     let mut navigation = Vec::new();
     let mut light_probes = Vec::new();
     let mut arenas = Vec::with_capacity(file.assets.len());
@@ -13004,7 +13089,10 @@ fn load_presentation_collection(
         }
         arenas.push(own_presentation_arena(&arena, &decoded.resources)?);
         if arena.dictionary.iter().any(|entry| entry.type_id == skate2_core::simulation_normal_arena_plan::NAV_MESH_2_DATA_TYPE_ID) {
-            let entry = metadata.assets.iter().find(|entry| entry.id == block.id)
+            if metadata.is_none() {
+                metadata = Some(AssetToc::parse(&mounts.read_path(&stream.asset_toc_path())?)?);
+            }
+            let entry = metadata.as_ref().expect("read above").assets.iter().find(|entry| entry.id == block.id)
                 .ok_or("presentation navigation XST asset absent")?;
             let asset = SimulationCollisionAsset::from_decoded(DecodedArenaAsset {
                 asset_id: block.id, asset_type: entry.asset_type,
@@ -13075,26 +13163,31 @@ fn move_runtime_presentation_selection(
             })?;
         scene.collections.remove(index);
     }
-    while let Some(request) = if scene.collections.is_empty() {
+    let mut requests = Vec::new();
+    while let Some(request) = if scene.collections.is_empty() && requests.is_empty() {
         queue.take_best_load()
     } else {
         queue.take_next_load()
     } {
-        let focus_collection = selected
-            .iter()
-            .find(|entry| entry.id == request.id)
-            .ok_or_else(|| {
-                format!(
-                    "presentation load requested for absent focus entry {:016x}",
-                    request.id
-                )
-            })?;
-        scene.collections.push(load_presentation_collection(
-            mounts,
-            collections,
-            focus_collection,
-        )?);
+        requests.push(request);
     }
+    // The requested collections decode on the pool; they join in request order.
+    let loaded = requests
+        .par_iter()
+        .map(|request| {
+            let focus_collection = selected
+                .iter()
+                .find(|entry| entry.id == request.id)
+                .ok_or_else(|| {
+                    format!(
+                        "presentation load requested for absent focus entry {:016x}",
+                        request.id
+                    )
+                })?;
+            load_presentation_collection(mounts, collections, focus_collection).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    scene.collections.extend(loaded);
     for collection in &mut scene.collections {
         let selected_entry = selected
             .iter()
@@ -14762,7 +14855,7 @@ fn check_data_root() -> ExitCode {
     let missing: Vec<_> = required
         .iter()
         .map(|relative| root.join(relative))
-        .filter(|path| !path.exists())
+        .filter(|path| !skate2_formats::host_path::is_dir(path))
         .collect();
 
     if missing.is_empty() {

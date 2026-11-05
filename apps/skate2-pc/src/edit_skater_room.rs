@@ -75,6 +75,7 @@ impl EditSkaterRoomView {
         male: bool,
         body_key: u64,
         camera_key: u64,
+        gesture: Option<u32>,
         near: f32,
     ) -> RenderResult<()> {
         if male != self.male {
@@ -85,6 +86,7 @@ impl EditSkaterRoomView {
             )?;
             self.male = male;
         }
+        self.animation.set_skate3_gesture_preview(gesture)?;
         let body = self.attributes.body(body_key)?;
         let camera = self.attributes.camera(camera_key)?;
         let projection = self.attributes.project_camera(&camera, near)?;

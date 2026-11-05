@@ -273,17 +273,51 @@ fn notify_challenge_complete_for_objectives(_: &mut Lua<World>, world: &mut Worl
 
 /// `Online.OnlineChallengeComplete(ranking, score, time, playersChoice = false, finishReason =
 /// 1)` (`0x8289abc0`): `MESSAGE_ChallengeComplete` to the flow, in a network game only.
-fn online_challenge_complete(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
-    if world.online.is_some() {
-        world.output(Output::OnlineChallengeComplete {
-            ranking: get_int(call, 0),
-            score: get_int(call, 1),
-            time: get_float_or(call, 2, 0.0),
-            players_choice: get_bool_or(call, 3, false),
-            finish_reason: get_int_or(call, 4, 1),
-        });
+///
+/// PC port: Skate 3's (`0x82846878`, its 1-Up's `show_results`) takes the final results instead,
+/// a row per player: `{ player, rank, score, time, playersChoice, npc, finishReason, ... }`, and
+/// sends every row; each console here reports its own, so the local player's row is the result.
+fn online_challenge_complete(lua: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
+    if world.online.is_none() {
+        return none();
     }
+    if let Value::Table(results) = call.arg(0).clone() {
+        let rows: Vec<Value> = (1..=lua.table(results).len()).map(|index| lua.table(results).get_int(index)).collect();
+        let local = world.local_player;
+        let row = rows.into_iter().find_map(|row| {
+            let Value::Table(row) = row else { return None };
+            let field = |index| lua.table(row).get_int(index);
+            let number = |value: Value| if let Value::Number(n) = value { Some(n) } else { None };
+            #[expect(clippy::cast_possible_truncation, reason = "the rows' integer fields")]
+            let int = |index| number(field(index)).map(|n| n as i32);
+            (int(1)? == local).then(|| (int(2), int(3), number(field(4)), matches!(field(5), Value::Boolean(true)), int(7)))
+        });
+        if let Some((ranking, score, time, players_choice, finish_reason)) = row {
+            world.output(Output::OnlineChallengeComplete {
+                ranking: ranking.unwrap_or(0),
+                score: score.unwrap_or(0),
+                time: time.unwrap_or(0.0),
+                players_choice,
+                finish_reason: finish_reason.unwrap_or(1),
+            });
+        }
+        return none();
+    }
+    world.output(Output::OnlineChallengeComplete {
+        ranking: get_int(call, 0),
+        score: get_int(call, 1),
+        time: get_float_or(call, 2, 0.0),
+        players_choice: get_bool_or(call, 3, false),
+        finish_reason: get_int_or(call, 4, 1),
+    });
     none()
+}
+
+/// PC port: Skate 3's `HighlightReel.GetNumberOfHighlights(group)` (`0x82bcd1f0`): the group's
+/// highlights.
+pub(super) fn get_number_of_highlights(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
+    let count = highlight_group(world, call.arg(0)).and_then(|group| world.highlight_groups.iter().find(|g| g.id == group)).map_or(0, |g| g.highlights.len());
+    Ok(vec![int(i32::try_from(count).unwrap_or(i32::MAX))])
 }
 
 /// `Online.LeaveGame()` (`0x8289aaa0`): `MESSAGE_ChallengeLeaveGame` (18), which

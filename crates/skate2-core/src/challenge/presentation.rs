@@ -128,9 +128,21 @@ pub fn add_group(world: &mut World, activity: u64) -> usize {
     handle
 }
 
-/// `cChallengePresentationGroup::AddPresentationEvent` (`0x82e087e0`).
+/// `cChallengePresentationGroup::AddPresentationEvent` (`0x82e087e0`). PC port: a linked Skate 3
+/// data folder's online games run Skate 2's online challenges over their own spots
+/// (`crate::skate3`); Skate 2's NIS scenes are cut at San Vanelona's and would film it, so those
+/// games play their presentation without them, and with Skate 3's own scenes.
 pub fn add_event(world: &mut World, group: u32, event: PresentationEvent) {
     if let Some(g) = world.presentation.group_mut(group) {
+        if crate::skate3::linked().is_some_and(|data| data.online_spot(g.activity).is_some()) {
+            let skipped = event.kind == self::event::NIS && !crate::skate3::is_scene(&event.arg1);
+            if std::env::var_os("SKATE2_TRACE_CAREER").is_some() {
+                eprintln!("skate 3 game presentation event {} {:?} {:?}{}", event.kind, event.arg1, event.arg2, if skipped { " (Skate 2 scene, skipped)" } else { "" });
+            }
+            if skipped {
+                return;
+            }
+        }
         g.events.push(event);
     }
 }

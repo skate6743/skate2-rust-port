@@ -29,7 +29,18 @@ pub enum ShaderTextureRemoveTransition {
     Freed,
 }
 
-/// Table keys use the full 64-bit TOC texture ID with only its low bit clear.
+/// The low-resolution bit of a texture ID: bit 0, as Skate 2's `FindTexture` clears it. PC port: a
+/// linked Skate 3 data folder's textures spend bit 0 on their IDs and mark the low-resolution
+/// texture with bit 62 instead (Skate 3's `TextureMan` slot lookup `sub_8280AC58` keys by the ID
+/// with it clear, its arena registration 0x8279ee58 tests it), so two neighbouring textures stay
+/// distinct. Which game a texture is comes from where it was loaded: its IDs say nothing of it.
+#[must_use]
+pub const fn low_resolution_bit(skate3: bool) -> u64 {
+    if skate3 { 1 << 62 } else { 1 }
+}
+
+/// Table keys use the full 64-bit TOC texture ID with only its low-resolution bit clear (PC port:
+/// apart for each game, whose IDs share no meaning).
 ///
 /// Native constructor `82e1b400` pushes free indexes `0..5120` ascending;
 /// `AddTexture` pops the last, so the first new key receives slot 5119.
@@ -37,7 +48,7 @@ pub enum ShaderTextureRemoveTransition {
 pub struct ShaderTextureTable<T> {
     slots: Vec<Option<ShaderTextureSlot<T>>>,
     free_indices: Vec<usize>,
-    by_normalized_id: BTreeMap<u64, usize>,
+    by_normalized_id: BTreeMap<(bool, u64), usize>,
     null_texture: Option<T>,
 }
 
@@ -59,7 +70,13 @@ impl<T: Copy + Eq> ShaderTextureTable<T> {
 
     /// Source `FindTexture82e1a090`: `clrrdi` clears bit 0 of the full ID.
     pub fn find(&self, texture_asset_id: u64) -> Option<(usize, ShaderTextureSlot<T>)> {
-        let index = *self.by_normalized_id.get(&(texture_asset_id & !1))?;
+        self.find_from(texture_asset_id, false)
+    }
+
+    /// [`Self::find`] among one game's textures (PC port: a linked Skate 3 data folder's clear
+    /// their own low-resolution bit, [`low_resolution_bit`]).
+    pub fn find_from(&self, texture_asset_id: u64, skate3: bool) -> Option<(usize, ShaderTextureSlot<T>)> {
+        let index = *self.by_normalized_id.get(&(skate3, texture_asset_id & !low_resolution_bit(skate3)))?;
         Some((
             index,
             self.slots[index].expect("mapped texture slot exists"),
@@ -73,12 +90,23 @@ impl<T: Copy + Eq> ShaderTextureTable<T> {
         texture_asset_id: u64,
         texture: T,
     ) -> Result<usize, ShaderTextureAddError> {
-        let key = texture_asset_id & !1;
+        self.add_texture_from(texture_asset_id, texture, false)
+    }
+
+    /// [`Self::add_texture`] for one game's texture.
+    pub fn add_texture_from(
+        &mut self,
+        texture_asset_id: u64,
+        texture: T,
+        skate3: bool,
+    ) -> Result<usize, ShaderTextureAddError> {
+        let low_resolution = low_resolution_bit(skate3);
+        let key = (skate3, texture_asset_id & !low_resolution);
         if let Some(&index) = self.by_normalized_id.get(&key) {
             let slot = self.slots[index]
                 .as_mut()
                 .expect("mapped texture slot exists");
-            if texture_asset_id & 1 != 0 {
+            if texture_asset_id & low_resolution != 0 {
                 slot.low = Some(texture);
             } else {
                 slot.high = Some(texture);
@@ -111,7 +139,7 @@ impl<T: Copy + Eq> ShaderTextureTable<T> {
         texture_asset_id: u64,
         texture: T,
     ) -> ShaderTextureRemoveTransition {
-        let key = texture_asset_id & !1;
+        let key = (false, texture_asset_id & !low_resolution_bit(false));
         let Some(&index) = self.by_normalized_id.get(&key) else {
             return ShaderTextureRemoveTransition::Missing;
         };

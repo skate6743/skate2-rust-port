@@ -198,6 +198,51 @@ impl BlendPoseTokenPool {
             self.push(buffer, stream, 0x8000_0000 | (keys << 20))
         }
     }
+    /// An N-way weighted blend, stream by stream as Blend82d78038 pairs them: a child without
+    /// the stream drops out, a lone child is copied, and two or more append their tokens, their
+    /// coefficients and one blend.
+    pub(crate) fn weighted_blend(
+        &mut self,
+        children: &[BlendPoseBuffer],
+        weights: &[f32],
+    ) -> Result<BlendPoseBuffer, BlendPoseError> {
+        let mut combined = self.buffer(1)?;
+        let mut names: Vec<(FastString36, FastString36)> = Vec::new();
+        for child in children {
+            for stream in 0..child.count {
+                let name = child.names[child.name_index][stream];
+                if !names.iter().any(|(existing, _)| *existing == name) {
+                    names.push((name, child.names[1 - child.name_index][stream]));
+                }
+            }
+        }
+        for (name, mirrored) in names {
+            let members: Vec<(usize, usize)> = children
+                .iter()
+                .enumerate()
+                .filter_map(|(child, buffer)| buffer.stream_index(&name).map(|stream| (child, stream)))
+                .collect();
+            let index = combined.create_stream(name, mirrored)?;
+            for &(child, stream) in &members {
+                for token in self.tokens(&children[child], stream)?.to_vec() {
+                    match token >> 30 {
+                        0 => self.push_pose(&mut combined, index, (token >> 23) & 0x7f)?,
+                        1 => self.push_coefficient(&mut combined, index, decode_coefficient(token))?,
+                        2 => self.push_blend(&mut combined, index, ((token >> 20) & 7) as usize)?,
+                        _ => {}
+                    }
+                }
+            }
+            if members.len() > 1 {
+                for &(child, _) in &members {
+                    let weight = *weights.get(child).ok_or(BlendPoseError::Capacity)?;
+                    self.push_coefficient(&mut combined, index, weight)?;
+                }
+                self.push_blend(&mut combined, index, members.len())?;
+            }
+        }
+        Ok(combined)
+    }
     /// Blend82d78038 re-encodes each token and appends a pair blend for existing streams.
     pub(crate) fn blend(
         &mut self,
@@ -205,17 +250,25 @@ impl BlendPoseTokenPool {
         source: &BlendPoseBuffer,
         coefficient: f32,
     ) -> Result<(), BlendPoseError> {
-        for stream in 0..source.count {
-            let name = source.names[source.name_index][stream];
-            let existing = destination.stream_index(&name);
-            let index = match existing {
+        // Snapshot every source stream before any write: native source/destination pools
+        // differ, but a shared pool's older destination grows into the source's lanes, and a
+        // mirrored source keeps a stream in another lane than its destination name.
+        let streams = (0..source.count)
+            .map(|stream| {
+                Ok((
+                    source.names[source.name_index][stream],
+                    source.names[1 - source.name_index][stream],
+                    self.tokens(source, stream)?.to_vec(),
+                ))
+            })
+            .collect::<Result<Vec<_>, BlendPoseError>>()?;
+        for (name, mirrored, tokens) in streams {
+            // An emptied stream (`clear_stream`) has no base to blend with.
+            let existing = destination.stream_index(&name).filter(|&index| destination.lengths[index] > 0);
+            let index = match destination.stream_index(&name) {
                 Some(index) => index,
-                None => {
-                    destination.create_stream(name, source.names[1 - source.name_index][stream])?
-                }
+                None => destination.create_stream(name, mirrored)?,
             };
-            // Snapshot token words before writes: native source/destination pools differ.
-            let tokens = self.tokens(source, stream)?.to_vec();
             for token in tokens {
                 match token >> 30 {
                     0 => self.push_pose(destination, index, (token >> 23) & 0x7f)?,
@@ -233,6 +286,15 @@ impl BlendPoseTokenPool {
     }
 }
 impl BlendPoseBuffer {
+    /// Mirror::EvalBlendPose 825475C0 sets the buffer's mirror flag (+0x48) after its child; a
+    /// second mirror leaves it set.
+    pub(crate) fn mirror_streams(&mut self) {self.name_index=1;}
+    /// Drops a stream's tokens: the emitted stream then has no poses, as for an absent one.
+    pub(crate) fn clear_stream(&mut self, name: &FastString36) {
+        if let Some(index) = self.stream_index(name) {
+            self.lengths[index] = 0;
+        }
+    }
     pub(crate) fn stream_index(&self, name: &FastString36) -> Option<usize> {
         self.names[self.name_index][..self.count]
             .iter()
@@ -265,10 +327,11 @@ pub(crate) fn decode_coefficient(token: u32) -> f32 {
     (token & 0x000f_ffff) as f32 * f32::from_bits(0x3580_0008)
 }
 
-struct ClipStream {
-    name: FastString36,
-    mirror: FastString36,
-    keys: Vec<(i16, u16)>,
+#[derive(Clone)]
+pub(crate) struct ClipStream {
+    pub(crate) name: FastString36,
+    pub(crate) mirror: FastString36,
+    pub(crate) keys: Vec<(i16, u16)>,
 }
 impl FaceDatabase {
     fn clip_blend_streams(&self, record_index: usize) -> Result<Vec<ClipStream>, BlendPoseError> {
@@ -288,6 +351,10 @@ impl FaceDatabase {
             .as_ref()
             .and_then(|bytes| bytes.get(record.data_range.clone()))
             .ok_or(BlendPoseError::SourceRange)?;
+        decode_clip_streams(bytes)
+    }
+}
+pub(crate) fn decode_clip_streams(bytes:&[u8])->Result<Vec<ClipStream>,BlendPoseError> {
         let count = (word(bytes, 52)? >> 13) & 31;
         let table = usize::try_from(word(bytes, 48)?).map_err(|_| BlendPoseError::SourceRange)?;
         let mut streams = Vec::new();
@@ -317,8 +384,8 @@ impl FaceDatabase {
             });
         }
         Ok(streams)
-    }
 }
+
 fn word(bytes: &[u8], offset: usize) -> Result<u32, BlendPoseError> {
     let end = offset.checked_add(4).ok_or(BlendPoseError::SourceRange)?;
     Ok(u32::from_be_bytes(
@@ -426,7 +493,7 @@ impl AnimationTreePool {
         }
     }
 }
-fn eval_clip_streams(
+pub(crate) fn eval_clip_streams(
     streams: &[ClipStream],
     time: f32,
     length: f32,
@@ -458,6 +525,45 @@ fn eval_clip_streams(
     for (index, wrote) in written.into_iter().enumerate() {
         if !wrote {
             pool.push_pose(buffer, index, 0)?;
+        }
+    }
+    Ok(())
+}
+
+/// `eval_clip_streams` for clips that name only some of the streams (Skate 3 body clips): the
+/// pose-0 fallback goes to the clip's own unwritten streams, never to slots it does not name,
+/// which a later blend would otherwise inherit as an extra pose. `fallback` is the frame the
+/// native pose 0 occupies in each stream's palette.
+pub(crate) fn eval_named_clip_streams(
+    streams: &[ClipStream],
+    time: f32,
+    length: f32,
+    buffer: &mut BlendPoseBuffer,
+    pool: &mut BlendPoseTokenPool,
+    fallback: impl Fn(&FastString36) -> u32,
+) -> Result<(), BlendPoseError> {
+    for stream in streams {
+        let index = buffer.create_stream(stream.name, stream.mirror)?;
+        let mut wrote = false;
+        for (key_index, &(encoded, pose)) in stream.keys.iter().enumerate() {
+            let end = length * (f32::from(encoded) * f32::from_bits(0x3900_0400));
+            if end.partial_cmp(&time) != Some(std::cmp::Ordering::Less) {
+                if key_index == 0 {
+                    pool.push_pose(buffer, index, u32::from(pose))?;
+                } else {
+                    let (previous, previous_pose) = stream.keys[key_index - 1];
+                    pool.push_pose(buffer, index, u32::from(previous_pose))?;
+                    pool.push_pose(buffer, index, u32::from(pose))?;
+                    let start = length * (f32::from(previous) * f32::from_bits(0x3900_0400));
+                    pool.push_coefficient(buffer, index, 1.0 - (end - time) / (end - start))?;
+                    pool.push_blend(buffer, index, 2)?;
+                }
+                wrote = true;
+                break;
+            }
+        }
+        if !wrote {
+            pool.push_pose(buffer, index, fallback(&stream.name))?;
         }
     }
     Ok(())

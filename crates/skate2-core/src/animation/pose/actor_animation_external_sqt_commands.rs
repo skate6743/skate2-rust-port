@@ -20,6 +20,18 @@ impl TreeCommands {
         length==bones||self.operations.iter().any(|op|matches!(op,
             Command::ReplaceSqt{second,count,..} if *second==slot&&usize::from(*count)==length))
     }
+    /// ACSsetData_job82a24000 reads retained sources at execution time.
+    pub(crate) fn load_external_range(&self,sqts:&mut [Option<Vec<skate2_formats::andale::AndaleSqt>>],
+        hierarchy:&skate2_formats::andale::AndaleHierarchy,range:std::ops::Range<usize>)->Result<(),BindPoseError>{
+        for (slot,source) in &self.external_sqts[range] {
+            let values=source.try_read_for_set_job()?;
+            if !self.accepts_external_sqt_size(*slot,values.len(),hierarchy.parents.len()) {
+                return Err(BindPoseError::InvalidHierarchy);
+            }
+            *sqts.get_mut(usize::from(*slot)).ok_or(BindPoseError::UnsupportedSetup)?=Some(values);
+        }
+        Ok(())
+    }
     /// Retains the source allocation. `ACSsetData_job82a24000` samples its
     /// contents at execution, after command admission and scheduling.
     pub(crate) fn set_external_sqt(

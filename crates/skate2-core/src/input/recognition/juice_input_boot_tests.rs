@@ -10,6 +10,9 @@ struct Platform {
     observer: Option<JuiceInputBoot<u32>>,
 }
 
+#[cfg(feature = "skate3-runtime")]
+#[path = "../../session/skate3_player_corpus.rs"]
+mod skate3_player_corpus;
 #[path = "../../session/selected_session_cross_owner_frame_corpus.rs"]
 mod selected_session_cross_owner_frame_corpus;
 #[path = "../../session/selected_session_input_identity_corpus.rs"]

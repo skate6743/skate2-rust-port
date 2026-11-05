@@ -207,7 +207,10 @@ impl<H> Lua<H> {
             return self.call_at(host, func, nargs + 1, wanted);
         };
         let count = match self.function(id) {
-            Function::Native { function, upvalues, .. } => {
+            Function::Native { function, upvalues, name } => {
+                if trace_natives() {
+                    eprintln!("career native: {name}");
+                }
                 let function = *function;
                 let call = NativeCall {
                     args: self.stack[func + 1..func + 1 + nargs].to_vec(),
@@ -840,4 +843,10 @@ fn describe_register(proto: &Proto, pc: usize, register: usize) -> String {
         };
     }
     String::new()
+}
+
+/// PC port: `SKATE2_TRACE_CAREER_NATIVES` logs every native a script calls.
+fn trace_natives() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_CAREER_NATIVES").is_some())
 }

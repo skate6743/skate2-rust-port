@@ -1,18 +1,22 @@
 //! The original game's files on the host's file system (PC port addition). The Xbox 360's file
 //! system ignores case, so the game's data names a file in any case: a script's movie name, an
 //! audio stream's path. Windows ignores case as well; on Linux a name finds its file by ignoring
-//! ASCII case.
+//! ASCII case. A game folder can also be a disc image (`crate::disc`): a path through one is read
+//! from the image in place.
 
+use crate::disc::{self, DiscFile, Found};
 use std::ffi::{OsStr, OsString};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 
 /// `path` as the file system spells it. When `path` is missing on a system whose names keep case
 /// apart (Linux), each missing component becomes its directory's entry with the same name
-/// ignoring ASCII case. `path` itself when it exists, on Windows, or when a component matches
-/// nothing.
+/// ignoring ASCII case. `path` itself when it exists, on Windows, when a component matches
+/// nothing, or when it runs through a disc image (whose names ignore case themselves).
 #[must_use]
 pub fn on_disk(path: &Path) -> PathBuf {
-    if cfg!(windows) || path.exists() {
+    if cfg!(windows) || path.exists() || disc::find(path).is_some() {
         return path.to_owned();
     }
     let mut found = PathBuf::new();
@@ -37,11 +41,111 @@ pub fn on_disk(path: &Path) -> PathBuf {
 /// # Errors
 /// The file is there but could not be read.
 pub fn read_if_present(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
-    match std::fs::read(on_disk(path)) {
+    match read(&on_disk(path)) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+/// Whether `path` names a file, on the host or in a disc image.
+#[must_use]
+pub fn is_file(path: &Path) -> bool {
+    match disc::find(path) {
+        Some(found) => matches!(found, Found::File { .. }),
+        None => path.is_file(),
+    }
+}
+
+/// Whether `path` names a folder, on the host or in a disc image (an image itself is one).
+#[must_use]
+pub fn is_dir(path: &Path) -> bool {
+    match disc::find(path) {
+        Some(found) => found == Found::Directory,
+        None => path.is_dir(),
+    }
+}
+
+/// A game file opened for reading: a host file or one in a disc image.
+#[derive(Debug)]
+pub enum GameFile {
+    Host(File),
+    Disc(DiscFile),
+}
+
+impl Read for GameFile {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Host(file) => file.read(buf),
+            Self::Disc(file) => file.read(buf),
+        }
+    }
+}
+
+impl Seek for GameFile {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        match self {
+            Self::Host(file) => file.seek(to),
+            Self::Disc(file) => file.seek(to),
+        }
+    }
+}
+
+/// Opens the file at `path` for reading, on the host or in a disc image.
+///
+/// # Errors
+/// The file is missing or cannot be opened.
+pub fn open(path: &Path) -> io::Result<GameFile> {
+    match disc::open(path) {
+        Some(file) => file.map(GameFile::Disc),
+        None => File::open(path).map(GameFile::Host),
+    }
+}
+
+/// The bytes of the file at `path`, on the host or in a disc image.
+///
+/// # Errors
+/// The file is missing or cannot be read.
+pub fn read(path: &Path) -> io::Result<Vec<u8>> {
+    match disc::open(path) {
+        Some(file) => {
+            let mut file = file?;
+            let mut bytes = Vec::with_capacity(usize::try_from(file.len()).unwrap_or(0));
+            file.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        }
+        None => std::fs::read(path),
+    }
+}
+
+/// The size of the file at `path`, on the host or in a disc image.
+///
+/// # Errors
+/// The file is missing.
+pub fn file_len(path: &Path) -> io::Result<u64> {
+    match disc::find(path) {
+        Some(Found::File { size, .. }) => Ok(size),
+        Some(_) => Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is not a file in the disc image", path.display()))),
+        None => std::fs::metadata(path).map(|metadata| metadata.len()),
+    }
+}
+
+/// The entries of the folder `path` names, on the host or in a disc image: each one's path and
+/// whether it is a folder.
+///
+/// # Errors
+/// The folder is missing or cannot be read.
+pub fn read_dir(path: &Path) -> io::Result<Vec<(PathBuf, bool)>> {
+    if let Some(entries) = disc::entries(path) {
+        return entries.map(|entries| entries.into_iter().map(|(name, folder)| (path.join(name), folder)).collect());
+    }
+    std::fs::read_dir(path)?
+        .map(|entry| {
+            let entry = entry?;
+            let folder = entry.file_type()?.is_dir();
+            Ok((entry.path(), folder))
+        })
+        .collect()
 }
 
 /// The entry of `directory` named `name` ignoring ASCII case; the first in byte order when

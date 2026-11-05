@@ -51,6 +51,9 @@ impl SimulationRigidBodyPool {
         slot.force[0] = acceleration[0] + old[0];
         slot.force[1] = old[1] + acceleration[1];
         slot.force[2] = z;
+        if std::env::var_os("SKATE2_TRACE_PUSHING_MOVE").is_some() {
+            eprintln!("grab force: body slot {index} inverse mass {} force accumulator {:?}", slot.inverse_mass, slot.force);
+        }
         let angular = cached_tensor_product(
             slot.inverse_inertia_full,
             slot.inverse_inertia_split,

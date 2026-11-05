@@ -9,17 +9,20 @@ use skate2_core::{
         game_config::GameConfig,
     },
 };
-use skate2_formats::mount::MountSet;
+use skate2_formats::mount::{MountSet, MountedBig};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
 };
 
-/// A linked pack: which pack it is, and what the screen shows of it.
+/// A linked pack: which pack it is, what the screen shows of it, the file `config.json` names
+/// for it and its mounted archives.
 #[derive(Clone, Debug)]
 struct Linked {
     identity: String,
     pack: Pack,
+    path: String,
+    archives: Vec<Arc<MountedBig>>,
 }
 
 /// What the picker's thread sends: the files picked (none when it was closed), then each file
@@ -43,12 +46,13 @@ pub(crate) struct DlcLinks {
     picker: Option<mpsc::Receiver<Picked>>,
 }
 
-fn mount(mounts: &MountSet, pack: DlcPack) -> Linked {
-    let linked = Linked { identity: pack.identity.clone(), pack: Pack { title: pack.title.clone(), description: pack.description.clone() } };
-    for archive in pack.archives {
-        mounts.push_dlc(archive);
+fn mount(mounts: &MountSet, pack: DlcPack, path: String) -> Linked {
+    Linked {
+        identity: pack.identity.clone(),
+        pack: Pack { title: pack.title.clone(), description: pack.description.clone() },
+        path,
+        archives: pack.archives.into_iter().map(|archive| mounts.push_dlc(archive)).collect(),
     }
-    linked
 }
 
 fn file_name(path: &Path) -> String {
@@ -67,7 +71,7 @@ impl DlcLinks {
                 Ok(pack) if links.linked.iter().all(|linked| linked.identity != pack.identity) => {
                     eprintln!("downloadable content: {} ({path})", pack.title);
                     kept.push(path.clone());
-                    links.linked.push(mount(mounts, pack));
+                    links.linked.push(mount(mounts, pack, path.clone()));
                 }
                 Ok(pack) => eprintln!("downloadable content {path}: {} is linked by another file, unlinked", pack.title),
                 Err(error) => eprintln!("downloadable content {path} {error}: unlinked"),
@@ -150,8 +154,9 @@ impl DlcLinks {
                 }
                 Ok(pack) => {
                     linked.push(pack.title.clone());
-                    config.linked_dlc.push(path.to_string_lossy().into_owned());
-                    self.linked.push(mount(&self.mounts, pack));
+                    let path = path.to_string_lossy().into_owned();
+                    config.linked_dlc.push(path.clone());
+                    self.linked.push(mount(&self.mounts, pack, path));
                 }
                 Err(error) => failed.push((file_name(&path), error.to_string())),
             }
@@ -163,5 +168,21 @@ impl DlcLinks {
         }
         let changed = !linked.is_empty();
         LinkProgress::Linked(dlc_menu::link_report(&linked, &already, &failed), changed)
+    }
+
+    /// X on the Downloadable Content screen: the pack at `row` leaves the mounts and
+    /// `config.json`. Returns sk8popup's report, none for a row that names no pack.
+    pub(crate) fn unlink(&mut self, row: usize) -> Option<String> {
+        if row >= self.linked.len() {
+            return None;
+        }
+        let linked = self.linked.remove(row);
+        for archive in &linked.archives {
+            self.mounts.remove_dlc(archive);
+        }
+        let mut config = GameConfig::load();
+        config.linked_dlc.retain(|path| *path != linked.path);
+        let saved = config.save().err().map(|error| error.to_string());
+        Some(dlc_menu::unlink_report(&linked.pack.title, saved.as_deref()))
     }
 }

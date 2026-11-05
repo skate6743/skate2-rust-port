@@ -148,7 +148,13 @@ pub(crate) fn emit_hand_face_stream<C: HandFaceStreamCommands>(
     let stream = buffer.stream_index(part);
     let mut poses = 0_i32;
     if let Some(index) = stream {
-        poses = emit_tokens(pool.tokens(buffer, index)?, clamp, commands)?;
+        let tokens = pool.tokens(buffer, index)?;
+        poses = emit_tokens(tokens, clamp, commands).inspect_err(|_| {
+            if std::env::var_os("SKATE2_TRACE_HAND_TOKENS").is_some() {
+                let words: Vec<String> = tokens.iter().map(|t| format!("{t:08x}")).collect();
+                eprintln!("hand stream tokens rejected: {}", words.join(" "));
+            }
+        })?;
     }
     if add_bind_pose {
         let pose = required_pose(playback, b"rig_TPose")?;

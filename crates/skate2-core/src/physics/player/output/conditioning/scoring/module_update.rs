@@ -28,6 +28,7 @@ pub(super) struct ModuleFrame<'a> {
     pub physics_state: i32,
     pub category: PhysicsCategory,
     pub requested_teleport: bool,
+    pub grind_scoring_blocked: bool,
     pub requested_runout: bool,
     pub retrieving_board: bool,
     pub ground_normal: SkeletonRootVector,
@@ -69,16 +70,31 @@ impl ScoreModule {
             .map_err(|_| ScoreError::Poisoned)?
             .update_takeoff_normal(f.category, f.ground_normal, f.grind_normal);
         self.begin_scoring_frame()?;
+        // TU3 ScoreModule::Update 82DA3520: with the per-tick holder clears, the air output's
+        // locked trajectory (PhysOut_Air+452) into ScoreHolder+0x1C5D for the collectors.
+        #[cfg(feature = "skate3-runtime")]
+        if self.states.skate3_enabled() {
+            self.holder
+                .published_value()
+                .ok_or(ScoreError::Missing("score holder"))?
+                .lock()
+                .map_err(|_| ScoreError::Poisoned)?
+                .skate3_air_reckoning = f.collector.air.use_air_reckoning;
+        }
         let kind = self.select_collector(
             f.context.filtered,
             f.physics_state,
             f.requested_teleport,
+            f.grind_scoring_blocked,
             f.collector.wheels_in_contact,
             f.collector.animation,
             db,
             &input.enabled,
             out,
         )?;
+        super::scoring_module_finish::trace_score(format_args!("collector {kind:?} filtered {} physics {} teleport {} grind {} {:#x} blocked {}",
+            f.context.filtered as i32, f.physics_state, f.requested_teleport,
+            f.collector.grind.filtered_scorable_id, f.collector.grind.pathed_guid, f.grind_scoring_blocked));
         self.manage_collector(kind, output, db, &f.collector, out)?;
         self.update_collector(db, &f.collector, out)?;
         self.wipeout
@@ -123,7 +139,16 @@ impl ScoreModule {
         self.check_sequence(&finish, out)?;
         self.check_line(f.retrieving_board, out)?;
         self.check_gestures(f.gesture, f.is_gesturing)?;
-        self.fill_collector_output(f.collector.wiped_out, out)?;
+        // TU3 FillAirPeriodData 82DA83B0 tests the filtered state for a wipeout.
+        #[cfg(feature = "skate3-runtime")]
+        let wiped_out = if self.states.skate3_enabled() {
+            f.context.filtered == FilteredPhysicsState::Wipeout
+        } else {
+            f.collector.wiped_out
+        };
+        #[cfg(not(feature = "skate3-runtime"))]
+        let wiped_out = f.collector.wiped_out;
+        self.fill_collector_output(wiped_out, out)?;
         self.fill_module_output(f.context.filtered, tuning.multiplier_override, out)?;
         let state = self
             .reset_suffix

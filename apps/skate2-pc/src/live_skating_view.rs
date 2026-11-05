@@ -107,6 +107,17 @@ impl LiveSkatingView {
     pub(crate) fn take_screen_events(&mut self) -> crate::marker_ui::ScreenEvents {
         self.marker_ui.as_mut().map_or_else(Default::default, crate::marker_ui::MarkerUi::take_screen_events)
     }
+    /// The challenge fade's white for frames without PostFX: `VisualFX_Animation` draws the fade
+    /// as a bloom only without a tazer or Hall of Meat effect and without challenge success or
+    /// failure info, so the cover takes the same branch; none without a fade.
+    pub(crate) fn challenge_fade_white(&self) -> f32 {
+        self.retained
+            .as_ref()
+            .filter(|frame| !frame.hom_visual.is_some_and(|bail| bail.tazer || bail.effect_enabled))
+            .filter(|frame| frame.result_info.success.is_none() && frame.result_info.failed.is_none())
+            .and_then(|frame| frame.challenge_fade)
+            .map_or(0., |fade| fade.clamp(0., 1.))
+    }
     pub(crate) fn exit_to_front_end(&mut self) -> RenderResult<()> {
         self.marker_ui.as_mut().ok_or("frontend UI absent")?.exit_to_front_end()
     }
@@ -247,6 +258,12 @@ impl LiveSkatingView {
     pub(crate) fn set_world_render_location(&mut self, location: Option<u64>) -> RenderResult<()> {
         self.map.set_world_render_location(&self.mounts, location)
     }
+    /// The front end's release of an additional world the game left, in the city the main menu
+    /// keeps behind its own scene.
+    pub(crate) fn release_left_additional_world(&mut self, renderer: &GpuRenderer, xml_enabled: bool) -> RenderResult<()> {
+        let Some(scene) = self.retained_main_scene.as_mut() else { return Ok(()) };
+        self.map.release_left_additional_world(renderer, scene, xml_enabled)
+    }
     /// The additional world the city may still hold collections of.
     pub(crate) fn additional_world_held(&self) -> Option<String> {
         self.map.additional_world_held()
@@ -375,6 +392,7 @@ impl LiveSkatingView {
             }
         };
         let parameters=crate::gpu_renderer::final_pass::FisheyeParameters::load(&self.mounts)?;
+        skate2_core::ui::options::set_fisheye_edge_scale(parameters.edge_scale());
         let vignette=self.map.vignette_texture(renderer)?;
         let mut scene=self.map.initialize(renderer)?;
         scene.final_blit=Some((parameters,vignette));
@@ -390,18 +408,18 @@ impl LiveSkatingView {
 
     pub(crate) fn update_editor(&mut self, renderer:&GpuRenderer,scene:&mut GpuScene,
         now:Instant,character:&mut skate2_core::edit_skater_character::EditSkaterCharacter,
-        male:bool,body_key:u64,camera_key:u64,near_plane:f32)->RenderResult<()> {
+        male:bool,body_key:u64,camera_key:u64,gesture:Option<u32>,near_plane:f32)->RenderResult<()> {
         if self.editor.is_none() {
             let mut editor=crate::edit_skater_room::EditSkaterRoomView::load(&self.mounts,male,now)?;
             let mut room_scene=editor.initialize(renderer)?;
             // Prepare a complete room before replacing the visible scene.
-            editor.update(renderer,&mut room_scene,&self.mounts,now,character,male,body_key,camera_key,near_plane)?;
+            editor.update(renderer,&mut room_scene,&self.mounts,now,character,male,body_key,camera_key,gesture,near_plane)?;
             self.retained_world_scene=Some(std::mem::replace(scene,room_scene));
             self.editor=Some(editor);
             return Ok(());
         }
         self.editor.as_mut().ok_or("CAS room owner missing")?.update(
-            renderer,scene,&self.mounts,now,character,male,body_key,camera_key,near_plane)
+            renderer,scene,&self.mounts,now,character,male,body_key,camera_key,gesture,near_plane)
     }
 
     pub(crate) fn close_editor(&mut self,scene:&mut GpuScene) {
@@ -429,7 +447,9 @@ impl LiveSkatingView {
             let mut next=menu.initialize(renderer)?;
             let vignette=menu.vignette_texture(renderer)?;
             next.postfx_overlay=Some(menu.xray_texture(renderer)?);
-            next.final_blit=Some((crate::gpu_renderer::final_pass::FisheyeParameters::load(&self.mounts)?,vignette));
+            let parameters=crate::gpu_renderer::final_pass::FisheyeParameters::load(&self.mounts)?;
+            skate2_core::ui::options::set_fisheye_edge_scale(parameters.edge_scale());
+            next.final_blit=Some((parameters,vignette));
             self.retained_main_scene=Some(std::mem::replace(scene,next));
             self.main_menu=Some(menu);
         }
@@ -676,6 +696,11 @@ impl LiveSkatingView {
                 .position(|skater| (skater.hips_position, skater.bounds) == shadow)
                 .map_or(ShadowSkater::Fixed(shadow), ShadowSkater::Party)
         };
+        // PC weather: where the rain's splashes and wakes start.
+        if crate::weather::current() != crate::weather::Mode::Vanilla {
+            crate::weather_splashes::publish(visual.local_board_deck, visual.simulation_tick, replay.is_some());
+            crate::weather_splashes::publish_actor(shadow.0, shadow.1, visual.local_skater_feet, visual.simulation_tick, replay.is_some());
+        }
         self.retained = Some(RetainedFrame {
             simulation_tick: visual.simulation_tick,
             hom_visual: visual.hom_visual,
@@ -856,6 +881,14 @@ impl LiveSkatingView {
             }
         }
         let span = profile::span(profile::VIEW_CHARACTER);
+        // SKATE2_TRACE_DRAWN_SKATER: each drawn frame's tick, palette generation, hips and camera.
+        static TRACE_DRAWN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *TRACE_DRAWN.get_or_init(|| std::env::var_os("SKATE2_TRACE_DRAWN_SKATER").is_some()) {
+            eprintln!(
+                "drawn skater: tick={} palette_generation={} hips={:?} camera={:?} restore={}",
+                retained.simulation_tick, local.palette.generation(), local.hips_position, view.position, restore.is_some(),
+            );
+        }
         self.lighting.update_tick(self.map.light_probe_at(local.hips_position), retained.simulation_tick);
         {
             let materials = local.materials.lock().map_err(|_| "skater materials lock poisoned")?;
@@ -1012,6 +1045,7 @@ impl LiveSkatingView {
                 renderer,
                 &self.mounts,
                 indicators,
+                self.map.visual_indicators(),
                 &view,
                 &clip_from_world,
                 &camera,
@@ -1500,6 +1534,7 @@ mod tests {
             hom: None,
             ice: None,
             fe_online_menu: false,
+            luminance_scale: 1.0,
         };
         let mut nis = skate2_core::nis::manager::NisView { bloom_to_white: 0.25, ..Default::default() };
         let mut game = frame;
@@ -1532,6 +1567,7 @@ mod tests {
             hom: None,
             ice: None,
             fe_online_menu: false,
+            luminance_scale: 1.0,
         };
         let mut half = frame;
         super::challenge_fade(&mut half, 0.5);
@@ -1568,6 +1604,7 @@ mod tests {
             hom: None,
             ice: None,
             fe_online_menu: false,
+            luminance_scale: 1.0,
         };
         let near = Grade { brightness: 0.0, contrast: 1.0, midpoint: 0.5, saturate: -0.6957, colour: [1.0, 0.57, 0.49] };
         let far = Grade { brightness: 0.1, contrast: 2.5679, midpoint: 0.6602, saturate: 10.0, colour: [1.0, 0.63, 0.2] };

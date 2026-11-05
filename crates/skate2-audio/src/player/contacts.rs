@@ -26,6 +26,8 @@ const SPEECH: Collection = Collection::new(class::AUD_SPEECH, 0xD7ED_BD36_2D7D_2
 const FOOTCATCH: Collection = Collection::new(class::AUD_SPLICER, 0xF164_7BFB_782B_E97F);
 const HANDGRAB: Collection = Collection::new(class::AUD_SPLICER, 0xE0C3_B44A_B44F_7B90);
 const KICKUP: Collection = Collection::new(class::AUD_GENERAL, 0x109E_63A9_F198_B562);
+/// TU3 `GlobalAttributeCollection` +0x8C: the effect sub mix each Skate 3 sound plays through.
+const SKATE3_EFFECTS: Collection = Collection::new(0x42AF_E160_E647_167C, 0xD7ED_BD36_2D7D_2152);
 const HOM: Collection = Collection::new(class::AUD_GENERAL, 0x3404_9ABC_E23C_10AC);
 
 /// `SPLICE_TYPE`.
@@ -38,6 +40,11 @@ const SPLICE_OLLIES_CONCRETE: i32 = 12;
 const SPLICE_OLLIES_WOOD: i32 = 13;
 const SPLICE_OLLIES_SCRAPES: i32 = 14;
 const SPLICE_FOOT_CATCH: i32 = 16;
+/// PC port: the splicer slots of Skate 3's splice bank 0 (`Skate_Collisions.bnk`, which holds its
+/// foot catches) and bank 7 (`sk8_foley.bnk`, its foot scrapes), loaded from the linked data on a
+/// first darkcatch.
+const SPLICE_SKATE3_COLLISIONS: usize = 28;
+const SPLICE_SKATE3_FOLEY: usize = 29;
 const SPLICE_FOOT_SCRAPES: i32 = 17;
 const SPLICE_GRABS: i32 = 19;
 const SPLICE_L4: i32 = 20;
@@ -186,6 +193,15 @@ pub struct Contacts {
     scrape: Option<SpliceId>,
     foot_catch: [Option<SpliceId>; 3],
     foot_scrape: [Option<SpliceId>; 2],
+    /// TU3 `SFXObj_Contacts` +0x1E4: a Skate 3 darkcatch holds the board inverted.
+    skate3_inverted: bool,
+    /// The skater runs Skate 3 physics, whose catches are TU3's.
+    skate3_physics: bool,
+    /// TU3 `SFXCTL_PlayerPhysics` +0x308/+0x304: a darkcatch now or within the last five frames.
+    skate3_dark_catch_recent: bool,
+    skate3_dark_catch_frames: u32,
+    /// TU3 `SFXObj_Contacts` +0x1F0: the darkcatch landing.
+    skate3_dark_catch_land: Option<SpliceId>,
     last_in_air: bool,
     last_in_manual: bool,
     last_in_grind: bool,
@@ -277,6 +293,11 @@ impl Contacts {
             scrape: None,
             foot_catch: [None; 3],
             foot_scrape: [None; 2],
+            skate3_inverted: false,
+            skate3_physics: false,
+            skate3_dark_catch_recent: false,
+            skate3_dark_catch_frames: 0,
+            skate3_dark_catch_land: None,
             last_in_air: false,
             last_in_manual: false,
             last_in_grind: false,
@@ -418,13 +439,25 @@ impl Contacts {
             ctx.release(&mut self.hand_grabs_off[hand].splice);
         }
         ctx.release(&mut self.kickup);
+        ctx.release(&mut self.skate3_dark_catch_land);
     }
 
     /// `SFXObj_Contacts::UpdateParams` 0x8254f8a0 (the state is attached), for the skater at
     /// `array_index` of the presentation.
     pub fn update_params(&mut self, t: f32, physics: &PlayerPhysics, skater: &SkaterData, array_index: i32, io: Option<DMixIoId>, ctx: &mut SfxCtx<'_>) {
+        self.skate3_physics = physics.skate3_physics && ctx.skate3.is_some();
+        // TU3's controller update (0x824b17fc..0x824b1834) keeps a darkcatch for five frames.
+        if physics.skate3_dark_catch {
+            self.skate3_dark_catch_recent = true;
+            self.skate3_dark_catch_frames = 0;
+        } else if self.skate3_dark_catch_frames < 5 {
+            self.skate3_dark_catch_frames += 1;
+        } else {
+            self.skate3_dark_catch_recent = false;
+        }
         self.check_for_foot_catches(physics, ctx);
         self.check_for_foot_scrapes(physics, ctx);
+        self.check_for_skate3_inverted_board(physics, ctx);
         let manual = self.check_for_manual(physics, io, ctx);
         self.check_for_wheel_hits(manual, physics, io, ctx);
         self.check_for_jumps_and_lands(physics, io, ctx);
@@ -634,8 +667,48 @@ impl Contacts {
         self.hand_grabs_off[HAND_LEFT].was_grabbing = left;
     }
 
+    /// TU3 `PlayFootCatch` 0x824b9268 with Skate 3 physics: Skate 3's footcatch air time and speed
+    /// thresholds (`GlobalAttributeCollection` +0x6C), its cue for the catch type and level
+    /// (inverted with the board upside down, 0x824c0b90) from splice bank 0, through its effect.
+    fn play_skate3_foot_catch(&mut self, kind: u32, speed: f32, foot: usize, ctx: &mut SfxCtx<'_>) {
+        let Some(vault) = ctx.skate3 else { return };
+        if !Self::skate3_bank(ctx, SPLICE_SKATE3_COLLISIONS, "Skate_Collisions.bnk") {
+            return;
+        }
+        let wheels = FOOTCATCH;
+        let time = if foot == FEET_BOTH { f32::from_bits(self.num_feet_scraping) } else { self.feet[foot].time_in_air };
+        if !(time > vault.f32(wheels, 0x6BFB_6A3F_22AA_F797) * 0.001) || !(speed >= vault.f32(wheels, 0xB63C_C740_D29A_D118)) {
+            return;
+        }
+        let level = if speed >= vault.f32(wheels, 0xE1F8_7C49_37E3_CCA2) || (self.was_hippy && self.hippy_jump_strength != 0) {
+            2
+        } else if speed >= vault.f32(wheels, 0x7D1C_A200_987A_A109) || (self.was_hippy && self.hippy_jump_strength == 0) {
+            1
+        } else {
+            0
+        };
+        let key = match (self.skate3_inverted, kind) {
+            (false, 0) => 0x6F13_3132_EF3F_8063,
+            (false, 1) => 0xE518_088F_4E61_203A,
+            (false, 3) => 0x3AC5_AA2D_2010_B49C,
+            (false, _) => 0x4CFF_3685_5CA0_4B6F,
+            (true, 0) => 0xDB56_9526_76D7_122E,
+            (true, 1) => 0x0ACF_CB7E_532B_7A0B,
+            (true, _) => 0x7EA3_7827_E422_8614,
+        };
+        let cue = vault.i32_at(wheels, key, level);
+        trace_skate3_darkcatch(format_args!("catch kind {kind} level {level} inverted {}: cue {cue}", self.skate3_inverted));
+        if self.foot_catch[foot].is_none() {
+            self.foot_catch[foot] = Self::play_skate3_effect(ctx, cue, 0xF61F_2797_B248_68D9);
+        }
+    }
+
     /// `PlayFootCatch` 0x8251c6c8.
     fn play_foot_catch(&mut self, kind: u32, speed: f32, foot: usize, ctx: &mut SfxCtx<'_>) {
+        if self.skate3_physics {
+            self.play_skate3_foot_catch(kind, speed, foot, ctx);
+            return;
+        }
         let time = if foot == FEET_BOTH { f32::from_bits(self.num_feet_scraping) } else { self.feet[foot].time_in_air };
         if !(time > ctx.vault.f32(FOOTCATCH, 0x6BFB_6A3F_22AA_F797) * 0.001) {
             return;
@@ -656,8 +729,95 @@ impl Contacts {
         }
     }
 
-    /// `PlayFootCatchHelper` 0x8251c938.
+    /// A Skate 3 sound from its splice bank 0, through the effect sub mix its attribute `key` in
+    /// `SKATE3_EFFECTS` names (TU3 0x824b9468 / 0x824bade4).
+    fn play_skate3_effect(ctx: &mut SfxCtx<'_>, cue: i32, key: u64) -> Option<SpliceId> {
+        let vault = ctx.skate3?;
+        let index = vault.i32(SKATE3_EFFECTS, key);
+        let target = ctx.global_effects.skate3_effect(ctx.core, index, ctx.local, vault, ctx.rng);
+        ctx.new_splice(SPLICE_SKATE3_COLLISIONS as i32, cue, target)
+    }
+
+    /// TU3 `CheckForFootScrapes` 0x824b9a74..0x824b9ac0: a darkcatch (`SFXCTL_PlayerPhysics`
+    /// +0x301) holds the board inverted; when it ends, the right foot scrapes the board back over
+    /// unless its scrape already sounds. Nothing happens in Skate 2 physics.
+    fn check_for_skate3_inverted_board(&mut self, physics: &PlayerPhysics, ctx: &mut SfxCtx<'_>) {
+        if physics.skate3_dark_catch {
+            self.skate3_inverted = true;
+        } else if self.skate3_inverted {
+            if self.foot_scrape[FEET_RIGHT].is_none() {
+                self.foot_scrape[FEET_RIGHT] = Self::skate3_inverted_scrape(FEET_RIGHT, ctx);
+            }
+            self.skate3_inverted = false;
+        }
+    }
+
+    /// TU3 `PlayFootScrapeSound` 0x824b97c8 with the board inverted: Skate 3's
+    /// `aud_contacts/default` 0xF2866EE0540CDF05 element `foot`, in its splice bank 7.
+    fn skate3_inverted_scrape(foot: usize, ctx: &mut SfxCtx<'_>) -> Option<SpliceId> {
+        let vault = ctx.skate3?;
+        if !Self::skate3_bank(ctx, SPLICE_SKATE3_FOLEY, "sk8_foley.bnk") {
+            return None;
+        }
+        let cue = vault.i32_at(CONTACTS, 0xF286_6EE0_540C_DF05, foot as u32);
+        trace_skate3_darkcatch(format_args!("scrape foot {foot}: cue {cue}"));
+        Self::play_dry(ctx, SPLICE_SKATE3_FOLEY as i32, cue)
+    }
+
+    /// TU3 `LandGround` 0x824bac14..0x824baee8: landing in or just after a darkcatch plays Skate 3's
+    /// darkcatch landing from its splice bank 0: `aud_contacts/default`'s cue by whether the deck's
+    /// surface has a landing material (`SurfaceMapping` word 2) and whether the air time reached
+    /// its threshold, through its effect.
+    fn land_skate3_dark_catch(&mut self, physics: &PlayerPhysics, ctx: &mut SfxCtx<'_>) {
+        ctx.release(&mut self.skate3_dark_catch_land);
+        let Some(vault) = ctx.skate3 else { return };
+        if !Self::skate3_bank(ctx, SPLICE_SKATE3_COLLISIONS, "Skate_Collisions.bnk") {
+            return;
+        }
+        let material = if physics.deck_in_contact { physics.deck_material } else { 0 };
+        let landing_surface = crate::surface::mapping(ctx.vault, material, 2) != 0;
+        let short = self.time_in_air < vault.f32(CONTACTS, 0x224B_0656_2D9D_5E0E);
+        let key = match (landing_surface, short) {
+            (true, true) => 0x1E86_4695_56AC_D80A,
+            (true, false) => 0xBF22_DD8B_C69D_DE53,
+            (false, true) => 0xF262_042E_AA29_5711,
+            (false, false) => 0x3A2F_1C78_8E21_D92D,
+        };
+        let cue = vault.i32(CONTACTS, key);
+        trace_skate3_darkcatch(format_args!("land surface {landing_surface} short {short}: cue {cue}"));
+        self.skate3_dark_catch_land = Self::play_skate3_effect(ctx, cue, 0x8B0E_0307_99CB_DD00);
+    }
+
+    /// One of Skate 3's splice banks, read from its `audiofiles.big` into `slot` the first time.
+    fn skate3_bank(ctx: &mut SfxCtx<'_>, slot: usize, name: &str) -> bool {
+        if ctx.splicer.bank(slot).is_some() {
+            return true;
+        }
+        let Some(files) = ctx.core.stream_pools.files() else { return false };
+        let path = format!("{}data\\audio\\audiofiles.big|data\\audio\\{name}", crate::rwac::stream_pool::SKATE3_FILES);
+        let Some(size) = files.size(&path) else { return false };
+        let mut bytes = vec![0u8; size as usize];
+        if !files.read_at(&path, 0, &mut bytes) {
+            return false;
+        }
+        ctx.splicer.load_bank(std::sync::Arc::from(bytes), slot).is_ok()
+    }
+
+    /// `PlayFootCatchHelper` 0x8251c938; with Skate 3 physics TU3's 0x824b9508, which catches the
+    /// first foot, then the second, then both.
     fn play_foot_catch_helper(&mut self, speed: f32, foot: usize, ctx: &mut SfxCtx<'_>) {
+        if self.skate3_physics {
+            match self.num_feet_on_board {
+                0 => self.play_foot_catch(CATCH_FIRST_FOOT, speed, foot, ctx),
+                1 => self.play_foot_catch(CATCH_2ND_FOOT, speed, foot, ctx),
+                2 => {
+                    self.play_foot_catch(CATCH_BOTH_FEET, speed, foot, ctx);
+                    self.num_feet_on_board = 0;
+                }
+                _ => {}
+            }
+            return;
+        }
         match self.num_feet_on_board {
             0 => self.play_foot_catch(CATCH_BOTH_FEET, speed, foot, ctx),
             1 => self.play_foot_catch(CATCH_FIRST_FOOT, speed, foot, ctx),
@@ -716,8 +876,15 @@ impl Contacts {
         }
     }
 
-    /// `PlayFootScrapeSound` 0x8251cbb0.
+    /// `PlayFootScrapeSound` 0x8251cbb0 (TU3 0x824b97c8 plays the inverted cue during a Skate 3
+    /// darkcatch).
     fn play_foot_scrape(&mut self, feet_scraping: u32, foot: usize, ctx: &mut SfxCtx<'_>) {
+        if self.skate3_inverted
+            && let Some(splice) = Self::skate3_inverted_scrape(foot, ctx)
+        {
+            self.foot_scrape[foot] = Some(splice);
+            return;
+        }
         let mut offset = 0;
         let mut start = 0;
         if feet_scraping > 1 {
@@ -831,6 +998,7 @@ impl Contacts {
             sweetener = Self::splice_index_for_land(physics, num_wheels, HIT_THREE, ctx);
         }
         let (bank, index, land_type) = Self::splice_index_for_land(physics, num_wheels, level, ctx);
+        trace_skate3_darkcatch(format_args!("wheel hit wheels {num_wheels} level {level} landed {:?}: bank {bank} index {index}", physics.landed));
         self.land[slot].num_wheels = num_wheels;
         self.land[slot].land_type = land_type;
         self.land[slot].level = level;
@@ -1042,6 +1210,9 @@ impl Contacts {
                 ctx.set_input(io, 7, 0x7FFF);
             }
         }
+        if physics.skate3_dark_catch || self.skate3_dark_catch_recent {
+            self.land_skate3_dark_catch(physics, ctx);
+        }
         let mut count = 0;
         let mut impact = 0;
         for wheel in 0..4 {
@@ -1092,6 +1263,10 @@ impl Contacts {
     /// `CheckForJumpsAndLands` 0x8254b4d0.
     fn check_for_jumps_and_lands(&mut self, physics: &PlayerPhysics, io: Option<DMixIoId>, ctx: &mut SfxCtx<'_>) {
         self.land_tick += 1;
+        if physics.in_air != self.last_in_air {
+            trace_skate3_darkcatch(format_args!("in air {} trick {} performing {} rail {}", physics.in_air, physics.trick_type,
+                physics.is_performing_trick, physics.is_rail_grind));
+        }
         ctx.set_input(io, 0, 0);
         ctx.set_input(io, 1, 0);
         ctx.set_input(io, 10, 0);
@@ -1596,6 +1771,8 @@ impl Contacts {
     /// One body part of `CheckForBodyCollisions` that touched something.
     fn body_part_collision(&mut self, part: usize, force: f32, wiping_out: bool, physics: &PlayerPhysics, io: Option<DMixIoId>, ctx: &mut SfxCtx<'_>) {
         let info = &physics.skeleton_collision_info;
+        trace_skate3_darkcatch(format_args!("body part {part} force {force} surface {} wiping out {wiping_out} in air {}",
+            info.audio_surface_type[part], physics.in_air));
         if info.is_groin_contact && wiping_out {
             self.was_groin_hit_during_wipeout = true;
         }
@@ -1678,5 +1855,13 @@ impl Contacts {
             }
         }
         self.check_for_first_collision(part, force, other, level, range.0, range.1, physics, io, ctx);
+    }
+}
+
+/// `SKATE2_TRACE_SKATE3_DARKCATCH`: the Skate 3 darkcatch cues as they play.
+fn trace_skate3_darkcatch(message: std::fmt::Arguments<'_>) {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_SKATE3_DARKCATCH").is_some()) {
+        eprintln!("skate 3 darkcatch audio: {message}");
     }
 }

@@ -6,6 +6,9 @@ pub(crate) mod subject_update;
 #[path = "../camera_reference_points.rs"]
 pub(crate) mod reference_points;
 
+#[cfg(feature = "skate3-runtime")]
+#[path = "camera_skate3.rs"]
+mod skate3;
 use crate::actor_construction::ActorConstruction;
 use std::sync::Arc;
 
@@ -42,6 +45,10 @@ pub(crate) struct CameraStartupFields {
     /// working frame. Simulation consumers can read it before the first tick.
     simulation_camera_matrix: Option<crate::skeleton_root_transforms::SkeletonRootMatrix>,
     global: Option<selected_runtime::CameraGlobalCondition>,
+    /// PC port (Skate 3 physics): the frame field of view the Skate 3 camera replaced, given
+    /// back when the Skate 2 camera runs again.
+    #[cfg(feature = "skate3-runtime")]
+    skate2_field_of_view: Option<f32>,
 }
 impl CameraStartupFields {
     pub(crate) const fn construct_notification_fields() -> Self {
@@ -57,6 +64,8 @@ impl CameraStartupFields {
             completed_submission: None,
             simulation_camera_matrix: None,
             global: None,
+            #[cfg(feature = "skate3-runtime")]
+            skate2_field_of_view: None,
         }
     }
     /// Camera observer82581c08 forwards to folded825187c0, an actual blr.

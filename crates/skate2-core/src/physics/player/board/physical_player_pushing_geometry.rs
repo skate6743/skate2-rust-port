@@ -1,6 +1,6 @@
 //! Pushing501 spline orientation, hand targets and blend lifecycle. These
 //! operate on the existing retained state, not a replacement grab controller.
-use super::{GrabDescriptor, OffBoardPushing, read_floats};
+use super::{GrabDescriptor, PushingCore, read_floats};
 use crate::{
     physical_player_grab_spline::{
         GrabSpline, PlayerGrabSpline,
@@ -17,7 +17,7 @@ use crate::{
     skeleton_affine_interpolation::try_interpolate_affine,
 };
 
-impl OffBoardPushing {
+impl PushingCore {
     /// GenerateGrabbableBox82d92218 derives forward from the current animation
     /// hands and effective up, then uses the shared box initializer with pitch off.
     pub(crate) fn try_generate_grabbable_box(
@@ -101,6 +101,18 @@ impl OffBoardPushing {
         effective_x: V4,
         num: &mut GrindNum<'_>,
     ) -> Result<(), GrindError> {
+        self.try_update_spline_with(first, &mut |descriptor, message| grab.defer_message(descriptor, message), raw_pose, effective_x, num)
+    }
+
+    /// The same UpdateSpline with the grab spline's messages handed to `send`.
+    pub(crate) fn try_update_spline_with(
+        &mut self,
+        first: bool,
+        send: &mut dyn FnMut(GrabDescriptor, GrabMessageKind) -> Result<(), GrindError>,
+        raw_pose: &mut impl FnMut(usize) -> Result<V4, GrindError>,
+        effective_x: V4,
+        num: &mut GrindNum<'_>,
+    ) -> Result<(), GrindError> {
         let spline = need(self.grab_spline.as_ref(), "Pushing grab spline")?;
         let descriptor = GrabDescriptor {
             object_type: spline.descriptor_type,
@@ -109,7 +121,7 @@ impl OffBoardPushing {
         self.grab_spline_desc = Some(descriptor);
         self.reach_base = Some(raw_pose(23)?); // PART_HIPS
         if first {
-            grab.defer_message(descriptor, GrabMessageKind::Activate)?;
+            send(descriptor, GrabMessageKind::Activate)?;
             self.spline_length = Some(spline.length);
             self.grab_spline_swapped = Some(spline.status & 0x20 != 0);
             self.object_mass = Some(1.0 / spline.inertia.inverse_mass);

@@ -43,6 +43,7 @@ pub(crate) enum HandsFaceSessionError<E> {
     Missing(&'static str),
     Lock(&'static str),
     Begin(BindPoseError),
+    Gesture(String),
     Runtime(HandFaceRuntimeError<HandsFaceSourceError<E>>),
 }
 impl<E: std::fmt::Debug> std::fmt::Display for HandsFaceSessionError<E> {
@@ -51,6 +52,7 @@ impl<E: std::fmt::Debug> std::fmt::Display for HandsFaceSessionError<E> {
             Self::Body(error) => write!(f, "hands/face session Body: {error:?}"),
             Self::Missing(error) => write!(f, "hands/face session Missing: {error:?}"),
             Self::Lock(error) => write!(f, "hands/face session Lock: {error:?}"),
+            Self::Gesture(error) => write!(f,"gesture streams: {error}"),
             Self::Begin(error) => write!(f, "hands/face session Begin: {error:?}"),
             Self::Runtime(error) => write!(f, "hands/face session Runtime: {error:?}"),
         }
@@ -152,6 +154,10 @@ impl ActorConstruction {
             selection,
             playback,
         };
+        #[cfg(feature="skate3-runtime")]
+        if let Some(gesture)=&retained.lock().map_err(|_|E::Lock("gesture hand registration"))?.pc_gesture_playback {
+            gesture.register_hand_poses(&left,&right).map_err(E::Gesture)?;
+        }
         runtime::begin_command_set(&left).map_err(E::Begin)?;
         runtime::begin_command_set(&right).map_err(E::Begin)?;
         retained

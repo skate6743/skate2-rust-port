@@ -5,7 +5,10 @@
 use crate::game_stream::StreamKind;
 use skate2_formats::{
     hash::rw_hash64_string,
-    stream::{CollectionSpace, DEFAULT_PRESENTATION_FOCUS_COLLECTIONS, MAX_FOCUS_ENTRIES, high_detail_collection_filename, merge_focus_collections},
+    stream::{
+        CollectionSpace, DEFAULT_PRESENTATION_FOCUS_COLLECTIONS, MAX_FOCUS_ENTRIES, high_detail_collection_filename, merge_focus_collections,
+        skate3_high_detail_tile, tiled_high_detail_collection_filename,
+    },
     stream_xml::StreamXml,
 };
 use std::sync::Arc;
@@ -25,6 +28,9 @@ pub struct PresentationStreamArea {
     pub radius: f32,
     /// The high collections registered in the presentation.
     pub resident: Vec<u64>,
+    /// PC port: the additional world is a linked Skate 3 district standing in San Vanelona's
+    /// place: its collections alone are known and wanted, on Skate 3's tiles.
+    pub exclusive: bool,
 }
 
 impl PresentationStreamArea {
@@ -34,6 +40,21 @@ impl PresentationStreamArea {
     /// (`cStreamFile::FindCollections` `0x824df068`, at most 16).
     #[must_use]
     pub fn is_area_loaded(&self, position: [f32; 3], radius: f32, xml_enabled: bool) -> bool {
+        if let Some(district) = self.additional.as_deref().filter(|_| self.exclusive) {
+            let loaded = |id: u64| {
+                let known = district.collections.iter().any(|entry| entry.lod == 0 && entry.id == id);
+                Ok::<_, std::convert::Infallible>(!known || self.resident.contains(&id))
+            };
+            let wanted = |at: [f32; 3]| {
+                let mut picked = district.focus_collections(at, self.radius, MAX_FOCUS_ENTRIES);
+                picked.truncate(DEFAULT_PRESENTATION_FOCUS_COLLECTIONS);
+                Ok(picked.iter().map(|collection| collection.id).collect())
+            };
+            return match is_area_loaded_tiled(position, radius, StreamKind::Presentation, true, loaded, wanted) {
+                Ok(loaded) => loaded,
+                Err(never) => match never {},
+            };
+        }
         let loaded = |id: u64| {
             let known = std::iter::once(&*self.space)
                 .chain(self.additional.as_deref())
@@ -83,6 +104,16 @@ pub fn high_collection_id(kind: StreamKind, point: [f32; 3]) -> u64 {
     rw_hash64_string(&high_detail_collection_filename(kind.suffix(), point))
 }
 
+/// [`high_collection_id`] on a linked Skate 3 district's tiles when `skate3` is set.
+#[must_use]
+pub fn tiled_high_collection_id(kind: StreamKind, point: [f32; 3], skate3: bool) -> u64 {
+    if skate3 {
+        rw_hash64_string(&tiled_high_detail_collection_filename(kind.suffix(), point, skate3_high_detail_tile(kind.suffix())))
+    } else {
+        high_collection_id(kind, point)
+    }
+}
+
 /// `cAssetStreamSystem::IsAreaLoaded` (`0x824e0340`) for a focus of `kind`: every test point's
 /// cell, each once, must be loaded (`collection_loaded` is `IsCollectionLoaded(id, true)`
 /// `0x824daa58`, which takes a collection its stream does not have as loaded) or not among the
@@ -96,6 +127,23 @@ pub fn is_area_loaded<E>(
     position: [f32; 3],
     radius: f32,
     kind: StreamKind,
+    collection_loaded: impl FnMut(u64) -> Result<bool, E>,
+    wanted_at: impl FnOnce([f32; 3]) -> Result<Vec<u64>, E>,
+) -> Result<bool, E> {
+    is_area_loaded_tiled(position, radius, kind, false, collection_loaded, wanted_at)
+}
+
+/// [`is_area_loaded`], its test points' cells on a linked Skate 3 district's tiles when `skate3`
+/// is set.
+///
+/// # Errors
+///
+/// Whatever `collection_loaded` or `wanted_at` return.
+pub fn is_area_loaded_tiled<E>(
+    position: [f32; 3],
+    radius: f32,
+    kind: StreamKind,
+    skate3: bool,
     mut collection_loaded: impl FnMut(u64) -> Result<bool, E>,
     wanted_at: impl FnOnce([f32; 3]) -> Result<Vec<u64>, E>,
 ) -> Result<bool, E> {
@@ -103,7 +151,7 @@ pub fn is_area_loaded<E>(
     let mut find = Some(wanted_at);
     let mut wanted: Option<Vec<u64>> = None;
     for point in area_test_points(position, radius) {
-        let id = high_collection_id(kind, point);
+        let id = tiled_high_collection_id(kind, point, skate3);
         if checked.contains(&id) {
             continue;
         }

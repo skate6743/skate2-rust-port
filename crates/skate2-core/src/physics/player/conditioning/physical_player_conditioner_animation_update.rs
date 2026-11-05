@@ -102,3 +102,26 @@ impl Conditioners {
         })
     }
 }
+
+#[cfg(feature = "skate3-runtime")]
+impl Conditioners {
+    /// Source movement has already completed its animation calculations.
+    /// Retain the host's authored trick history for its HUD and career scoring.
+    pub(crate) fn try_update_skate3_animation(
+        &mut self,
+        publication: crate::physical_player_phys_out::skate3::Skate3Publication,
+        output: &mut PhysicalPlayerPhysOut,
+        cvars: &InputCvarReferences,
+        overlay: &DebugOverlaySlot,
+    ) -> Result<AnimationUpdateComplete, AnimationUpdateError> {
+        use AnimationUpdateError as E;
+        if !publication.matches(output) || !self.matches_output(output) { return Err(E::ForeignOutput); }
+        let animation = self.animation.published_value_mut().ok_or(E::MissingAnimation)?;
+        if !Arc::ptr_eq(&animation.output, output.occurrence()) { return Err(E::ForeignOutput); }
+        let attributes = self.animation_attributes.as_ref().ok_or(E::MissingAttributes)?;
+        let mut source = AnimationOutput { output, attributes, cvars, overlay };
+        animation.payload.try_update_current_trick(&mut source).map_err(E::Output)?;
+        animation.payload.try_update_completed_trick(&mut source).map_err(E::Output)?;
+        Ok(AnimationUpdateComplete { output: Arc::clone(output.occurrence()) })
+    }
+}

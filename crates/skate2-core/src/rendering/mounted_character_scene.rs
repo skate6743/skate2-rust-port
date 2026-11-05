@@ -129,7 +129,14 @@ pub(crate) fn own_character_scene_with_geometry(
                     if mesh.material.and_then(|i| owned.materials.get(i))
                         .is_some_and(|material| material.flags & 1 != 0) {
                         let path = format!("data\\ropa2\\0x{:x}.r2b", instance.guid);
-                        match mounts.read_path(&path) {
+                        // PC port: a linked Skate 3's clothing keeps its cloth in its own
+                        // archive (`crate::skate3::cloth_effect`).
+                        let read = match mounts.read_path(&path) {
+                            Err(skate2_formats::mount::MountError::EntryNotFound(missing)) => crate::skate3::cloth_effect(&path)
+                                .ok_or(skate2_formats::mount::MountError::EntryNotFound(missing)),
+                            read => read,
+                        };
+                        match read {
                             Ok(bytes) => {
                                 let effect=std::sync::Arc::new(skate2_formats::ropa::RopaEffect::parse(&bytes)?);
                                 let vertex_particle_indices=data.cloth_particle_indices(&arena,&resources)?;
@@ -405,6 +412,7 @@ pub fn own_presentation_arena(
         instances: Vec::new(),
         anti_frustums: Vec::new(),
         emitter_waypoints: Vec::new(),
+        visual_indicators: Vec::new(),
     };
     let material_entries = own_presentation_materials(arena, resources, &mut owned)?;
     let mesh_entries = own_presentation_meshes(arena, resources, &material_entries, &mut owned)?;
@@ -436,7 +444,34 @@ pub fn own_presentation_arena(
             crate::world_particles::EmitterWaypointData::parse(bytes)?,
         ));
     }
+    owned.visual_indicators = own_visual_indicators(arena, resources);
     Ok(owned)
+}
+
+/// An arena's `tVisualIndicatorData` (`cProcessArenaAsset::ProcessVisualIndicatorData`
+/// 0x82d5f5a0), in dictionary order. Data that does not decode is logged and left out rather
+/// than failing the arena's other assets.
+pub fn own_visual_indicators(
+    arena: &Rw4Arena,
+    resources: &[Vec<u8>; 5],
+) -> Vec<std::sync::Arc<skate2_formats::pegasus::VisualIndicatorData>> {
+    arena
+        .dictionary
+        .iter()
+        .filter(|entry| entry.type_id == skate2_formats::pegasus::VISUAL_INDICATOR_DATA_TYPE_ID)
+        .filter_map(|entry| {
+            let data = arena
+                .object_bytes(resources, entry)
+                .ok_or_else(|| "range is invalid".to_owned())
+                .and_then(|bytes| {
+                    skate2_formats::pegasus::VisualIndicatorData::parse(bytes)
+                        .map_err(|error| format!("{error:?}"))
+                });
+            data.map_err(|error| eprintln!("arena {:08x} visual indicator data: {error}", arena.id))
+                .ok()
+                .map(std::sync::Arc::new)
+        })
+        .collect()
 }
 
 fn own_presentation_materials(

@@ -13,6 +13,9 @@ pub(super) struct AirTrickFrame<'a> {
     pub switched: bool,
     pub fakie: bool,
     pub ground: &'a GroundRemainder,
+    /// The air output's locked trajectory (TU3 PhysOut_Air+452).
+    #[cfg(feature = "skate3-runtime")]
+    pub use_air_reckoning: bool,
 }
 
 impl AirCollector {
@@ -188,6 +191,12 @@ impl AirCollector {
         if !self.air_scorable.is_beginning_announced {
             return Ok(0.0);
         }
+        // TU3 UpdateTricks 82DA976C: no hold or hippy-flip points while the air trajectory is
+        // locked (the collector's copy of PhysOut_Air+452).
+        #[cfg(feature = "skate3-runtime")]
+        if self.base.states.skate3_enabled() && f.use_air_reckoning {
+            return Ok(0.0);
+        }
         if item.category == 2 {
             self.air_grab_time += f.dt;
             let rate = curve(&self.base.states, 1120, self.air_grab_time)?;
@@ -214,7 +223,10 @@ impl AirCollector {
             .ok_or(ScoreError::Missing("air holder"))?
             .lock()
             .map_err(|_| ScoreError::Poisoned)?;
-        holder.trick_score = self.air_scorable.score + holder.trick_score;
+        // TU3 82DA9890: held while ScoreHolder+0x1C5D is set.
+        if !holder.trick_score_held() {
+            holder.trick_score = self.air_scorable.score + holder.trick_score;
+        }
         Ok(self.air_scorable.score)
     }
 }

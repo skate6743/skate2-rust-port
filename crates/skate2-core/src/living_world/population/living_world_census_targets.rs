@@ -81,9 +81,30 @@ impl CensusState {
             PopulationKind::Pedestrian => (2, 0x5b6a_0051_dd6a_295c, self.pedestrian_slider),
             PopulationKind::Vehicle => (3, 0x8be1_d151_f9da_2d29, self.vehicle_slider),
         };
-        let key = if cvars
-            .try_ignore_world_painter_entity_categories()
-            .map_err(E::Cvar)?
+        // PC port: inside a linked Skate 3 district, TU3's GetPointCensusInfo (0x826b8a28) reads
+        // the district's painted layer: its key names a census of Skate 3's database, and an
+        // unpainted point (key 0) has none, so nothing spawns there. The census's spawn minimum
+        // stands; Skate 3's groups name Skate 3's people, so the default census's group stands
+        // in for who spawns.
+        let skate3_minimum = if crate::skate3::district_active() {
+            let key = painter
+                .try_skate3_key(layer, [position[0], position[2]])
+                .map_err(E::Painter)?;
+            let minimum = crate::skate3::linked()
+                .filter(|data| key != 0 && data.db.has_collection(CENSUS_CLASS, key))
+                .map_or(0, |data| data.db.layout_word(CENSUS_CLASS, key, 6));
+            static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_PAINTER").is_some()) {
+                eprintln!("census: skate 3 layer {layer} at {position:?}: key {key:016x}, spawn minimum {minimum}");
+            }
+            Some(minimum)
+        } else {
+            None
+        };
+        let key = if skate3_minimum.is_some()
+            || cvars
+                .try_ignore_world_painter_entity_categories()
+                .map_err(E::Cvar)?
         {
             fallback
         } else {
@@ -103,6 +124,9 @@ impl CensusState {
                 // Generated constructor uses DefaultDataArea(32), all zero.
                 result.group = 0;
             }
+        }
+        if let Some(minimum) = skate3_minimum {
+            result.spawn_minimum = minimum;
         }
         if !cvars.try_ignore_fe_census_sliders().map_err(E::Cvar)? {
             result.spawn_minimum = (result.spawn_minimum as f32 * slider) as u32;

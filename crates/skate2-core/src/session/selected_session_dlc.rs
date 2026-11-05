@@ -24,6 +24,19 @@ impl<T, C> SelectedLiveSession<T, C> {
         std::mem::take(&mut self.dlc_link_request)
     }
 
+    /// Link Skate 3 Data was selected since the last call: the host opens its file picker for
+    /// Skate 3's `default.xex`, then answers [`SelectedLiveSession::dlc_picked`] and
+    /// [`SelectedLiveSession::dlc_linked`] as for downloadable content.
+    pub fn take_skate3_link_request(&mut self) -> bool {
+        std::mem::take(&mut self.skate3_link_request)
+    }
+
+    /// X on a linked pack since the last call: the row of the pack the host unlinks, then
+    /// answers [`SelectedLiveSession::dlc_linked`] with the packs left.
+    pub fn take_dlc_unlink_request(&mut self) -> Option<usize> {
+        self.dlc_unlink_request.take()
+    }
+
     /// The host's file picker closed, with files to link or none.
     pub fn dlc_picked(&mut self, any: bool) {
         if let Some(dlc) = self.main_menu.as_mut().and_then(|menu| menu.dlc.as_mut()) {
@@ -31,14 +44,15 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
     }
 
-    /// The host linked the picked files: every pack now linked, sk8popup's report, and whether
-    /// any pack is new. A new pack's vaults, unlocks and challenges join what reads the
-    /// challenge system's database next, and its global locators the next location manager
-    /// (`StateDLCFlow::LoadGlobalLocators`).
+    /// The host linked the picked files, or unlinked a pack: every pack now linked, sk8popup's
+    /// report, and whether the packs changed. A new pack's vaults, unlocks and challenges join
+    /// what reads the challenge system's database next, and its global locators the next
+    /// location manager (`StateDLCFlow::LoadGlobalLocators`); an unlinked pack's leave them.
     pub fn dlc_linked(&mut self, packs: Vec<Pack>, report: String, changed: bool) {
         if changed {
             self.freeskate.data = None;
             self.online.locations = None;
+            self.online.skate3_locations = None;
             // The server's matchmaking and lobby browser offer games at the new content's
             // challenges as well.
             if self.online.signed_in()

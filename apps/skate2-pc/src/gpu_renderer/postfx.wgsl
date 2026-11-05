@@ -96,7 +96,7 @@ fn blur(uv:vec2<f32>,direction:vec2<f32>) -> vec4<f32> {
     // visualFX_PS slot 14/19/27/28: stencil byte, saturate(2*s),
     // g_StencilLerpMod (1 during HoM, ICE's character mask otherwise).
     let s=f32(textureLoad(stencil,vec2<i32>(v.position.xy),0).x)/255.;
-    let mask=clamp(2.*s,0.,1.)*p.v[32].y;
+    let mask=clamp(2.*s,0.,1.)*p.v[32].y*(1.-p.v[32].z);
     return vec4(graded+(colour.rgb-graded)*mask,0.);
 }
 // uberPostFX_PS8212dc28 reads the screen at (u, frac(v + g_ScanlineOffset.x))
@@ -114,7 +114,7 @@ fn blur(uv:vec2<f32>,direction:vec2<f32>) -> vec4<f32> {
     let pixel=clamp(vec2<i32>(screen_uv*vec2<f32>(size)),vec2(0),vec2<i32>(size)-1);
     let s=f32(textureLoad(stencil,pixel,0).x)/255.;
     graded*=vec4(1.)+p.v[32].x*(2.*xray-vec4(1.));
-    graded+=(value-graded)*(s*p.v[32].x);
+    graded+=(value-graded)*(s*p.v[32].x)*(1.-p.v[32].z);
     return graded*p.v[25];
 }
 

@@ -48,15 +48,23 @@ pub(super) struct FreeSkate {
 }
 
 impl<T, C> SelectedLiveSession<T, C> {
+    /// `skater.vlt` and `BAM_Sim.loc`: read on first use, and again after a link changed the
+    /// content (`dlc_linked` drops them while this screen's viewer may still be open).
+    fn load_freeskate_data(&mut self) -> Result<(), SelectedLiveError> {
+        if self.freeskate.data.is_none() {
+            let mounts = &self.inner.assets.as_ref().ok_or_else(|| error("free skate assets absent"))?.mounts;
+            let db = Arc::new(AttribDb::load_career(mounts).map_err(error)?);
+            let table = LocationTable::parse(&mounts.read_path(SIM_LOCATIONS).map_err(error)?).map_err(error)?;
+            self.freeskate.data = Some((db, table));
+        }
+        Ok(())
+    }
+
     /// `OnMenuSelectGame`82681338 row 2: the screen `UpdateFEState` pushes once the NIS ends, with
     /// `FrontEndState_FreeSkateOption::OnEnter`8265b098's character and location lists.
     pub(super) fn open_freeskate_option(&mut self) -> Result<(), SelectedLiveError> {
         let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("free skate assets absent"))?.mounts);
-        if self.freeskate.data.is_none() {
-            let db = Arc::new(AttribDb::load_career(&mounts).map_err(error)?);
-            let table = LocationTable::parse(&mounts.read_path(SIM_LOCATIONS).map_err(error)?).map_err(error)?;
-            self.freeskate.data = Some((db, table));
-        }
+        self.load_freeskate_data()?;
         let (db, _) = self.freeskate.data.as_ref().expect("free skate data loaded");
         if self.freeskate.viewer.is_none() {
             self.freeskate.viewer = Some(Viewer::load(db, &mounts, super::freeskate_viewer::FREESKATE).map_err(error)?);
@@ -78,8 +86,27 @@ impl<T, C> SelectedLiveSession<T, C> {
         if locations.is_empty() {
             return Err(error("free skate has no unlocked valid location"));
         }
+        // PC port: a linked Skate 3 data folder's districts (`crate::skate3`) are Area choices
+        // after San Vanelona, each with its teleports, titled in Skate 3's English.
+        let mut areas = Vec::new();
+        if let Some(data) = crate::skate3::linked() {
+            areas.push(freeskate_option::Area { label: "#San Vanelona".into(), locations: locations.clone() });
+            for district in data.districts.iter().filter(|district| !district.spots.is_empty()) {
+                let locations = district
+                    .spots
+                    .iter()
+                    .map(|spot| freeskate_option::Location {
+                        key: spot.key,
+                        spawn: spot.locator.clone(),
+                        label: format!("#{}", spot.title),
+                        image: crate::skate3::LOCATION_IMAGE.to_owned(),
+                    })
+                    .collect();
+                areas.push(freeskate_option::Area { label: format!("#{}", district.spec.title), locations });
+            }
+        }
         let menu = self.main_menu.as_mut().ok_or_else(|| error("main menu absent"))?;
-        menu.freeskate = Some(freeskate_option::Controller::new(characters, locations, self.freeskate.settings));
+        menu.freeskate = Some(freeskate_option::Controller::new(characters, locations, self.freeskate.settings).with_areas(areas));
         Ok(())
     }
 
@@ -98,6 +125,10 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// The viewer follows the open screen's last `UpdateCharacter`, and shuts down with the
     /// screen (`OnLeave` 0x82653240).
     pub(super) fn update_freeskate_viewer(&mut self, dt: f32) -> Result<(), SelectedLiveError> {
+        if self.freeskate.viewer.is_none() {
+            return Ok(());
+        }
+        self.load_freeskate_data()?;
         let requested = self
             .main_menu
             .as_ref()
@@ -124,6 +155,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         if let Some(viewer) = self.freeskate.viewer.as_mut() {
             viewer.shutdown();
         }
+        self.load_freeskate_data()?;
         self.freeskate.settings = game.settings;
         self.set_game_mode(GM_PROFILE_FREE_SKATE, Some(game.settings))?;
         self.start_single_player_players()?;
@@ -146,6 +178,22 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.freeskate.pending_character = Some(game.character.marquee);
         self.apply_pending_character()?;
         let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("free skate data absent"))?;
+        // PC port: a linked Skate 3 district's teleport (the Area row's, `crate::skate3`) starts at
+        // its locator, in its district, lit by the district's render location.
+        let skate3 = crate::skate3::linked();
+        let district = skate3
+            .as_deref()
+            .filter(|_| freeskate_option::location_world(db, game.location.key).is_none())
+            .and_then(|data| data.spot(game.location.key))
+            .map(|(district, spot)| (district.spec.stream, district.render_location, spot.transform));
+        if let Some((stream, location, start)) = district {
+            self.map_travel_world = super::world_travel::TravelWorld::of_location(stream, location);
+            self.map_travel = Some(start);
+            self.map_travel_presentation_ready = false;
+            self.map_travel_dispatched = false;
+            self.map_travel_on_board = true;
+            return Ok(());
+        }
         // UpdateGameSettings: a location whose world is not BAM is the additional location
         // GameLoad loads before the skater starts there.
         let world = freeskate_option::location_world(db, game.location.key).unwrap_or_else(|| crate::game::DEBUG_REFERENCE_WORLD_FILE.into());
@@ -194,6 +242,11 @@ impl<T, C> SelectedLiveSession<T, C> {
         const CHALLENGE_GLOBAL_DATA: u64 = 0xA4F3_5B15_9D74_32B5;
         const LOCATION: u64 = 0xF1C6_D5FA_4A23_951E;
         const WORLD_LOCATION: u64 = 0x6C81_4DB5_9F16_EBD2;
+        // PC port: a linked Skate 3 data folder's game (`crate::skate3`) starts at its spot, in its
+        // district, lit by the district's render location.
+        if let Some(spot) = crate::skate3::linked().and_then(|data| data.online_spot(global_data).cloned()) {
+            return Ok((spot.transform, super::world_travel::TravelWorld::of_location(spot.stream, spot.render_location)));
+        }
         let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("party play data absent"))?;
         let name = db
             .attribute(CHALLENGE_GLOBAL_DATA, global_data, LOCATION)
@@ -271,6 +324,14 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.party_play.game = None;
         self.audio.revert_music_mode();
         self.try_remove_all_chase_arrows().map_err(error)?;
+        // The game's travel ends with it (an online game lost while its location change was
+        // streaming): its destination must not stream into the scene that replaces the game's.
+        self.map_travel = None;
+        self.map_travel_dispatched = false;
+        self.map_travel_presentation_ready = false;
+        self.map_travel_generation = None;
+        self.map_travel_ready_seen = false;
+        self.map_travel_world = super::world_travel::TravelWorld::Keep;
         self.game_unloaded = true;
         Ok(())
     }

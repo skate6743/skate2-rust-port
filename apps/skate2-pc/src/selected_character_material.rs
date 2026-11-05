@@ -41,10 +41,19 @@ pub(crate) fn create_objects(
         let draw_order = u8::try_from(order)
             .map_err(|_| format!("character draw order {order} is not a sort-key byte"))?;
         let texture = renderer.upload_native_texture(view.texture)?;
-        let alpha = view
-            .alpha
-            .map(|alpha| renderer.upload_native_texture(alpha))
-            .transpose()?;
+        // PC port: a linked Skate 3 data folder's clothing can leave out the alpha map its
+        // program samples (`character_material_admission`): hair drawn whole, CAS skin, face and
+        // shift with no tattoo regions.
+        let alpha = match view.alpha {
+            Some(alpha) => Some(renderer.upload_native_texture(alpha)?),
+            None if matches!(view.effect, "defaulthair" | "defaulthair_ropa" | "cac_hair" | "cac_hair_ropa") => {
+                Some(renderer.upload_native_texture(&crate::render_inspection::solid_texture("hair alpha", [255; 4]))?)
+            }
+            None if matches!(view.effect, "cacstamp_skin" | "cacstamp_face" | "cacstamp_shift") => {
+                Some(renderer.upload_native_texture(&crate::render_inspection::solid_texture("CAS alpha", [0; 4]))?)
+            }
+            None => None,
+        };
         let object = renderer.create_selected_character_object(
             palette,
             materials,
@@ -68,16 +77,22 @@ pub(crate) fn create_objects(
         if family == CharacterShaderFamily::LivingWorld {
             renderer.bind_living_world_lighting(&mut object, &texture, &cas_inputs(&view, environment, frame, irradiance, camera)?)?;
         } else if let Some(mode) = crate::gpu_renderer::character::cas::mode(view.effect) {
-            let normal =
-                renderer.upload_native_texture(view.normal.ok_or("CAS normal channel absent")?)?;
-            let decal = view
-                .decal
-                .map(|t| renderer.upload_native_texture(t))
-                .transpose()?;
-            let decal2 = view
-                .decal2
-                .map(|t| renderer.upload_native_texture(t))
-                .transpose()?;
+            // PC port: a linked Skate 3 data folder's clothing can leave a map out
+            // (`character_material_admission`): a flat normal (the CAS programs read its alpha
+            // and green), no decal or dirt, and skin's tattoo layer white.
+            let normal = match view.normal {
+                Some(t) => renderer.upload_native_texture(t)?,
+                None => renderer.upload_native_texture(&crate::render_inspection::solid_texture("CAS normal", [128, 128, 128, 128]))?,
+            };
+            let decal = match view.decal {
+                Some(t) => Some(renderer.upload_native_texture(t)?),
+                None if mode == 1. => Some(renderer.upload_native_texture(&crate::render_inspection::solid_texture("CAS tattoo", [255; 4]))?),
+                None => Some(renderer.upload_native_texture(&crate::render_inspection::solid_texture("CAS decal", [0; 4]))?),
+            };
+            let decal2 = match view.decal2 {
+                Some(t) => Some(renderer.upload_native_texture(t)?),
+                None => Some(renderer.upload_native_texture(&crate::render_inspection::solid_texture("CAS dirt", [0; 4]))?),
+            };
             let inputs = cas_inputs(&view, environment, frame, irradiance, camera)?;
             renderer.bind_cas_surface(
                 &mut object,

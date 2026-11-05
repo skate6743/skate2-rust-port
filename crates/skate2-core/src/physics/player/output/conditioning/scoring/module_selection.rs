@@ -45,6 +45,7 @@ impl ScoreModule {
         filtered: Filtered,
         physics: i32,
         requested_teleport: bool,
+        grind_scoring_blocked: bool,
         wheels_in_contact: i32,
         animation: &AnimOutTrickData,
         db: &TrickDatabase,
@@ -83,7 +84,7 @@ impl ScoreModule {
         Ok(match filtered {
             Filtered::Ground => K::Ground,
             Filtered::Air if enabled[1] => K::Air,
-            Filtered::Grind if enabled[5] => K::Grind,
+            Filtered::Grind if enabled[5] && !grind_scoring_blocked => K::Grind,
             Filtered::Wipeout => K::Wipeout,
             Filtered::Teleport => K::Teleport,
             Filtered::OffBoard | Filtered::OffBoardAir => K::Offboard,

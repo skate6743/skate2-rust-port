@@ -40,6 +40,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[path = "skate3_input_capture.rs"]
+mod skate3_input_capture;
+pub(crate) use skate3_input_capture::IdlePad;
+
 type DeviceInput<C> =
     SelectedDeviceInputRuntime<JuiceRemapHandle, HostSkeletonCollisionNumeric, JuiceInputBoot<C>>;
 
@@ -239,6 +243,7 @@ impl<C> SelectedInputBootstrap<C> {
             settings: Arc::clone(&players.services.settings),
             player_index,
             controller,
+            raw_samples: [None; 4],
             input,
             queue,
             random,
@@ -269,6 +274,7 @@ pub(crate) struct SelectedProductionInputOwner<C> {
     settings: Arc<crate::players_backend_settings::PlayersBackendSettings>,
     player_index: u32,
     controller: usize,
+    raw_samples: [Option<crate::input_pad::XboxPadSample>; 4],
     input: DeviceInput<C>,
     queue: SelectedSimCommandQueue,
     random: SimulationCommandRandom,
@@ -309,8 +315,9 @@ impl<C> SelectedProductionInputOwner<C> {
         &mut self,
         pad: &mut P,
     ) -> Result<(), ProductionInputFrameError<P::Error>> {
+        self.raw_samples.fill(None);
         self.input
-            .poll_hardware(pad)
+            .poll_hardware(&mut skate3_input_capture::CapturePad { platform: pad, samples: &mut self.raw_samples })
             .map_err(ProductionInputFrameError::Device)?;
         <DeviceInput<C> as SelectedDeviceInputEvents<P>>::cache_input(
             &mut self.input,
@@ -322,6 +329,18 @@ impl<C> SelectedProductionInputOwner<C> {
             SelectedInputGroup::Presentation,
         )
         .map_err(ProductionInputFrameError::Device)
+    }
+
+    /// Actual selected controller packet; no second OS poll or float round trip.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn raw_controller(&self) -> Option<crate::input_pad::XboxPadSample> {
+        self.raw_samples.get(self.controller).copied().flatten()
+    }
+
+    /// The selected controller's packet among `samples`, one per pad index.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn selected_sample(&self, samples: &[Option<crate::input_pad::XboxPadSample>; 4]) -> Option<crate::input_pad::XboxPadSample> {
+        samples.get(self.controller).copied().flatten()
     }
 
     /// The `Vibration` of this owner's controller (`PlayerUI::mControllerIndex`).
@@ -495,6 +514,17 @@ impl<C> SelectedProductionInputOwner<C> {
         Ok(values)
     }
 
+    pub(crate) fn try_controller_adjustment_hold<P:PadPlatform>(&self)
+        ->Result<[bool;2],ProductionInputFrameError<P::Error>> {
+        let pad=self.input.cache(SelectedInputGroup::Presentation).pad(self.controller)
+            .map_err(|e|ProductionInputFrameError::Device(SelectedDeviceInputError::Cache(e)))?;
+        let mut held=[false;2];
+        for (out,state) in held.iter_mut().zip([86,87]) {
+            *out=self.input.map().try_value(state,&mut RetainedPadView(pad))
+                .map_err(ProductionInputFrameError::FrontendMap)?!=0.;
+        }
+        Ok(held)
+    }
     /// PhonelistHUD UpdateInput826c0848: LB maximizes; AptOptionReleased
     /// (FE key48 / input182) opens Contacts. Reuse the drained PRES sample.
     pub(crate) fn try_phone_options_input<P: PadPlatform>(&self)

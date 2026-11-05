@@ -18,6 +18,10 @@ pub struct TrickName {
     pub fakie_variant: Option<(Arc<str>, bool)>,
 }
 
+/// Original Skate 3 landing classifications exposed by its scoring owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LandingGrade { Clean, Sketchy }
+
 /// Completed physics facts, sampled once per selected simulation update.
 #[derive(Clone, Debug, Default)]
 pub struct PhysicsFrame {
@@ -57,6 +61,8 @@ pub struct PhysicsFrame {
     pub air_finished: bool,
     pub just_landed: bool,
     pub sketchy: bool,
+    /// Local Skate 3 landing publication; absent for the independent S2 HUD.
+    pub skate3_landing_grade: Option<LandingGrade>,
     pub landed_height: f32,
     pub landed_drop: f32,
 }

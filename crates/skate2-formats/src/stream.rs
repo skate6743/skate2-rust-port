@@ -249,6 +249,27 @@ pub fn order_like_selection<T>(resident: &mut [T], id: impl Fn(&T) -> u64, selec
     SelectionOrder { matches, ties_reordered }
 }
 
+/// PC port, a linked Skate 3 district's stream: Skate 3's `GetCollectionId` (`0x8247b668`) reads
+/// the tile size and centre offset per stream type from the stream's tile XML instead of Skate 2's
+/// fixed 200/100. The shipped districts' Sim and Pres tiles are 100 m with centres at 50 + 100k
+/// (`cSim_50_450_high`), their Tex tiles 100 m centred on multiples of 100 (`cTex_-400_-300_high`).
+#[must_use]
+pub fn skate3_high_detail_tile(stream_suffix: &str) -> (i32, i32) {
+    if stream_suffix.eq_ignore_ascii_case("Tex") { (100, 0) } else { (100, 50) }
+}
+
+/// The high-detail collection name of a tile `size` wide centred `half` past its multiples:
+/// `half * sign(x) + x / size * size` on the truncated position, per axis.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)] // The reference explicitly truncates float positions.
+pub fn tiled_high_detail_collection_filename(stream_suffix: &str, position: [f32; 3], (size, half): (i32, i32)) -> String {
+    let x = position[0] as i32;
+    let z = position[2] as i32;
+    let center_x = size * (x / size) + if x < 0 { -half } else { half };
+    let center_z = size * (z / size) + if z < 0 { -half } else { half };
+    format!("c{stream_suffix}_{center_x}_{center_z}_high")
+}
+
 /// Reconstructs the high-detail collection name selected by
 /// `cAssetStreamSystem::GetCollectionId` at `0x824d73b0`.
 #[must_use]

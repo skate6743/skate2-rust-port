@@ -850,6 +850,159 @@ fn read_u16(bytes: &[u8], offset: usize, tag: [u8; 4]) -> Result<u16, AttributeC
     Ok(u16::from_be_bytes([value[0], value[1]]))
 }
 
+/// Alignment kept for every buffer offset the merge moves: offsets shift by multiples of it.
+const MERGE_ALIGNMENT: usize = 0x80;
+
+/// PC port addition: Skate 3 splits Skate 2's single skater database (`skater.vlt` + `.bin`)
+/// into a class Vault (`skaterschema`) and a collection Vault (`skatercollections`) that the
+/// game loads into one `Attrib::Database`. This joins two Vaults into one equivalent `.vlt` and
+/// `.bin`, so readers of the single database read both: `first`'s version, string and end
+/// chunks; a dependency table naming `names` (the joined `.vlt` and `.bin`); both Vaults' data in
+/// one `DatN`, their exports in one `ExpN` and their fixups in one `PtrN`, every offset moved by
+/// its Vault's shift (a multiple of [`MERGE_ALIGNMENT`]). The `.bin` is `first`'s, then
+/// `second`'s at the next aligned offset; its string table is `first`'s.
+///
+/// # Errors
+///
+/// [`AttributeChunkError`] when either Vault does not parse, has other than one external
+/// dependency, or holds a fixup outside its data.
+pub fn merge_vaults(
+    first: (&[u8], &[u8]),
+    second: (&[u8], &[u8]),
+    names: [&str; 2],
+) -> Result<(Vec<u8>, Vec<u8>), AttributeChunkError> {
+    let parts = [first, second];
+    let metas = [AttributeVaultMetadata::parse(first.0)?, AttributeVaultMetadata::parse(second.0)?];
+    let files = [AttributeChunkFile::parse(first.0)?, AttributeChunkFile::parse(second.0)?];
+    for meta in &metas {
+        if meta.dependencies.len() != 1 {
+            return Err(AttributeChunkError::InvalidChunkPayload { tag: DEPENDENCY_CHUNK });
+        }
+    }
+    let align = |value: usize| value.div_ceil(MERGE_ALIGNMENT) * MERGE_ALIGNMENT;
+    let pad16 = |buffer: &mut Vec<u8>| buffer.resize(buffer.len().div_ceil(16) * 16, 0);
+
+    // The joined `.bin`.
+    let mut bin = first.1.to_vec();
+    let second_bin = align(bin.len());
+    bin.resize(second_bin, 0);
+    bin.extend_from_slice(second.1);
+    let bin_shift = [0_i64, i64::try_from(second_bin).map_err(|_| AttributeChunkError::IntegerOverflow)?];
+
+    let mut vlt = Vec::new();
+    for tag in [VERSION_CHUNK, STRING_CHUNK] {
+        let chunk = files[0].required_chunk(tag)?;
+        vlt.extend_from_slice(&first.0[chunk.offset..chunk.offset + chunk.size]);
+    }
+
+    // Dependency table: entry zero (the `.vlt` itself) and the `.bin`, under the joined names.
+    let dependency = files[0].required_chunk(DEPENDENCY_CHUNK)?;
+    let ids = [read_u64(first.0, dependency.offset + 16, DEPENDENCY_CHUNK)?, read_u64(first.0, dependency.offset + 24, DEPENDENCY_CHUNK)?];
+    let start = vlt.len();
+    vlt.extend_from_slice(&DEPENDENCY_CHUNK);
+    vlt.extend_from_slice(&[0; 4]);
+    vlt.extend_from_slice(&2_u64.to_be_bytes());
+    for id in ids {
+        vlt.extend_from_slice(&id.to_be_bytes());
+    }
+    let second_name = u32::try_from(names[0].len() + 1).map_err(|_| AttributeChunkError::IntegerOverflow)?;
+    vlt.extend_from_slice(&0_u32.to_be_bytes());
+    vlt.extend_from_slice(&second_name.to_be_bytes());
+    for name in names {
+        vlt.extend_from_slice(name.as_bytes());
+        vlt.push(0);
+    }
+    pad16(&mut vlt);
+    let size = u32::try_from(vlt.len() - start).map_err(|_| AttributeChunkError::IntegerOverflow)?;
+    vlt[start + 4..start + 8].copy_from_slice(&size.to_be_bytes());
+
+    // Both Vaults' data, each at an offset congruent to its original one.
+    let data_start = vlt.len();
+    vlt.extend_from_slice(&DATA_CHUNK);
+    vlt.extend_from_slice(&[0; 4]);
+    let mut vlt_shift = [0_i64; 2];
+    for (index, meta) in metas.iter().enumerate() {
+        let original = meta.data.start;
+        let mut position = vlt.len();
+        while position % MERGE_ALIGNMENT != original % MERGE_ALIGNMENT {
+            position += 1;
+        }
+        vlt.resize(position, 0);
+        vlt.extend_from_slice(&parts[index].0[meta.data.clone()]);
+        vlt_shift[index] = i64::try_from(position).map_err(|_| AttributeChunkError::IntegerOverflow)?
+            - i64::try_from(original).map_err(|_| AttributeChunkError::IntegerOverflow)?;
+    }
+    pad16(&mut vlt);
+    let size = u32::try_from(vlt.len() - data_start).map_err(|_| AttributeChunkError::IntegerOverflow)?;
+    vlt[data_start + 4..data_start + 8].copy_from_slice(&size.to_be_bytes());
+
+    let moved = |value: u64, shift: i64| -> Result<u64, AttributeChunkError> {
+        u64::try_from(i64::try_from(value).map_err(|_| AttributeChunkError::IntegerOverflow)? + shift)
+            .map_err(|_| AttributeChunkError::IntegerOverflow)
+    };
+
+    // Exports.
+    let export_start = vlt.len();
+    vlt.extend_from_slice(&EXPORT_CHUNK);
+    vlt.extend_from_slice(&[0; 4]);
+    let count = metas.iter().map(|meta| meta.exports.len()).sum::<usize>();
+    vlt.extend_from_slice(&(count as u64).to_be_bytes());
+    for (index, meta) in metas.iter().enumerate() {
+        for export in &meta.exports {
+            vlt.extend_from_slice(&export.object_id.to_be_bytes());
+            vlt.extend_from_slice(&export.type_id.to_be_bytes());
+            vlt.extend_from_slice(&export.data_size.to_be_bytes());
+            let offset = u32::try_from(moved(u64::from(export.data_offset), vlt_shift[index])?).map_err(|_| AttributeChunkError::IntegerOverflow)?;
+            vlt.extend_from_slice(&offset.to_be_bytes());
+        }
+    }
+    pad16(&mut vlt);
+    let size = u32::try_from(vlt.len() - export_start).map_err(|_| AttributeChunkError::IntegerOverflow)?;
+    vlt[export_start + 4..export_start + 8].copy_from_slice(&size.to_be_bytes());
+
+    // Fixups: slots and pointees in the `.vlt` (dependency 0) move with their Vault's data,
+    // those in the `.bin` (dependency 1) with its `.bin`.
+    let pointer_start = vlt.len();
+    vlt.extend_from_slice(&POINTER_CHUNK);
+    vlt.extend_from_slice(&[0; 4]);
+    for (index, meta) in metas.iter().enumerate() {
+        let shift_of = |dependency: u16| if dependency == 0 { vlt_shift[index] } else { bin_shift[index] };
+        let mut target = 0_u16;
+        for fixup in &meta.pointer_fixups {
+            let (delta, argument) = match fixup.kind {
+                AttributePointerKind::SelectTargetBase => {
+                    target = fixup.dependency_index;
+                    (fixup.target_delta, fixup.argument)
+                }
+                AttributePointerKind::Direct => (
+                    u32::try_from(moved(u64::from(fixup.target_delta), shift_of(target))?).map_err(|_| AttributeChunkError::IntegerOverflow)?,
+                    moved(fixup.argument, shift_of(fixup.dependency_index))?,
+                ),
+                AttributePointerKind::Null | AttributePointerKind::Export => (
+                    u32::try_from(moved(u64::from(fixup.target_delta), shift_of(target))?).map_err(|_| AttributeChunkError::IntegerOverflow)?,
+                    fixup.argument,
+                ),
+            };
+            vlt.extend_from_slice(&delta.to_be_bytes());
+            vlt.extend_from_slice(&((u32::from(fixup.kind as u16) << 16) | u32::from(fixup.dependency_index)).to_be_bytes());
+            vlt.extend_from_slice(&argument.to_be_bytes());
+        }
+    }
+    vlt.extend_from_slice(&metas[0].pointer_terminator.target_delta.to_be_bytes());
+    vlt.extend_from_slice(&metas[0].pointer_terminator.encoded.to_be_bytes());
+    vlt.extend_from_slice(&[0; 16]);
+    let size = u32::try_from(vlt.len() - pointer_start).map_err(|_| AttributeChunkError::IntegerOverflow)?;
+    vlt[pointer_start + 4..pointer_start + 8].copy_from_slice(&size.to_be_bytes());
+
+    for chunk in files[0].chunks.iter().filter(|chunk| chunk.tag == *b"EndC") {
+        vlt.extend_from_slice(&first.0[chunk.offset..chunk.offset + chunk.size]);
+    }
+    // The joined file must parse and resolve as one Vault.
+    let merged = AttributeVaultMetadata::parse(&vlt)?;
+    merged.resolve_pointers(&[vlt.len(), bin.len()])?;
+    Ok((vlt, bin))
+}
+
 fn read_u32(bytes: &[u8], offset: usize, tag: [u8; 4]) -> Result<u32, AttributeChunkError> {
     let value = bytes
         .get(offset..offset + 4)

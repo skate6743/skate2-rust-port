@@ -69,6 +69,11 @@ impl CollectorBase {
             self.animation_trick.bits &= !0x0200_0000;
         }
         out.raw_scorable_id = self.raw_scorable_id;
+        #[cfg(feature = "skate3-runtime")]
+        if db.use_skate3 {
+            out.skate3_scorable_audio = super::skate3_catalog::audio(self.raw_scorable_id);
+            trace_scorable(self.raw_scorable_id, out.skate3_scorable_audio);
+        }
         Ok(())
     }
     pub(super) fn start_scorable(
@@ -101,4 +106,17 @@ impl CollectorBase {
             extra_min_time,
         )
     }
+}
+
+/// `SKATE2_TRACE_SKATE3_DARKCATCH`: each change of the raw scorable with its Skate 3 audio record.
+#[cfg(feature = "skate3-runtime")]
+fn trace_scorable(id: i32, audio: Option<(i32, i32, bool)>) {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static LAST: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(i32::MIN);
+    if !*TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_SKATE3_DARKCATCH").is_some())
+        || LAST.swap(id, std::sync::atomic::Ordering::Relaxed) == id {
+        return;
+    }
+    let name = super::scoring_catalog::info(id).map_or("none", |entry| entry.name);
+    eprintln!("skate 3 darkcatch audio: raw scorable {id} {name} audio {audio:?}");
 }

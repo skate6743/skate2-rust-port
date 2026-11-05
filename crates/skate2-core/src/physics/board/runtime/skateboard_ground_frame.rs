@@ -525,6 +525,8 @@ impl SimulationAssemblyConstraintSession<AssemblyPartMaterial, SkateboardHookDef
             .as_ref()
             .expect("pool checked before frame")
             .publications()
+            // A Skate 3 physics player's board and Skeleton are integrated by its own solver.
+            .filter(|publication| !publication.rigid_bodies().iter().any(|body| phase.is_externally_driven(*body)))
             .map(Into::into)
             .collect();
         if input.schedule == SkateboardGroundFrameSchedule::SinglePlayerPhysicsFlags3 {

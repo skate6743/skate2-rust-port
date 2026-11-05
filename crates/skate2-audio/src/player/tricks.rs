@@ -40,6 +40,17 @@ const FLIPS_RANGES: [i32; 27] = [
     0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF, 1, 0x7FFF,
 ];
 
+/// PC port: a Skate 3-only trick (a darkcatch) flips with Skate 3's sounds, as TU3 plays its audio
+/// trick type: `Sk8_Air_Flip_Tricks.abk` and its interface from the linked Skate 3 data, kept
+/// under these names behind Skate 2's.
+const SKATE3_INTERFACE: &str = "skate3:SK8_AEMS_skateboard.csi";
+const SKATE3_BANK: &str = "skate3:Sk8_Air_Flip_Tricks.abk";
+const SKATE3_FILES: [&str; 2] = ["SK8_AEMS_skateboard.csi", "Sk8_Air_Flip_Tricks.abk"];
+/// TU3 `CheckForBoardFlips` 0x824cbfb8's last `Class_Flips` member: `aud_senseofspeed`'s
+/// 0xD9BE1F2F1A72FEE8.
+const SENSE_OF_SPEED: Collection = Collection::new(class::AUD_SENSEOFSPEED, 0xD7ED_BD36_2D7D_2152);
+const FLIPS_SENSE_OF_SPEED: u64 = 0xD9BE_1F2F_1A72_FEE8;
+
 pub struct Tricks {
     /// `m_pDMixIO` (objectID 0x40010050 + the state's instance).
     pub io: Option<DMixIoId>,
@@ -53,6 +64,10 @@ pub struct Tricks {
     time_in_trick: f32,
     time_last_trick_held: f32,
     last_fun_meter: i32,
+    /// PC port: `board_flip` is Skate 3's `Class_Flips`.
+    board_flip_skate3: bool,
+    /// PC port: Skate 3's flip sounds could not be read.
+    skate3_bank_failed: bool,
 }
 
 impl Default for Tricks {
@@ -70,6 +85,8 @@ impl Default for Tricks {
             time_in_trick: 0.0,
             time_last_trick_held: 0.0,
             last_fun_meter: 0,
+            board_flip_skate3: false,
+            skate3_bank_failed: false,
         }
     }
 }
@@ -153,6 +170,46 @@ impl Tricks {
         let own_the_spot = i32::from(ctx.in_own_the_spot);
         let (local, flange) = if ctx.local { (1, ctx.output(self.io, 6, PresetType::Volume)) } else { (0, 0) };
         let forward_replay = i32::from(!physics.is_rewinding);
+        self.board_flip_skate3 = physics.skate3_only_trick && !dismount && self.skate3_bank(ctx);
+        if self.board_flip_skate3 {
+            // TU3 0x824cc3d0..c564: its constructor (0x824afad8) keeps the first twelve members,
+            // then takes its own flags and volumes, each clamped. Member 16 is the physics' not
+            // rewinding (+0xE0, Skate 2's mIsRewinding +0xDC), which the module needs to play.
+            let sense = ctx.skate3.unwrap_or(ctx.vault).i32(SENSE_OF_SPEED, FLIPS_SENSE_OF_SPEED);
+            let (unit, level, flag) = (|v: i32| v.clamp(0, 1000), |v: i32| v.clamp(0, 0x7FFF), |v: i32| v.clamp(0, 1));
+            let data = vec![
+                0,
+                0x7FFF,
+                0,
+                0,
+                0x1000,
+                25000,
+                0,
+                unit(z),
+                unit(y),
+                unit(x),
+                unit(game_speed),
+                self.cur_flip_trick.clamp(0, 40),
+                0,
+                0,
+                0,
+                0,
+                flag(forward_replay),
+                level(volume_z),
+                level(volume_y),
+                level(volume_x),
+                0,
+                level(trick_volume),
+                0,
+                flag(own_the_spot),
+                flag(local),
+                flag(local),
+                level(flange),
+                level(sense),
+            ];
+            self.board_flip = Some(ctx.aems.create_object_in(SKATE3_INTERFACE, "Class_Flips", data));
+            return;
+        }
         let data = [
             0,
             0x7FFF,
@@ -184,6 +241,32 @@ impl Tricks {
         ];
         let data = data.iter().zip(FLIPS_RANGES).map(|(&value, max)| value.clamp(0, max)).collect();
         self.board_flip = Some(ctx.aems.create_object("Class_Flips", data));
+    }
+
+    /// PC port: Skate 3's flip sounds ([`SKATE3_FILES`]), read from the linked Skate 3 data the
+    /// first time a Skate 3-only trick flips.
+    fn skate3_bank(&mut self, ctx: &mut SfxCtx<'_>) -> bool {
+        if ctx.aems.has_interface(SKATE3_INTERFACE) {
+            return true;
+        }
+        if self.skate3_bank_failed {
+            return false;
+        }
+        let read = |ctx: &SfxCtx<'_>, name: &str| {
+            let files = ctx.core.stream_pools.files()?;
+            let path = format!("{}data\\audio\\audiofiles.big|data\\audio\\{name}", crate::rwac::stream_pool::SKATE3_FILES);
+            let mut bytes = vec![0u8; usize::try_from(files.size(&path)?).ok()?];
+            files.read_at(&path, 0, &mut bytes).then_some(bytes)
+        };
+        let loaded = match (read(ctx, SKATE3_FILES[0]), read(ctx, SKATE3_FILES[1])) {
+            (Some(interface), Some(bank)) if bank.starts_with(b"ABKC") => {
+                ctx.aems.subscribe_interface_last(SKATE3_INTERFACE, &interface)
+                    && ctx.aems.add_module_bank(&mut *ctx.core, SKATE3_BANK, std::sync::Arc::from(bank)).is_some()
+            }
+            _ => false,
+        };
+        self.skate3_bank_failed = !loaded;
+        loaded
     }
 
     /// `kClothingType`, 1 when unforced.
@@ -303,11 +386,19 @@ impl Tricks {
         data[2] = 0;
         data[5] = ctx.output(io, 3, PresetType::Frequency).clamp(0, 25000);
         data[6] = 0;
-        data[18] = i32::from(!physics.is_rewinding);
         data[26] = if ctx.local { ctx.output(io, 6, PresetType::Volume) } else { 0 }.clamp(0, 0x7FFF);
-        data[22] = ctx.output(io, 8, PresetType::Volume).clamp(0, 0x7FFF);
-        data[24] = ctx.output(io, 7, PresetType::Volume).clamp(0, 0x7FFF);
-        data[13] = self.last_fun_meter.clamp(0, 1000);
+        if self.board_flip_skate3 {
+            // TU3 UpdateBoardFlips 0x824cc7d8's members of its own Class_Flips.
+            data[16] = i32::from(!physics.is_rewinding);
+            data[20] = ctx.output(io, 8, PresetType::Volume).clamp(0, 0x7FFF);
+            data[22] = ctx.output(io, 7, PresetType::Volume).clamp(0, 0x7FFF);
+            data[12] = self.last_fun_meter.clamp(0, 1000);
+        } else {
+            data[18] = i32::from(!physics.is_rewinding);
+            data[22] = ctx.output(io, 8, PresetType::Volume).clamp(0, 0x7FFF);
+            data[24] = ctx.output(io, 7, PresetType::Volume).clamp(0, 0x7FFF);
+            data[13] = self.last_fun_meter.clamp(0, 1000);
+        }
         ctx.aems.set_member_data(&flip);
         self.board_flip = Some(flip);
     }

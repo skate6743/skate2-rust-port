@@ -24,7 +24,8 @@ pub(crate) struct FisheyeParameters {
 }
 impl FisheyeParameters {
     /// PC preference: identity sampling and a white lens mask. Noise and
-    /// frontend fades retain their separate owners.
+    /// frontend fades retain their separate owners. The warp magnifies the image, so the game
+    /// camera narrows instead while the fisheye is off ([`Self::edge_scale`]).
     pub(super) fn for_display(mut self, settings: skate2_core::ui::options::PcDisplaySettings) -> Self {
         if !settings.fisheye { self.warp = [0., 1., 0., 0.]; self.vignette = [0., 0.25, 0., 1.]; }
         // Explicit PC preferences: compensate the ungraded scene by +22%
@@ -32,6 +33,12 @@ impl FisheyeParameters {
         // Applied once before the later HUD/fade/FPS passes.
         if !settings.postfx { self.brightness *= 1.22 * 1.15 * 1.10; }
         self
+    }
+    /// The warp's factor `y + x r^4` (r the UV radius) at the middle of each screen edge
+    /// (r^2 = 0.25): with it the game camera's field of view reaches, undistorted, as far as the
+    /// fisheye's view does (the projection is linear in the angle).
+    pub(crate) fn edge_scale(&self) -> f32 {
+        self.warp[0].mul_add(0.0625, self.warp[1])
     }
     pub(crate) fn load(mounts: &MountSet) -> RenderResult<Self> {
         let brightness = match std::env::var("SKATE2_BRIGHTNESS") {
@@ -71,6 +78,7 @@ pub(super) struct FinalPass {
     layout: wgpu::BindGroupLayout,
     uniform: wgpu::Buffer,
     binding: wgpu::BindGroup,
+    scene_texture: wgpu::Texture,
     scene: wgpu::TextureView,
     /// `scene` as the main target's copy reads it.
     main_source: super::main_target::MainTargetSource,
@@ -82,6 +90,12 @@ pub(super) struct FinalPass {
     format: wgpu::TextureFormat,
     noise: RespawnNoise,
     multisampled: bool,
+    /// PC weather's pass, made for the scene format of the first weather frame, and what a
+    /// new one needs.
+    weather: Option<(super::weather::Weather, wgpu::TextureFormat, bool)>,
+    weather_depth: wgpu::TextureView,
+    weather_stencil: wgpu::TextureView,
+    weather_size: (u32, u32),
 }
 impl FinalPass {
     pub(super) fn new(
@@ -216,7 +230,8 @@ impl FinalPass {
             texture.size(),
         );
         let noise_texture = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let scene = scene_target(device, format, width, height);
+        let scene_texture = scene_target(device, format, width, height);
+        let scene = scene_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let main_source = main_target.source(device, &scene, width, height);
         let binding = binding(
             device,
@@ -232,6 +247,7 @@ impl FinalPass {
             layout,
             uniform,
             binding,
+            scene_texture,
             scene,
             main_source,
             noise_texture,
@@ -242,6 +258,10 @@ impl FinalPass {
             format,
             noise: RespawnNoise::default(),
             multisampled,
+            weather: None,
+            weather_depth: depth.clone(),
+            weather_stencil: stencil.clone(),
+            weather_size: (width, height),
         })
     }
 
@@ -250,7 +270,12 @@ impl FinalPass {
         let exposure=self.postfx.exposure;
         self.postfx=super::postfx::PostFx::new(device,self.format,width,height,depth,stencil,&self.overlay.view,self.multisampled);
         self.postfx.exposure=exposure;
-        self.scene = scene_target(device, self.format, width, height);
+        self.scene_texture = scene_target(device, self.format, width, height);
+        self.scene = self.scene_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.weather = None;
+        self.weather_depth = depth.clone();
+        self.weather_stencil = stencil.clone();
+        self.weather_size = (width, height);
         self.main_source = main_target.source(device, &self.scene, width, height);
         self.binding = binding(
             device,
@@ -268,6 +293,24 @@ impl FinalPass {
     /// The texture this frame's graded scene ends in, as the main target copies it.
     pub(super) fn main_target_source(&self) -> &super::main_target::MainTargetSource {
         &self.main_source
+    }
+
+    /// PC weather over the scene (the PostFX scene with PostFX on), before the native bloom,
+    /// cinematic flashes and colour grading.
+    pub(super) fn record_weather(&mut self,device:&wgpu::Device,queue:&wgpu::Queue,
+        encoder:&mut wgpu::CommandEncoder,map:&super::GpuMap,frame:super::weather::Frame,postfx:bool)->RenderResult<()> {
+        let texture=if postfx {self.postfx.scene_texture()} else {&self.scene_texture};
+        let view=if postfx {self.postfx.scene_view()} else {&self.scene};
+        let format=texture.format();
+        if !self.weather.as_ref().is_some_and(|(_,made,made_postfx)| *made==format && *made_postfx==postfx) {
+            let (width,height)=self.weather_size;
+            let effect=super::weather::Weather::new(device,format,width,height,view,&self.weather_depth,&self.weather_stencil,self.multisampled);
+            self.weather=Some((effect,format,postfx));
+        }
+        let (effect,_,_)=self.weather.as_ref().expect("weather pass made");
+        effect.record(device,queue,encoder,map,frame)?;
+        encoder.copy_texture_to_texture(effect.texture.as_image_copy(),texture.as_image_copy(),texture.size());
+        Ok(())
     }
 
     pub(super) fn exposure(&self)->f32 {self.postfx.exposure}
@@ -315,7 +358,7 @@ impl FinalPass {
             noise.map_or([0.0; 4], |n| n.dot1),
             noise.map_or([0.0; 4], |n| n.dot2),
             uv_transform,
-            [parameters.brightness, if parameters.supersample { 1.0 } else { 0.0 }, 0.0, 0.0],
+            [parameters.brightness, if parameters.supersample { 1.0 } else { 0.0 }, rain_desaturation(), 0.0],
         ];
         let bytes: Vec<u8> = values
             .into_iter()
@@ -355,7 +398,7 @@ fn scene_target(
     format: wgpu::TextureFormat,
     width: u32,
     height: u32,
-) -> wgpu::TextureView {
+) -> wgpu::Texture {
     device
         .create_texture(&wgpu::TextureDescriptor {
             label: Some("final-blit scene colour"),
@@ -368,10 +411,19 @@ fn scene_target(
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         })
-        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// PC weather: how far the rain greys the final image; none for any other weather.
+fn rain_desaturation() -> f32 {
+    match crate::weather::current() {
+        crate::weather::Mode::Drizzle => 0.16,
+        crate::weather::Mode::Rain => 0.74,
+        crate::weather::Mode::Storm => 1.,
+        _ => 0.,
+    }
 }
 
 fn binding(
@@ -425,6 +477,7 @@ mod tests {
                     postfx, fisheye, ..Default::default() });
                 assert_eq!(actual.brightness, if postfx { 1. } else { 1.22 * 1.15 * 1.10 });
                 assert_eq!(actual.warp, if fisheye { base.warp } else { [0., 1., 0., 0.] });
+                assert_eq!(base.edge_scale(), 0.2f32.mul_add(0.0625, 0.9));
             }
         }
         assert_eq!(base.brightness, 1.); // retained source values never compound

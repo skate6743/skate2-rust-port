@@ -202,6 +202,14 @@ impl AirCollector {
                 gap.update(&landing, false, index != 0 || !landing.is_above_grass)?;
             }
             let score = self.calculate_gap_score()?;
+            #[cfg(feature = "skate3-runtime")]
+            if self.base.states.skate3_enabled() && crate::diagnostics::test_log::enabled() {
+                crate::diagnostics::test_log::event("skate3_air_reward",format_args!(
+                    "distance={} peak={} height={} spin180={} metrics={:?} gap_points={} air_factor={} repetition={} stationary={} from_manual={} from_grind={}",
+                    self.horizontal_distance,self.height_to_peak,self.total_height_gain,self.player_spin180_count,
+                    [self.horizontal_distance_points,self.height_to_peak_points,self.total_height_gain_points,self.player_spin_points,self.player_flip_points],
+                    score,self.in_air_point_scalar,self.most_recent_trick_point_scalar,self.started_from_stationary,self.started_from_manual,self.started_from_grind));
+            }
             self.base
                 .score_holder
                 .as_ref()
@@ -233,6 +241,8 @@ impl AirCollector {
             .ok_or(ScoreError::Missing("air holder"))?
             .lock()
             .map_err(|_| ScoreError::Poisoned)?;
+        #[cfg(feature = "skate3-runtime")]
+        { holder.skate3_clean_landing = false; }
         holder.air_sequence_reward_pending = true;
         holder.pending_air_period = period;
         holder.air_sequence_reward_pending_frame_count = 2;

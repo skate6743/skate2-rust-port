@@ -412,9 +412,23 @@ impl RumbleManager {
             feet_on_deck: phys.is_left_foot_on_deck || phys.is_right_foot_on_deck,
         };
         let mut rumbles = Vec::new();
+        let trace = std::env::var_os("SKATE2_TRACE_RUMBLE").is_some();
         for (channel, event) in (0u32..).zip(&self.events) {
             let rumble = process(event, &self.surfaces, &self.patterns, &mut self.wheels, phys, common, dt);
             if !rumble.is_still() {
+                if trace {
+                    eprintln!(
+                        "rumble {:?}: low {:.4} high {:.4} decay {} (surface speed {:.2}, wheel audio surface {}, pattern {}, physics surface {})",
+                        event.kind,
+                        rumble.low,
+                        rumble.high,
+                        rumble.decay,
+                        phys.skateboard_surface_speed,
+                        phys.wheel_audio_surface_type,
+                        phys.wheel_surface_pattern,
+                        phys.physics_surface_type,
+                    );
+                }
                 rumbles.push(RumbleChannel { low: rumble.low, high: rumble.high, decay: rumble.decay, channel });
             }
         }

@@ -102,6 +102,13 @@ impl BodyAnimationDispatchSource for ActorBodyAnimationServices {
     }
 }
 impl ActorConstruction {
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn try_select_skate3_movement(&self, selected: bool) -> Result<(), BodySessionError> {
+        self.checked_body_animation()?.lock().map_err(|_| BodySessionError::Lock)?
+            .select_skate3_movement(selected);
+        Ok(())
+    }
+
     /// Actual retained phase2 animation calls; outer Actor physical checks are
     /// still the scheduler's responsibility.
     pub(crate) fn try_update_animation_phase2(

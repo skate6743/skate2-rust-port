@@ -222,14 +222,32 @@ it matters, against the original game running. Some things are still partly unfi
 ## Credits
 
 - **EA Black Box**, for making Skate 2.
+- **dumbad and the Skate 3 Rust Engine contributors**, for the
+  [Skate 3 Rust Engine](https://github.com/SK8-ENGINE/skate-3-rust-engine). Its controller and
+  physics code (kept in `vendor/skate3-engine`) is where the Skate 3 physics option started, and
+  this port builds a great deal on top of it: it runs that code inside Skate 2's own world,
+  collision, animation, scoring, audio and online play, adds the many systems it did not have,
+  and changes its code wherever it did not match Skate 3, checked against Skate 3's own code.
+- **The Skate 3 Custom Engine Layer contributors**, whose MIT-licensed Skate 3 weather the rain
+  is adapted from.
+- **Axistify**, whose [liquid-ripple](https://github.com/AsimRauf/liquid-ripple) the rain's
+  water ripples adapt.
+- **Poly Haven** and **Freesound** contributors, for the CC0 cloud panoramas and the rain,
+  thunder and bird recordings (the `CREDITS.txt` beside each set names them).
 - **FFmpeg**, whose WMA Pro decoder `skate2-xma` ports to play the game's XMA audio.
 - **wgpu, winit, cpal, SDL3** and the rest of the Rust ecosystem this is built on.
 
 ## License
 
-The source code is MIT-licensed ([LICENSE](LICENSE)), except the `skate2-xma` audio decoder,
-which is LGPL-2.1-or-later like the FFmpeg code it ports
-([crates/skate2-xma/LICENSE](crates/skate2-xma/LICENSE)).
+Copyright (C) 2026 skate6743 and contributors.
+
+The source code is licensed under the GNU General Public License version 3 only
+(`GPL-3.0-only`, [LICENSE](LICENSE)). The Skate 3 physics option builds on the Skate 3 Rust
+Engine (`vendor/skate3-engine`, GPL-3.0-only), so the game and its releases are under the same
+license, and this repository is their source. Versions up to 0.2.9 were MIT-licensed. The
+`skate2-xma` audio decoder is LGPL-2.1-or-later like the FFmpeg code it ports
+([crates/skate2-xma/LICENSE](crates/skate2-xma/LICENSE)), and third-party code and media keep
+the licenses in the notices beside them.
 
 This is an unofficial fan project, not affiliated with or endorsed by Electronic Arts. Skate and
 Skate 2 are trademarks of Electronic Arts Inc. The repository holds no game executables, symbols

@@ -3,11 +3,13 @@
 //! each hull's `cPres_Global` collection, read from the hull's own stream
 //! (`data\content\missions\<hull>\<hull>_Pres`) and drawn with the world, as
 //! `WorldPresentation::RegArena` registers any presentation collection's render instances.
+//! `NotifyCollectionReg` registers the hull's simulation collections with the presentation
+//! too: of their arenas the presentation keeps the visual indicator data.
 use skate2_core::{
     challenge::assets::CONTENT_STREAM_DIRECTORY,
     game_stream::{StreamKind, StreamPaths},
-    mounted_character_scene::own_presentation_arena,
-    presentation::{HullPresentation, PresentationCollection, PresentationScene},
+    mounted_character_scene::{own_presentation_arena, own_visual_indicators},
+    presentation::{HullPresentation, PresentationArena, PresentationCollection, PresentationScene},
 };
 use skate2_formats::{
     mount::MountSet,
@@ -46,10 +48,63 @@ pub(crate) fn sync(scene: &mut PresentationScene, mounts: &MountSet, hulls: &[Hu
             registered.push(collection);
             changed = true;
         }
+        if hull.sim_collections.iter().all(|id| held.iter().any(|collection| collection.id == *id)) {
+            for &id in &hull.sim_collections {
+                if let Some(index) = held.iter().position(|collection| collection.id == id) {
+                    registered.push(held.swap_remove(index));
+                }
+            }
+            continue;
+        }
+        let paths = StreamPaths::derive(CONTENT_STREAM_DIRECTORY, &hull.file_name, StreamKind::Simulation)
+            .map_err(|e| format!("hull {} simulation stream path: {e:?}", hull.file_name))?;
+        let map = CollectionMap::parse(&mounts.read_path(&format!("{}.xsm", paths.manifest_stem))?)?;
+        for &id in &hull.sim_collections {
+            if let Some(index) = held.iter().position(|collection| collection.id == id) {
+                registered.push(held.swap_remove(index));
+                continue;
+            }
+            registered.push(load_visual_indicators(mounts, &paths, &map, id)?);
+            changed = true;
+        }
     }
     changed |= !held.is_empty();
     scene.hulls = registered;
     Ok(changed)
+}
+
+/// One hull simulation collection as the presentation registers it: each asset's arena holds
+/// only its visual indicator data (`RegArena` asset type 0x11).
+fn load_visual_indicators(mounts: &MountSet, paths: &StreamPaths, map: &CollectionMap, id: u64) -> Result<PresentationCollection, Box<dyn Error>> {
+    let entry = map.collections.iter().find(|entry| entry.id == id).ok_or_else(|| format!("missing hull simulation collection {id:016x}"))?;
+    let xsf = mounts.read_path(&format!("{}{}.xsf", paths.collection_directory, entry.filename))?;
+    let payload = xsf.get(entry.payload_offset as usize..).ok_or("hull simulation collection payload offset")?;
+    let file = CollectionPayload::parse(payload, entry.asset_count)?;
+    let mut arenas = Vec::with_capacity(file.assets.len());
+    for block in &file.assets {
+        let decoded = decode_arena(&payload[block.data_range.clone()])?;
+        let arena = Rw4Arena::parse(&decoded.resources)?;
+        arenas.push(PresentationArena {
+            id: arena.id,
+            textures: Vec::new(),
+            materials: Vec::new(),
+            meshes: Vec::new(),
+            models: Vec::new(),
+            instances: Vec::new(),
+            anti_frustums: Vec::new(),
+            emitter_waypoints: Vec::new(),
+            visual_indicators: own_visual_indicators(&arena, &decoded.resources),
+        });
+    }
+    Ok(PresentationCollection {
+        light_probes: Vec::new(),
+        navigation: Vec::new(),
+        id,
+        name: entry.filename.clone(),
+        position: [0.0; 3],
+        distance_xz: 0.0,
+        arenas,
+    })
 }
 
 /// One hull collection: each asset's arena decoded as the city's presentation collections are,

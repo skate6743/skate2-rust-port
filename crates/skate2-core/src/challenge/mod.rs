@@ -52,6 +52,7 @@ pub mod results;
 pub mod runtime;
 mod script_fixes;
 mod sequence_connector;
+mod skate3_natives;
 pub mod services;
 mod signpost;
 pub mod signpost_progress;

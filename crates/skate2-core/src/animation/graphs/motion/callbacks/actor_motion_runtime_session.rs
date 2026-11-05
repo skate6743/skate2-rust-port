@@ -20,7 +20,7 @@ mod toggle_board;
 #[path = "actor_motion_transition_hook.rs"]
 mod transition_hook;
 #[path = "actor_motion_runtime_trick_conditions.rs"]
-mod trick_conditions;
+pub(crate) mod trick_conditions;
 #[path = "actor_motion_wipeout.rs"]
 pub(crate) mod wipeout;
 #[path = "actor_motion_wipeout_recovery_begin.rs"]

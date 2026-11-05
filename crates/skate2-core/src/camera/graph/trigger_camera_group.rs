@@ -98,7 +98,7 @@ impl CameraTriggerGroup {
                     let guid = u64::from_be_bytes(bytes.get(offset..offset + 8)
                         .ok_or(CameraTriggerError::TruncatedRecord)?.try_into().unwrap());
                     // Native __u64tod followed by frsp: retain both roundings.
-                    if volume_id == (guid as f64) as f32 { return Ok(Some(record.clone())); }
+                    if volume_id == crate::skate3::id_float(guid) { return Ok(Some(record.clone())); }
                 }
             }
         }

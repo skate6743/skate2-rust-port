@@ -1068,6 +1068,8 @@ pub struct NisSystem {
     directory: Arc<SceneDirectory>,
     tracks: Arc<dyn CameraTracks>,
     subtitle_big: Option<Arc<Vec<u8>>>,
+    /// The downloadable content's subtitle BIGs, searched after the game's.
+    dlc_subtitles: Vec<Arc<Vec<u8>>>,
     characters: Option<Arc<dyn SceneCharacterSource>>,
     language: String,
     sim: Simulation,
@@ -1097,6 +1099,7 @@ impl NisSystem {
             directory,
             tracks,
             subtitle_big,
+            dlc_subtitles: Vec::new(),
             characters: None,
             language: language.to_owned(),
             sim: Simulation {
@@ -1360,6 +1363,17 @@ impl NisSystem {
     /// `InstanceCharacter`); without it a scene instances none.
     pub fn set_character_source(&mut self, source: Arc<dyn SceneCharacterSource>) {
         self.characters = Some(source);
+    }
+
+    /// The downloadable content's `data\fe\subtitles\*.big`, which `StartDLCSubtitleLoad` adds
+    /// to the `SubtitleManager` after the game's.
+    pub fn set_dlc_subtitles(&mut self, subtitle_bigs: Vec<Arc<Vec<u8>>>) {
+        self.dlc_subtitles = subtitle_bigs;
+    }
+
+    fn subtitle_data(&self, scene: &str) -> Option<Vec<SubtitleKey>> {
+        let bigs: Vec<&[u8]> = self.subtitle_big.iter().chain(&self.dlc_subtitles).map(|big| big.as_slice()).collect();
+        super::subtitles::load_from(&bigs, &self.language, scene)
     }
 
     /// The running scene's characters.
@@ -2389,7 +2403,7 @@ impl NisSystem {
             audio.notify_nis_playback_start(i32::from(props.kind), self.pres.special_flags, replay, self.pres.mults.delta_mult() * scene.time_length);
         }
         // SubTitler(scene name), Start.
-        let data = self.subtitle_big.as_ref().and_then(|big| super::subtitles::load(big, &self.language, &props.name));
+        let data = self.subtitle_data(&props.name);
         scene.subtitler = Some(SubTitler::start(data));
         Some(scene)
     }
@@ -2778,7 +2792,7 @@ impl NisSystem {
     /// The scene's subtitle keys as `Scene::Init` would load them.
     #[must_use]
     pub fn subtitle_keys(&self, scene: &str) -> Option<Vec<SubtitleKey>> {
-        self.subtitle_big.as_ref().and_then(|big| super::subtitles::load(big, &self.language, scene))
+        self.subtitle_data(scene)
     }
 }
 

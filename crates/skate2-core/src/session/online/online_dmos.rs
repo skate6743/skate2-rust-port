@@ -98,6 +98,9 @@ impl<T, C> SelectedLiveSession<T, C> {
         let area = self.online.dmos.area.clone();
         if self.online.dmos.challenge != area.as_ref().map(|&(challenge, _)| challenge) {
             let wanted: Vec<(u32, String)> = match &area {
+                // PC port: a linked Skate 3 data's game holds none of its own hulls' static
+                // objects, whose recipes are Skate 3's.
+                Some((challenge, _)) if crate::skate3::linked().is_some_and(|data| data.online_spot(*challenge).is_some()) => Vec::new(),
                 Some((challenge, name)) => {
                     let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("online data absent"))?;
                     challenge_hull_names(db, *challenge, name).into_iter().map(|name| (hull_id(&name), name)).collect()
@@ -129,6 +132,11 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// the game's boundary come out.
     fn place_online_dmos(&mut self) -> Result<(), SelectedLiveError> {
         let Some(boundaries) = self.online.boundaries.clone() else { return Ok(()) };
+        // PC port: a linked Skate 3 data's game spawns no static objects; its district's groups
+        // name Skate 3's recipes.
+        if self.online_game_is_skate3() {
+            return Ok(());
+        }
         let owner = self.inner.world.as_ref().ok_or_else(|| error("online world absent"))?;
         let terrain = self.inner.terrain.as_ref().ok_or_else(|| error("online terrain absent"))?;
         let startup = terrain.terrain_for(&owner.world).map_err(|e| error(format!("{e:?}")))?;

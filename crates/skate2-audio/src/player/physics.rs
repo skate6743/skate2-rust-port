@@ -141,6 +141,12 @@ pub struct PlayerPhysics {
     pub limb_speed: f32,
     pub is_wiping_out: bool,
     pub is_wipe_out_over: bool,
+    /// TU3 `SFXCTL_PlayerPhysics` +0x301: the skater's darkcatch (Skate 3 physics only).
+    pub skate3_dark_catch: bool,
+    /// PC port: the trick is a Skate 3-only scorable (`SkaterData::skate3_only_trick`).
+    pub skate3_only_trick: bool,
+    /// PC port: the skater runs Skate 3 physics.
+    pub skate3_physics: bool,
     pub wheel_occlusion: f32,
     pub wheel_hardness: u32,
     pub is_grabbing_left: bool,
@@ -268,6 +274,9 @@ impl Default for PlayerPhysics {
             limb_speed: 0.0,
             is_wiping_out: false,
             is_wipe_out_over: false,
+            skate3_dark_catch: false,
+            skate3_only_trick: false,
+            skate3_physics: false,
             wheel_occlusion: 0.0,
             wheel_hardness: 0,
             is_grabbing_left: false,
@@ -399,6 +408,9 @@ impl PlayerPhysics {
         self.is_wiping_out = false;
         self.game_speed = 1.0;
         self.is_wipe_out_over = false;
+        self.skate3_dark_catch = false;
+        self.skate3_only_trick = false;
+        self.skate3_physics = false;
         self.last_player_speed = 0.0;
         self.wheel_hardness = WHEEL_HARD;
         self.limb_speed = 0.0;
@@ -625,6 +637,9 @@ impl PlayerPhysics {
         self.limb_speed = skater.limb_speed;
         self.is_wiping_out = skater.is_wiping_out;
         self.is_wipe_out_over = skater.is_wipe_out_over;
+        self.skate3_dark_catch = skater.skate3_dark_catch;
+        self.skate3_only_trick = skater.skate3_only_trick;
+        self.skate3_physics = skater.skate3_physics;
         self.calculate_wheel_occlusion(up, look, mics, map);
         self.wheel_hardness = u32::from(skater.wheel_hardness);
         let wheel_type = if inputs.local { self.wheel_hardness } else { inputs.npc_wheel_type };

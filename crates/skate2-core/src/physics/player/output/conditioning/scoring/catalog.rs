@@ -2163,5 +2163,10 @@ pub(super) const SCORABLES: [ScorableInfo; 269] = [
     },
 ];
 pub(super) fn info(id: i32) -> Option<&'static ScorableInfo> {
-    usize::try_from(id).ok().and_then(|i| SCORABLES.get(i))
+    let id = usize::try_from(id).ok()?;
+    if let Some(entry) = SCORABLES.get(id) { return Some(entry); }
+    #[cfg(feature = "skate3-runtime")]
+    { super::skate3_catalog::info(id) }
+    #[cfg(not(feature = "skate3-runtime"))]
+    { None }
 }

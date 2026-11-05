@@ -28,6 +28,8 @@ pub(crate) trait AnimationEvalCommands {
     ) -> Option<Result<(), Self::Error>> {
         None
     }
+    fn external_sqt(&mut self, _source: &crate::actor_animation_construction::initialization::bind_pose::sqt_output::OwnedAnimationSqtBuffer)
+        -> Option<Result<(),Self::Error>> {None}
     fn n_blend(&mut self, coefficients: &[f32]) -> Result<(), Self::Error>;
     fn blend(&mut self, coefficient: f32) -> Result<(), Self::Error>;
     fn channel_blend(

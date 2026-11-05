@@ -776,6 +776,7 @@ impl GpuMapBuilder {
     pub(crate) fn push_sky(
         &mut self,
         mesh: &GpuMesh,
+        effect: EnvironmentEffect,
         material_textures: Arc<wgpu::BindGroup>,
         material: InstanceMaterial,
     ) -> RenderResult<()> {
@@ -785,7 +786,7 @@ impl GpuMapBuilder {
         let record = DrawRecord {
             world_from_mesh: None,
             color: [1.0; 4],
-            pipeline: self.pipelines.environment.pipeline(EnvironmentEffect::Sky),
+            pipeline: self.pipelines.environment.pipeline(effect),
             texture: Some(material_textures),
             lighting: None,
             material,
@@ -861,6 +862,9 @@ impl GpuMapBuilder {
             visible: OnceLock::new(),
             world_shadow: OnceLock::new(),
             shadow_commands: Mutex::new(None),
+            rain_surface: Arc::default(),
+            rain_location: String::new(),
+            rain_gathered: false,
         }
     }
 }
@@ -1064,9 +1068,30 @@ pub(crate) struct GpuMap {
     anti_frustums: Vec<Arc<AntiFrustumSet>>,
     world_shadow: OnceLock<WorldShadowDraws>,
     shadow_commands: Mutex<Option<CachedShadowCommands>>,
+    /// PC weather: the rain's world model of this map generation (built only while a weather is
+    /// picked) with its location.
+    pub(crate) rain_surface: super::rain::LoadingSurface,
+    pub(crate) rain_location: String,
+    /// The rain's world model was gathered for this map generation (a weather was picked).
+    pub(crate) rain_gathered: bool,
 }
 
 impl GpuMap {
+    /// PC weather: this frame's weather inputs, or none for Vanilla.
+    pub(super) fn weather_frame(&self, eye: Option<&super::stereoscopy::Eye>) -> Option<super::weather::Frame> {
+        let mode = crate::weather::current();
+        if mode == crate::weather::Mode::Vanilla {
+            return None;
+        }
+        Some(super::weather::Frame {
+            clip: eye.map_or(self.clip_from_world, |e| e.clip),
+            camera: self.camera(),
+            axes: self.frame.camera_axes,
+            clock: self.frame.animation_time[0],
+            fog: self.frame.fog_colour,
+            mode,
+        })
+    }
     pub(super) fn world_shadow_draws(&self) -> RenderResult<&WorldShadowDraws> {
         if let Some(selected) = self.world_shadow.get() {
             return Ok(selected);
@@ -1130,10 +1155,18 @@ impl GpuMap {
         format: wgpu::TextureFormat,
         selected: &WorldShadowDraws,
     ) -> Arc<wgpu::RenderBundle> {
-        let mut cached = self
-            .shadow_commands
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        self.prepare_shadow_commands(device, camera, pipeline, format, selected, &self.shadow_commands)
+    }
+    fn prepare_shadow_commands(
+        &self,
+        device: &wgpu::Device,
+        camera: &wgpu::BindGroup,
+        pipeline: &wgpu::RenderPipeline,
+        format: wgpu::TextureFormat,
+        selected: &WorldShadowDraws,
+        cache: &Mutex<Option<CachedShadowCommands>>,
+    ) -> Arc<wgpu::RenderBundle> {
+        let mut cached = cache.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(previous) = cached.as_ref() {
             if previous.selection == selected.draws
                 && previous.camera == *camera
@@ -1255,11 +1288,25 @@ impl GpuMap {
         );
         let mut bytes = [0; 464];
         bytes[..240].copy_from_slice(&base);
+        // PC weather: W carries the cloud cover and Y the storm's gust (both unused by the
+        // original shaders, zero for Vanilla).
+        let mut animation_time = self.frame.animation_time;
+        if crate::weather::current() != crate::weather::Mode::Vanilla {
+            use crate::weather::Precipitation;
+            let cloud = crate::weather::cloud_cover();
+            if cloud > 0. {
+                animation_time[3] = cloud;
+            }
+            let rain = if crate::weather::visible() { crate::weather::current().rain() } else { 0. };
+            let phase = (crate::weather::rain_clock() + 3.5).rem_euclid(17.);
+            let gust = if (4.0..11.0).contains(&phase) { ((phase - 4.) / 7. * std::f32::consts::PI).sin().powi(2) } else { 0. };
+            animation_time[1] = rain * (0.20 + 0.80 * gust);
+        }
         for (dst, value) in bytes[240..].chunks_exact_mut(4).zip(
             self.frame
                 .view_dot_light
                 .into_iter()
-                .chain(self.frame.animation_time)
+                .chain(animation_time)
                 .chain(self.frame.pca.into_iter().flatten())
                 .chain(self.frame.traffic_lights.into_iter().flatten())
                 .chain(self.frame.camera_axes.into_iter().flatten()),

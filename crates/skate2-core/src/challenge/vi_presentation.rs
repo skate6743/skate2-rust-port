@@ -7,14 +7,17 @@
 //! back texture in the `darken` technique, then again with its front texture in
 //! `default`, each control-point layer one triangle strip.
 //!
-//! Not ported: the streamed spline instances of the world stream arenas
-//! (`UpdateCustomizedSplines` 0x828033a0), the Create-a-Spot mesh indicator
-//! (`UpdateCreateASpotIndicator` 0x82805328).
+//! The registered arenas' visual indicator data become streamed spline instances
+//! (`AddStreamedSplineInstance` 0x82805a08), each drawn while the frame's spline
+//! indicators name it (`UpdateCustomizedSplines` 0x828033a0).
+//!
+//! Not ported: the Create-a-Spot mesh indicator (`UpdateCreateASpotIndicator` 0x82805328).
 
 use super::visual_director::{RibbonStyle, VisualIndicatorFrame, VisualIndicatorSettings};
 use crate::ai::vmx::{self, V4};
 use skate2_formats::pegasus::{VisualIndicator, VisualIndicatorData};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 /// `gVisualIndicatorAssetHelper`'s one asset (`GameModule::OneOffLoadTexture` 0x82735730).
 pub const ASSET_PATH: &str = "data\\content\\world\\models\\visual_indicators_sk82.rx2";
@@ -321,6 +324,15 @@ impl SplineIndicator {
         };
         indicator.calculate_bounds(None);
         indicator
+    }
+
+    /// `SplineIndicator(const tVisualIndicator*)` (`0x82804e08`): its own spline of the
+    /// indicator, then `Init`.
+    fn with_spline(indicator: &VisualIndicator) -> Self {
+        let mut this = Self::new();
+        this.own = Spline::new(indicator);
+        this.calculate_bounds(None);
+        this
     }
 
     fn spline<'a>(&'a self, resource: Option<&'a RibbonResource>) -> Option<&'a Spline> {
@@ -630,12 +642,27 @@ pub struct SplineDraw {
     pub layers: Vec<ControlPoints>,
 }
 
+/// A `SplineIndicatorContainer` (ctor `0x82805840`) of registered indicator data: the asset
+/// IDs of its splines, one per indicator with segments.
+#[derive(Debug)]
+struct StreamedContainer {
+    data: Arc<VisualIndicatorData>,
+    splines: Vec<u64>,
+}
+
 /// `VIPresentation`.
 #[derive(Debug)]
 pub struct ViPresentation {
     resource: Option<RibbonResource>,
     location_ribbons: Vec<SplineIndicator>,
     race_gates: Vec<SplineIndicator>,
+    /// The registered indicator data the streamed splines were last synced to.
+    streamed_registered: Vec<Arc<VisualIndicatorData>>,
+    /// The containers `AddStreamedSplineInstance` made, in registration order.
+    streamed: Vec<StreamedContainer>,
+    /// `mStreamedSplineInstances`: a streamed spline's indicator under its asset ID, the first
+    /// container's of an ID.
+    streamed_splines: BTreeMap<u64, SplineIndicator>,
     dynamic: DynamicIndicator,
     /// `mDynamicIndicatorSampleTimer`.
     sample_timer: f32,
@@ -662,6 +689,9 @@ impl ViPresentation {
             resource: None,
             location_ribbons: Vec::new(),
             race_gates: Vec::new(),
+            streamed_registered: Vec::new(),
+            streamed: Vec::new(),
+            streamed_splines: BTreeMap::new(),
             dynamic: DynamicIndicator::new(),
             sample_timer: 0.0,
             previous_frame: -15.0,
@@ -684,6 +714,45 @@ impl ViPresentation {
             .map(|_| SplineIndicator::new())
             .collect();
         self.race_gates = (0..RACE_GATES).map(|_| SplineIndicator::new()).collect();
+    }
+
+    /// The registered arenas' indicator data: `RemStreamedSplineInstance` (`0x82803208`) for
+    /// each departed one (every spline ID of its container leaves `mStreamedSplineInstances`),
+    /// then `AddStreamedSplineInstance` (`0x82805a08`) for each new one (data without
+    /// indicators or segments adds nothing; an ID already held keeps its indicator).
+    pub fn sync_streamed_splines(&mut self, registered: &[Arc<VisualIndicatorData>]) {
+        if self.streamed_registered.len() == registered.len()
+            && self.streamed_registered.iter().zip(registered).all(|(held, data)| Arc::ptr_eq(held, data))
+        {
+            return;
+        }
+        self.streamed_registered = registered.to_vec();
+        let (kept, departed): (Vec<_>, Vec<_>) = std::mem::take(&mut self.streamed)
+            .into_iter()
+            .partition(|container| registered.iter().any(|data| Arc::ptr_eq(data, &container.data)));
+        for container in departed {
+            for asset in container.splines {
+                self.streamed_splines.remove(&asset);
+            }
+        }
+        self.streamed = kept;
+        for data in registered {
+            if self.streamed.iter().any(|container| Arc::ptr_eq(&container.data, data))
+                || data.indicators.is_empty()
+                || data.segment_count == 0
+            {
+                continue;
+            }
+            let mut splines = Vec::new();
+            for indicator in data.indicators.iter().filter(|indicator| !indicator.segments.is_empty()) {
+                let asset = indicator.guid_local;
+                splines.push(asset);
+                self.streamed_splines
+                    .entry(asset)
+                    .or_insert_with(|| SplineIndicator::with_spline(indicator));
+            }
+            self.streamed.push(StreamedContainer { data: Arc::clone(data), splines });
+        }
     }
 
     /// The texture assets the presentation registry holds (`vitextures.rx2`).
@@ -733,6 +802,7 @@ impl ViPresentation {
         }
         self.update_location_splines(dt, frame, view, hidden);
         self.update_gate_splines(dt, frame, view, hidden);
+        self.update_customized_splines(dt, frame, view);
         self.update_dynamic_indicator(dt, frame, view);
     }
 
@@ -747,6 +817,13 @@ impl ViPresentation {
             .filter(|indicator| indicator.enable && indicator.visible)
         {
             indicator.face_camera(resource, view);
+        }
+        for indicator in self
+            .streamed_splines
+            .values_mut()
+            .filter(|indicator| indicator.enable && indicator.visible)
+        {
+            indicator.face_camera(None, view);
         }
     }
 
@@ -853,6 +930,31 @@ impl ViPresentation {
         self.race_gates = indicators;
     }
 
+    /// `VIPresentation::UpdateCustomizedSplines` (`0x828033a0`): every streamed spline in view
+    /// updates with the `default` settings (`key_default`) and is disabled, then those the
+    /// frame's spline indicators name are enabled for the render. PC port: a linked Skate 3
+    /// data folder's take the frame's Skate 3 area textures.
+    fn update_customized_splines(&mut self, dt: f32, frame: &VisualIndicatorFrame, view: &ViewInputs) {
+        let front = self.registered(frame.skate3_area_textures.0).or(self.front_texture);
+        let back = self.registered(frame.skate3_area_textures.1).or(self.back_texture);
+        let mut no_resource = None;
+        for (&asset, indicator) in &mut self.streamed_splines {
+            if crate::skate3::is_id(asset) {
+                indicator.front_texture = front;
+                indicator.back_texture = back;
+            }
+            if indicator.cull(None, view) {
+                indicator.update(dt, &frame.default_settings, view, &mut self.random, &mut no_resource);
+            }
+            indicator.enable = false;
+        }
+        for spline in &frame.splines {
+            if let Some(indicator) = self.streamed_splines.get_mut(&spline.asset) {
+                indicator.enable = true;
+            }
+        }
+    }
+
     /// `VIPresentation::UpdateDynamicIndicator` (`0x82803fa0`): the first follow target's hips
     /// every `kDynamicIndicatorPointTime`, or no trail.
     fn update_dynamic_indicator(
@@ -878,8 +980,9 @@ impl ViPresentation {
             .update(dt, &frame.trail_settings, view, &mut self.random);
     }
 
-    /// `VIPresentation::Render` (`0x82803a18`)'s draws in order: location ribbons, race gates,
-    /// then the trail, each enabled (and visible) one. Both techniques draw this list.
+    /// `VIPresentation::Render` (`0x82803a18`)'s draws in order: streamed splines, location
+    /// ribbons, race gates, then the trail, each enabled (and visible) one. Both techniques
+    /// draw this list.
     #[must_use]
     pub fn render(&self, frame: &VisualIndicatorFrame, in_nis: bool) -> Vec<SplineDraw> {
         if !ENABLE_VIS || in_nis {
@@ -888,12 +991,18 @@ impl ViPresentation {
         let layers = frame.default_settings.layers;
         let resource = self.resource.as_ref();
         let mut draws: Vec<SplineDraw> = self
-            .location_ribbons
-            .iter()
-            .chain(&self.race_gates)
+            .streamed_splines
+            .values()
             .filter(|indicator| indicator.enable && indicator.visible)
-            .filter_map(|indicator| indicator.draw(resource, layers))
+            .filter_map(|indicator| indicator.draw(None, layers))
             .collect();
+        draws.extend(
+            self.location_ribbons
+                .iter()
+                .chain(&self.race_gates)
+                .filter(|indicator| indicator.enable && indicator.visible)
+                .filter_map(|indicator| indicator.draw(resource, layers)),
+        );
         if self.dynamic.enable {
             draws.extend(self.dynamic.draw(&frame.default_settings));
         }

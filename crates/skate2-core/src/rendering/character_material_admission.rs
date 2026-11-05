@@ -217,6 +217,13 @@ impl CharacterMaterialAdmission {
                     crate::presentation::PresentationMaterialEffect::from_serialized_name(name);
                 let class = key.attribute_class_id.ok_or(E::MaterialMetadata)?;
                 let collection = key.material_variant_id.ok_or(E::MaterialMetadata)?;
+                // PC port: a linked Skate 3 data folder's clothing names `material_character`
+                // collections Skate 2 lacks; each reads as its Skate 2 counterpart throughout
+                // (`crate::skate3`).
+                let collection = match crate::skate3::character_material_alias(class, collection) {
+                    Some(alias) if vault.instance(class, collection).is_null() => alias,
+                    _ => collection,
+                };
                 let instance = vault.instance(class, collection);
                 if instance.is_null() {
                     return Err(E::Missing(
@@ -268,13 +275,20 @@ impl CharacterMaterialAdmission {
                         | "cac_hair"
                         | "cac_hair_ropa"
                 ) {
-                    let guid =
-                        raster_guid(material, "alpha", "alpha channel", "raster alpha binding")?;
-                    Some(
-                        scene
-                            .bound_texture_index(guid)
-                            .ok_or(E::Missing("original alpha texture residency"))?,
-                    )
+                    match raster_guid(material, "alpha", "alpha channel", "raster alpha binding") {
+                        Ok(guid) => Some(
+                            scene
+                                .bound_texture_index(guid)
+                                .ok_or(E::Missing("original alpha texture residency"))?,
+                        ),
+                        // PC port: as a CAS map (below), a linked Skate 3 data folder's clothing
+                        // can leave its alpha map out.
+                        Err(E::Missing(_)) if crate::skate3::linked().is_some() => {
+                            crate::skate3::note_missing_cas_channel(effect, "alpha");
+                            None
+                        }
+                        Err(error) => return Err(error),
+                    }
                 } else {
                     None
                 };
@@ -284,12 +298,18 @@ impl CharacterMaterialAdmission {
                         if (slot > 0 && (!effect.starts_with("cac") || effect.starts_with("cac_hair"))) || (slot == 2 && effect == "cacstamp_face") {
                             continue;
                         }
-                        let guid = raster_guid(
-                            material,
-                            name,
-                            "CAS texture channel",
-                            "CAS texture raster",
-                        )?;
+                        let guid = match raster_guid(material, name, "CAS texture channel", "CAS texture raster") {
+                            Ok(guid) => guid,
+                            // PC port: a linked Skate 3 data folder's clothing, read through
+                            // Skate 2's `material_character`, can leave out a map Skate 2's
+                            // program samples; the renderer draws it as none
+                            // (`crate::skate3::note_missing_cas_channel`).
+                            Err(E::Missing(_)) if crate::skate3::linked().is_some() => {
+                                crate::skate3::note_missing_cas_channel(effect, name);
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
                         cas_textures[slot] = Some(
                             scene
                                 .bound_texture_index(guid)

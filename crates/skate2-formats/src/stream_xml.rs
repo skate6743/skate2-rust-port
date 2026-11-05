@@ -24,6 +24,27 @@ impl StreamXml {
         suffix: &str,
         space: &CollectionSpace,
     ) -> Result<Self, &'static str> {
+        Self::parse_tiles(bytes, suffix, space, false)
+    }
+
+    /// [`Self::parse`] for a linked Skate 3 data folder's documents: Skate 3's
+    /// `ParseXmlStreamTile` (0x8247a760 in its title update 3) reads a tile's
+    /// first 64 neighbours with no capacity assertion, a repeated one taken once.
+    pub fn parse_skate3(
+        bytes: &[u8],
+        suffix: &str,
+        space: &CollectionSpace,
+    ) -> Result<Self, &'static str> {
+        Self::parse_tiles(bytes, suffix, space, true)
+    }
+
+    fn parse_tiles(
+        bytes: &[u8],
+        suffix: &str,
+        space: &CollectionSpace,
+        skate3: bool,
+    ) -> Result<Self, &'static str> {
+        let neighbours = if skate3 { 64 } else { 16 };
         let mut reader = Reader::from_reader(bytes);
         reader.config_mut().trim_text(true);
         reader.config_mut().expand_empty_elements = true;
@@ -82,7 +103,7 @@ impl StreamXml {
                         let neighborhood = match space.collections.iter().position(|entry| entry.id == id) {
                             Some(index) => {
                                 let mut indices = vec![index];
-                                for point in tiles.iter().take(16) {
+                                for point in tiles.iter().take(neighbours) {
                                     let tile_id = collection_id(suffix, *point);
                                     if let Some(index) = space
                                         .collections
@@ -90,7 +111,7 @@ impl StreamXml {
                                         .position(|entry| entry.id == tile_id)
                                     {
                                         // The native capacity assertion precedes duplicate detection.
-                                        if indices.len() >= 16 {
+                                        if !skate3 && indices.len() >= 16 {
                                             return Err(
                                                 "Stream XML exceeds native collection capacity",
                                             );

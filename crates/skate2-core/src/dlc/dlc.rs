@@ -254,6 +254,17 @@ pub fn vaults(mounts: &MountSet) -> Vec<String> {
     dlc_files(mounts, "data\\db\\", |file| file.ends_with(".vlt")).into_iter().map(|(path, _)| path).collect()
 }
 
+/// `StartDLCSubtitleLoad` (`0x8269fb20`) and `DLCSubtitleLoadUpdate` (`0x826aaf28`): every
+/// `data\fe\subtitles\*.big` of the downloadable content, each loaded whole
+/// (`LoadBigSubtitleFile` `0x826aae08`); an unreadable one is left out.
+#[must_use]
+pub fn subtitle_archives(mounts: &MountSet) -> Vec<Vec<u8>> {
+    dlc_files(mounts, "data\\fe\\subtitles\\", |file| file.ends_with(".big"))
+        .into_iter()
+        .filter_map(|(path, archive)| archive.read_path(&path).ok())
+        .collect()
+}
+
 /// `StartDLCLanguageDBLoad` and `DLCLanguageDBLoadUpdate` (`0x82d6a768`): every
 /// `data\fe\languages\english\*.BIN` whose name holds `dlc`, read in turn by
 /// `LoadDLCLanguagePacks` (`0x82d69140`): a `HISTOGRAM` file is the database's histogram, any

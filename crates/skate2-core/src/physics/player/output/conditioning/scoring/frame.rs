@@ -57,6 +57,10 @@ impl<'a> ModuleFrame<'a> {
         let tick = input.tick;
         let dt = f32::from_bits(0x3c88_8889);
         let deck_position = board.deck_position;
+        let system_up = output
+            .system_vector(PhysOutSystemVector::Up)
+            .map_err(ScoreError::Access)?
+            .value;
         Ok(Self {
             collector: CollectorFrame {
                 ground: GroundFrame {
@@ -77,6 +81,7 @@ impl<'a> ModuleFrame<'a> {
                     allow_slow_manuals_after_begin: bool_value(
                         B::kAllowSlowManualsToStillScoreOnceBegun,
                     )?,
+                    vel_direction: board.vel_direction,
                 },
                 grind: GrindFrame {
                     filtered_scorable_id: filtered.grind_scorable_id,
@@ -98,6 +103,8 @@ impl<'a> ModuleFrame<'a> {
                     player_matrix: skeleton.skeleton_root_matrix,
                     board_matrix: board.transform,
                     ground,
+                    system_velocity: system.damped_centre_of_mass_velocity,
+                    system_up,
                 },
                 air: AirTrickFrame {
                     tick,
@@ -105,13 +112,12 @@ impl<'a> ModuleFrame<'a> {
                     switched,
                     fakie,
                     ground,
+                    #[cfg(feature = "skate3-runtime")]
+                    use_air_reckoning: air.use_air_reckoning,
                 },
                 animation: &trick.current_animation,
                 damped_system_velocity: system.damped_centre_of_mass_velocity,
-                damped_system_up: output
-                    .system_vector(PhysOutSystemVector::Up)
-                    .map_err(ScoreError::Access)?
-                    .value,
+                damped_system_up: system_up,
                 wheels_in_contact: collision.wheels_in_contact,
                 min_frames_after_landing: int_value(I::kMinFramesBeforeEndingSequenceAfterLanding)?
                     as u32,
@@ -152,6 +158,15 @@ impl<'a> ModuleFrame<'a> {
                 heavy_landing_kind: state.special_wipeout_info.state,
                 heavy_landing_speed: state.special_wipeout_info.landing_speed,
                 gesture: [trick.wipeout_gesture_x, trick.wipeout_gesture_y],
+                skate3_countdown: state.skate3_wipeout_countdown,
+                skate3_teleport_requested: state.skate3_teleport_requested,
+                skate3_response_strength: skeleton.skate3_response_strength,
+                skate3_air_locked: air.use_air_reckoning,
+                centre_of_mass_velocity: output
+                    .system_vector(PhysOutSystemVector::CentreOfMassVelocity)
+                    .map_err(ScoreError::Access)?
+                    .value,
+                damped_centre_of_mass: system.damped_centre_of_mass,
             },
             animation,
             physics_state: state.physics_state,
@@ -161,6 +176,7 @@ impl<'a> ModuleFrame<'a> {
                 _ => PhysicsCategory::Other,
             },
             requested_teleport: state.physics_requested_teleport,
+            grind_scoring_blocked: grinds.skate3_tipslide_blocks_scoring,
             requested_runout: state.physics_requests_runout,
             retrieving_board: offboard.is_retrieving_board,
             ground_normal: output

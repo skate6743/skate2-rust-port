@@ -26,6 +26,8 @@ pub(crate) enum CameraProducerProjectionError {
     ShortRenderingLayout,
     Attribute(AttributeRuntimeError),
     Cvar(InputCvarError),
+    #[cfg(feature = "skate3-runtime")]
+    NativeAnchors(String),
 }
 
 /// An actual `CameraMan` producer value plus a host projection of that value.
@@ -102,7 +104,8 @@ impl CameraStartupFields {
             rendering_override_fov(rendering)?
         };
         let override_enabled = override_fov.is_some();
-        let chosen_fov = override_fov.unwrap_or(frame_fov);
+        // PC port addition: Gameplay Settings' Field of View widens or narrows the game camera.
+        let chosen_fov = override_fov.unwrap_or(frame_fov) * crate::ui::options::field_of_view_scale();
         Ok(project_producer(
             camera_matrix,
             camera_previous_matrix,

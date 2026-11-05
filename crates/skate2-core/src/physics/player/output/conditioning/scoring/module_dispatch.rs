@@ -295,6 +295,7 @@ impl ScoreModule {
                     f.ground.deck_position,
                     f.offboard.player_matrix,
                     f.offboard.board_matrix,
+                    f.damped_system_up,
                     f.flipping,
                     f.front_flipping,
                     out,
@@ -419,6 +420,14 @@ impl ScoreModule {
             .flags_word
             & 0x8000_0000
             != 0;
+        // PC Skate 3 policy: an announced manual keeps its earned live score
+        // and multiplier until release. Idle ground still uses the native cap.
+        #[cfg(feature = "skate3-runtime")]
+        let manual_holds_line = self.states.skate3_enabled() && kind == Kind::Ground
+            && self.ground.published_value().is_some_and(|ground|
+                ground.manual_tracker.in_state && ground.manual_scorable.is_beginning_announced);
+        #[cfg(not(feature = "skate3-runtime"))]
+        let manual_holds_line = false;
         let state = self
             .reset_suffix
             .as_mut()
@@ -426,14 +435,14 @@ impl ScoreModule {
         // fctidz followed by the low-word load, then an unsigned comparison.
         let max_frames = (max_time * update_hz) as i64 as u32;
         let prevent_zero = in_sequence
-            && (kind != Kind::Ground
+            && (manual_holds_line || kind != Kind::Ground
                 || state.num_frames_ground_sequence_maintains_line < max_frames);
         let prevented = self
             .line_timer
             .published_value_mut()
             .ok_or(ScoreError::Missing("line"))?
             .decrement(MeterKind::Line, line_fraction, prevent_zero, dt)?;
-        state.num_frames_ground_sequence_maintains_line = if prevented && kind == Kind::Ground {
+        state.num_frames_ground_sequence_maintains_line = if prevented && kind == Kind::Ground && !manual_holds_line {
             state
                 .num_frames_ground_sequence_maintains_line
                 .wrapping_add(1)

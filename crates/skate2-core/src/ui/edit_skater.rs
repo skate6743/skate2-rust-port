@@ -31,7 +31,16 @@ pub enum EditSkaterMenu {
     WearStyles = 24,
     Filters = 25,
     BrandFilters = 26,
+    /// PC port: with Skate 3 data linked (`crate::skate3`), Slappy's Merchandise first asks
+    /// which game's clothing to show.
+    MerchandisePools = 27,
+    /// PC port: with Skate 3 data linked, the style menu's Skate 3 Physics row opens the Skate 3
+    /// physics mode's posture and style.
+    Skate3Physics = 28,
 }
+
+/// The menus, `EditSkaterMenu` values `0..MENU_COUNT`.
+const MENU_COUNT: usize = 29;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -133,6 +142,21 @@ pub enum EditSkaterOption {
     FilterBrands = 94,
     FilterLocked = 95,
     FilterDLC = 96,
+    /// PC port: the Merchandise Pools rows.
+    Skate2Merchandise = 97,
+    Skate3Merchandise = 98,
+    /// PC port: Skate 2 or Skate 3 gestures, with linked Skate 3 data.
+    GestureSet = 99,
+    /// PC port: Skate 3's skate style and posture (FrontEndState_CaC options 54 and 53), with
+    /// linked Skate 3 data. They change the Skate 3 physics mode's animation.
+    Skate3Style = 100,
+    Skate3Posture = 101,
+    /// PC port: the style menu's row into [`EditSkaterMenu::Skate3Physics`].
+    Skate3Physics = 102,
+    /// PC port: Skate 3's truck tightness and wheel hardness (FrontEndState_CaC options 47 and
+    /// 48), which the Skate 3 physics mode rides on in place of Skate 2's.
+    Skate3Trucks = 103,
+    Skate3Wheels = 104,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -148,6 +172,43 @@ impl EditSkaterOption {
     pub fn definition(self) -> OptionDefinition {
         use EditSkaterMenu as M;
         match self {
+            Self::GestureSet => OptionDefinition {
+                title: "#Gesture Set",
+                description: "#The gestures these rows set: Skate 2 physics plays the Skate 2 set, Skate 3 physics the Skate 3 set.",
+                submenu: None,
+                kind: "selector",
+            },
+            Self::Skate3Physics => OptionDefinition {
+                title: "#Skate 3 Physics",
+                description: "#The skate style, posture, trucks and wheels of the Skate 3 physics mode.",
+                submenu: Some(M::Skate3Physics),
+                kind: "option",
+            },
+            // Skate 3's own descriptions, from the linked data.
+            Self::Skate3Style => OptionDefinition {
+                title: "#Style",
+                description: "ID_CAC_EDIT_STYLE_DESC",
+                submenu: None,
+                kind: "selector",
+            },
+            Self::Skate3Posture => OptionDefinition {
+                title: "#Posture",
+                description: "ID_CAC_EDIT_POSTURE_DESC",
+                submenu: None,
+                kind: "selector",
+            },
+            Self::Skate3Trucks => OptionDefinition {
+                title: "ID_CAC_LABEL_TRUCK_TIGHTNESS",
+                description: "ID_CAC_LABEL_TRUCK_DESC",
+                submenu: None,
+                kind: "slider",
+            },
+            Self::Skate3Wheels => OptionDefinition {
+                title: "ID_CAC_LABEL_WHEEL_STIFFNESS",
+                description: "ID_CAC_LABEL_WHEEL_DESC",
+                submenu: None,
+                kind: "slider",
+            },
             Self::BackAlleyPete => OptionDefinition {
                 title: "ID_CAC_BACKALLEY_PETES_TITLE",
                 description: "ID_CAC_BACKALLEY_PETES_DESC",
@@ -730,6 +791,18 @@ impl EditSkaterOption {
                 submenu: None,
                 kind: "list",
             },
+            Self::Skate2Merchandise => OptionDefinition {
+                title: "#Skate 2",
+                description: "ID_CAC_SLAPPYS_MERCH_DESC",
+                submenu: Some(M::Slappys),
+                kind: "option",
+            },
+            Self::Skate3Merchandise => OptionDefinition {
+                title: "#Skate 3",
+                description: "ID_CAC_SLAPPYS_MERCH_DESC",
+                submenu: Some(M::Slappys),
+                kind: "option",
+            },
         }
     }
 }
@@ -764,6 +837,8 @@ impl EditSkaterMenu {
             Self::WearStyles => "ID_CAC_WEAR_STYLES_TITLE",
             Self::Filters => "ID_CAC_FILTERS_TITLE",
             Self::BrandFilters => "ID_CAC_BRAND_FILTERS_TITLE",
+            Self::MerchandisePools => "ID_CAC_SLAPPYS_MERCH_TITLE",
+            Self::Skate3Physics => "#Skate 3 Physics",
         }
     }
     pub const fn movie_mode(self) -> &'static str {
@@ -795,6 +870,8 @@ impl EditSkaterMenu {
             Self::WearStyles => "morph",
             Self::Filters => "list",
             Self::BrandFilters => "list",
+            Self::MerchandisePools => "list",
+            Self::Skate3Physics => "morph",
         }
     }
     pub const fn banner(self) -> &'static str {
@@ -826,6 +903,8 @@ impl EditSkaterMenu {
             Self::WearStyles => "slappys",
             Self::Filters => "slappys",
             Self::BrandFilters => "slappys",
+            Self::MerchandisePools => "slappys",
+            Self::Skate3Physics => "none",
         }
     }
     pub const fn initial_options(self) -> &'static [EditSkaterOption] {
@@ -916,6 +995,8 @@ impl EditSkaterMenu {
             Self::WearStyles => &[O::WearStylesColour, O::WearStylesStyle],
             Self::Filters => &[],
             Self::BrandFilters => &[],
+            Self::MerchandisePools => &[O::Skate2Merchandise, O::Skate3Merchandise],
+            Self::Skate3Physics => &[O::Skate3Posture, O::Skate3Style, O::Skate3Trucks, O::Skate3Wheels],
         }
     }
 }
@@ -975,9 +1056,9 @@ pub struct EditSkaterController {
     pub visible: bool,
     pub busy: bool,
     stack: Vec<EditSkaterMenu>,
-    indices: [usize; 27],
-    windows: [usize; 27],
-    options: [Vec<EditSkaterOption>; 27],
+    indices: [usize; MENU_COUNT],
+    windows: [usize; MENU_COUNT],
+    options: [Vec<EditSkaterOption>; MENU_COUNT],
     part_count: usize,
     dynamic_count: usize,
     pub category: Option<EditSkaterOption>,
@@ -992,6 +1073,13 @@ pub struct EditSkaterController {
     pub new_career: bool,
     /// The receipt list holds a part.
     pub receipt_pending: bool,
+    /// PC port: Skate 3 data is linked, so Merchandise opens [`EditSkaterMenu::MerchandisePools`].
+    pub skate3_merchandise: bool,
+    /// PC port: the Merchandise Pools row last chosen: Slappy's lists Skate 3's clothing.
+    pub skate3_pool: bool,
+    /// PC port: Skate 3 data is linked, so the style menu ends with the Gesture Set, Style and
+    /// Posture rows.
+    pub skate3_gestures: bool,
 }
 impl Default for EditSkaterController {
     fn default() -> Self {
@@ -999,8 +1087,8 @@ impl Default for EditSkaterController {
             visible: false,
             busy: false,
             stack: Vec::new(),
-            indices: [0; 27],
-            windows: [0; 27],
+            indices: [0; MENU_COUNT],
+            windows: [0; MENU_COUNT],
             options: std::array::from_fn(|_| Vec::new()),
             part_count: 0,
             dynamic_count: 0,
@@ -1011,6 +1099,9 @@ impl Default for EditSkaterController {
             cac_state: None,
             new_career: false,
             receipt_pending: false,
+            skate3_merchandise: false,
+            skate3_pool: false,
+            skate3_gestures: false,
         }
     }
 }
@@ -1022,6 +1113,11 @@ fn native_adjust(menu: EditSkaterMenu, option: EditSkaterOption) -> bool {
     matches!(
         option,
         O::EditTrucks
+            | O::GestureSet
+            | O::Skate3Style
+            | O::Skate3Posture
+            | O::Skate3Trucks
+            | O::Skate3Wheels
             | O::EditWheels
             | O::EditGestureUp
             | O::EditGestureRight
@@ -1090,6 +1186,12 @@ impl EditSkaterController {
         }
         self.stack.push(menu);
         self.options[menu as usize] = menu.initial_options().to_vec();
+        if menu == EditSkaterMenu::EditSkaterStyle && self.skate3_gestures {
+            // PC port: the gesture set after Stance, and Skate 3 Physics last, set apart.
+            let options = &mut self.options[menu as usize];
+            options.push(EditSkaterOption::GestureSet);
+            options.push(EditSkaterOption::Skate3Physics);
+        }
         if menu == EditSkaterMenu::EditSkaterMain && self.new_career {
             // SetScreenState82684eb0..826850cc: mSubState==1 rebuilds
             // menu9 with options33/34/35, omitting Pete's0 and Merchandise1.
@@ -1300,9 +1402,23 @@ impl EditSkaterController {
                     out.push(EditSkaterAction::AdjustOption { option, forward });
                 }
                 if input.select {
+                    // PC port: with Skate 3 data linked, Merchandise asks which game's clothing
+                    // Slappy's lists first.
+                    let submenu = match option {
+                        EditSkaterOption::SlappysMerch if self.skate3_merchandise => Some(EditSkaterMenu::MerchandisePools),
+                        EditSkaterOption::SlappysMerch => {
+                            self.skate3_pool = false;
+                            option.definition().submenu
+                        }
+                        EditSkaterOption::Skate2Merchandise | EditSkaterOption::Skate3Merchandise => {
+                            self.skate3_pool = option == EditSkaterOption::Skate3Merchandise;
+                            option.definition().submenu
+                        }
+                        _ => option.definition().submenu,
+                    };
                     if option == EditSkaterOption::WearStylesGraphic {
                         out.push(EditSkaterAction::ActivateOption(option));
-                    } else if let Some(submenu) = option.definition().submenu {
+                    } else if let Some(submenu) = submenu {
                         if submenu == EditSkaterMenu::PartThumbnails {
                             self.category = Some(option);
                             self.part_count = 0;

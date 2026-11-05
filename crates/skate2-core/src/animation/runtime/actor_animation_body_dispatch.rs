@@ -29,6 +29,9 @@ pub(crate) mod tree_commands;
 use tree_commands::{Fetch, TreeCommands};
 #[path = "actor_animation_reuse_body_jobs.rs"]
 mod reuse_jobs;
+#[cfg(feature="skate3-runtime")]
+#[path="actor_animation_history_commands.rs"]
+mod movement_history;
 
 pub(crate) trait BodyAnimationDispatchSource: ActorAnimationInitializeSource {
     fn body_command_manager(&mut self) -> Result<Arc<Mutex<FaceCommandManager>>, Self::Error>;
@@ -90,6 +93,10 @@ impl AnimationJobWork for BodyPoseWork {
             .lock()
             .map_err(|_| AnimationExecutionError::Lock)?;
         let result = match code {
+            AnimationJobCode::SetData => (|| {
+                let tree=self.tree.as_ref().ok_or(BindPoseError::MissingBindPose)?;
+                tree.load_external_range(&mut state.tree_sqts,&self.database.hierarchy,0..tree.external_sqts.len())
+            })(),
             AnimationJobCode::FetchVbr => (|| {
                 if let Some(tree) = &self.tree {
                     for (slot, fetch) in &tree.fetches {
@@ -226,6 +233,11 @@ impl<K, W> ActorAnimationConstruction<K, W> {
             || buffered.initiated_commands != 0
         {
             return Err(BindPoseError::AlreadyInCommands.into());
+        }
+        #[cfg(feature = "skate3-runtime")]
+        if self.mode_body_pose.is_some() || self.pc_gesture_playback.is_some() {
+            // One movement base plus the three native gesture hand channels.
+            buffered.max_set_replace_sqts=buffered.max_set_replace_sqts.max(4);
         }
         buffered.in_command_set += 1;
         buffered.last_body_cull_threshold = Some(
@@ -422,6 +434,7 @@ impl BufferedBodyCommands {
             .map_err(|_| ActorFaceError::Lock)?
             .synchronized = false;
         let tree_slots = tree.as_ref().map_or(0, TreeCommands::dynamic_count);
+        let has_set=tree.as_ref().is_some_and(|tree|!tree.external_sqts.is_empty());
         let has_blend = tree
             .as_ref()
             .is_some_and(|tree| !tree.operations.is_empty());
@@ -515,6 +528,9 @@ impl BufferedBodyCommands {
         } else {
             None
         };
+        let set=if has_set {
+            Some(next_job(self.set_pool.as_mut().ok_or(BindPoseError::BufferedOwnerRequired)?)?)
+        }else{None};
         let mut configured = vec![
             (
                 &fetch,
@@ -540,6 +556,7 @@ impl BufferedBodyCommands {
                 b"ACSsqtBlend".as_slice(),
             ));
         }
+        if let Some(set)=&set {configured.push((set,Some(AnimationJobCode::SetData),b"ACSsetData".as_slice()));}
         for (job, code, name) in configured {
             let mut job = job.lock().map_err(|_| ActorFaceError::Lock)?;
             job.entry_point = AnimationEntryPoint::new(code, Some(name));
@@ -560,6 +577,7 @@ impl BufferedBodyCommands {
             chain.push(blend);
         }
         chain.push(fetch);
+        if let Some(set)=set {chain.push(set);}
         let last = chain.len() - 1;
         let jobs = chain
             .into_iter()
@@ -582,9 +600,9 @@ impl BufferedBodyCommands {
             .as_ref()
             .ok_or(AnimationExecutionError::MissingBackend)?;
         self.body_pending.as_mut().expect("retained body").jobs = jobs;
-        backend.submit_body_tree(
+        backend.submit_body_tree_with_set(
             &self.body_pending.as_ref().expect("retained body").jobs,
-            has_blend,
+            has_blend,has_set,
         )?;
         self.body_pending.as_mut().expect("retained body").backend = Some(Arc::clone(backend));
         self.last_submitted.clone_from(&self.commands);
@@ -658,6 +676,7 @@ impl BufferedBodyCommands {
                 .clear_after_sync();
         }
         self.fetch_pool.as_mut().expect("fetch pool").current_job = 0;
+        if let Some(set)=&mut self.set_pool {set.current_job=0;}
         if let Some(blend) = &mut self.blend_pool {
             blend.current_job = 0;
         }
@@ -714,7 +733,35 @@ impl<K, W> crate::actor_animation_construction::ActorAnimationConstruction<K, W>
         use AnimationEvalError as E;
         match reference {
             R::Empty => Err(E::MissingOwner("ChannelBlend base animation")),
-            R::Body(root) => self.eval_body_reference(root, params, do_eval, commands),
+            R::Body(root) => {
+                #[cfg(feature = "skate3-runtime")]
+                let result=if let Some(pose)=self.mode_body_pose.clone() {
+                    let mut history=movement_history::HistoryCommands::<C::Error>::new();
+                    self.eval_body_reference(root,params,true,&mut history)?;
+                    if do_eval {
+                        commands.external_sqt(&pose).ok_or(E::MissingOwner("Actor movement SetData"))?.map_err(E::Command)?;
+                        true
+                    }else{false}
+                }else{self.eval_body_reference(root,params,do_eval,commands)?};
+                #[cfg(not(feature = "skate3-runtime"))]
+                let result=self.eval_body_reference(root,params,do_eval,commands)?;
+                #[cfg(feature = "skate3-runtime")]
+                if result && do_eval && let Some(runtime)=self.pc_gesture_playback.as_mut() {
+                    let poses=runtime.evaluate(params.blend_cull_threshold)
+                        .map_err(|_|E::MissingOwner("Skate 3 gesture evaluation"))?;
+                    for channel in poses {
+                        let source=crate::actor_animation_construction::initialization::bind_pose::sqt_output::OwnedAnimationSqtBuffer::allocate_unknown(channel.pose.len());
+                        let values=channel.pose.iter().map(|sqt|skate2_formats::andale::AndaleSqt {
+                            scale:sqt.scale,rotation:sqt.rotation,translation:sqt.translation,
+                        }).collect::<Vec<_>>();
+                        source.extract(&values).and_then(|()|source.complete_sync())
+                            .map_err(|_|E::MissingOwner("Skate 3 gesture SQT publication"))?;
+                        commands.external_sqt(&source).ok_or(E::MissingOwner("Actor gesture SetData"))?.map_err(E::Command)?;
+                        commands.channel_blend(channel.influence,channel.weights_from_channel).map_err(E::Command)?;
+                    }
+                }
+                Ok(result)
+            },
             R::Channel(index) => {
                 let channels = self
                     .initialization
@@ -731,6 +778,12 @@ impl<K, W> crate::actor_animation_construction::ActorAnimationConstruction<K, W>
                 if coefficient > 1.0 || coefficient < 0.0 {
                     return Err(E::InvalidCoefficient);
                 }
+                #[cfg(feature = "skate3-runtime")]
+                let allow_channel=self.mode_body_pose.is_none() ||
+                    [b"GestureBoth".as_slice(),b"GestureLeft",b"GestureRight"].iter().any(|name|
+                        channels.dictionary.get(&ActorGraphIntents::native_name(name))==Some(index));
+                #[cfg(not(feature = "skate3-runtime"))]
+                let allow_channel=true;
                 let runtime = channel
                     .runtime
                     .as_ref()
@@ -743,6 +796,14 @@ impl<K, W> crate::actor_animation_construction::ActorAnimationConstruction<K, W>
                     .as_mut()
                     .and_then(|state| state.channels.as_mut())
                     .ok_or(E::MissingOwner("channels"))?;
+                #[cfg(feature="skate3-runtime")]
+                if !allow_channel {
+                    let mut history=movement_history::HistoryCommands::<C::Error>::new();
+                    super::super::channel_runtime::transition::eval(
+                        channels.channels.get_mut(*index).ok_or(E::MissingOwner("channel"))?,
+                        &mut channels.trees,params,true,&mut history)?;
+                    return Ok(first);
+                }
                 let second = super::super::channel_runtime::transition::eval(
                     channels
                         .channels
@@ -750,9 +811,10 @@ impl<K, W> crate::actor_animation_construction::ActorAnimationConstruction<K, W>
                         .ok_or(E::MissingOwner("channel"))?,
                     &mut channels.trees,
                     params,
-                    do_eval && coefficient > 0.0,
+                    do_eval && coefficient > 0.0 && allow_channel,
                     commands,
                 )?;
+                let second=second&&allow_channel;
                 if do_eval && coefficient > 0.0 && first && second {
                     commands
                         .channel_blend(coefficient, false)

@@ -131,8 +131,21 @@ impl Conditioners {
                 }
             }
         }
+        #[cfg(feature = "skate3-runtime")]
+        let skate3_landing_grade = if module.states.skate3_enabled() && out.air_finished
+            && out.air_finished_data.just_landed && out.air_finished_data.landed_succesfully
+            && !out.just_wiped_out && !out.wipeout_interrupted_trick {
+            use crate::ui::trick_backend::LandingGrade;
+            if out.air_finished_data.landing_was_sketchy { Some(LandingGrade::Sketchy) }
+            else if module.holder.published_value().ok_or(ScoreError::Missing("landing HUD holder"))?
+                .lock().map_err(|_|ScoreError::Poisoned)?.skate3_clean_landing { Some(LandingGrade::Clean) }
+            else { None }
+        } else { None };
+        #[cfg(not(feature = "skate3-runtime"))]
+        let skate3_landing_grade = None;
         Ok(PhysicsFrame {
             backend_commands:Vec::new(),
+            skate3_landing_grade,
             hom,
             context_entries, simulation_rate: 0., // selected world supplies its actual update rate
             begun, converted, ended_count: out.tricks_ended.num_entries as u32,

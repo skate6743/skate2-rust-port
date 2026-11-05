@@ -10,6 +10,12 @@
 //! `grey` frame and the voice icons hide.
 //! ActionScript ignores sets and calls on absent members, so lookups of rows the movie does
 //! not author do nothing.
+//!
+//! PC port: a linked Skate 3 data folder's 1-Ups show Skate 3's own letters, as its
+//! `leaderboardhud` does for its `eLeaderBoardHUD_1up` layout: each row's `mUp` (character 163
+//! of `Assets::skate3_hud`'s leaderboard, labels `0` to `3`) in place of its `mSkate` (character
+//! 154), here placed and sized as Skate 3 places it over the S.K.A.T.E. strip, over this
+//! board's `mcSkate` rows.
 use std::collections::BTreeMap;
 
 use super::{
@@ -21,10 +27,22 @@ use super::{
     tutorial_movie::set_height,
 };
 use crate::gpu_renderer::RenderResult;
-use skate2_core::challenge::{leaderboard_hud::LeaderboardHud, system::MissionTitle, turn_hud::TurnHudView};
-use skate2_formats::{apt::Character, localization::string_hash};
+use skate2_core::{
+    challenge::{leaderboard_hud::LeaderboardHud, system::MissionTitle, turn_hud::TurnHudView},
+    ui::apt_timeline::concatenate,
+};
+use skate2_formats::{
+    apt::{Character, Matrix},
+    localization::string_hash,
+};
 
 pub(super) const ASSET: usize = 57;
+
+/// Skate 3's `leaderboardhud` rows' `mSkate` and `mUp` characters.
+const SKATE3_SKATE_LETTERS: u32 = 154;
+const SKATE3_ONE_UP_LETTERS: u32 = 163;
+/// The depth of the letter board's first Skate 3 `mUp` row, past all it authors.
+const SKATE3_LETTERS_DEPTH: i32 = 0x4000;
 
 /// The `eLeaderBoardHUD` layouts the class tests.
 const LAYOUT_ONE_UP: i32 = 1;
@@ -74,6 +92,10 @@ pub(super) struct LeaderboardMovie {
     switch_goofy_regular: bool,
     /// `mNameArray`.
     names: Vec<String>,
+    /// Whether the rows show Skate 3's letters, and the transform from Skate 3's letter strips
+    /// into this board's `mcSkate` rows once made.
+    skate3_letters: bool,
+    skate3_letters_transform: Option<Matrix>,
 }
 
 impl LeaderboardMovie {
@@ -94,6 +116,8 @@ impl LeaderboardMovie {
             use_variant: false,
             switch_goofy_regular: false,
             names: Vec::new(),
+            skate3_letters: false,
+            skate3_letters_transform: None,
         };
         movie.calls()?;
         Ok(movie)
@@ -141,18 +165,22 @@ impl LeaderboardMovie {
     /// updates the voice icons.
     pub fn set_state(&mut self, assets: &Assets, state: i32, view: &TurnHudView, title: &MissionTitle) -> RenderResult<()> {
         let data = || match view {
-            TurnHudView::Leaderboard { data, stance_regular, online } => Ok((data, *stance_regular, *online)),
+            TurnHudView::Leaderboard { data, stance_regular, online, skate3_letters } => {
+                Ok((data, *stance_regular, *online, *skate3_letters && assets.skate3_hud.is_some()))
+            }
             _ => Err(format!("leaderboard HUD state {state} without leaderboard data")),
         };
         match state {
             1 => self.show(true),
             2 => self.show(false),
             3 => {
-                let (data, regular, online) = data()?;
+                let (data, regular, online, skate3_letters) = data()?;
+                self.skate3_letters = skate3_letters;
                 self.setup_screen(assets, data, regular, online, title)?;
             }
             4 | 5 => {
-                let (data, regular, _) = data()?;
+                let (data, regular, _, skate3_letters) = data()?;
+                self.skate3_letters = skate3_letters;
                 self.refresh_all(assets, data, regular)?;
             }
             6 => self.update_voip_icons(),
@@ -251,7 +279,7 @@ impl LeaderboardMovie {
             }
         }
         if throwdown {
-            return Ok(());
+            return self.refresh_visibility_of_skate3_letters();
         }
         if count < ROWS {
             hud.named(&["mcStrip7"])?.visible = true;
@@ -284,7 +312,9 @@ impl LeaderboardMovie {
                     None => f32::NAN,
                 };
                 let letters = ["0", "1", "2", "3", "4", "5"][usize::try_from(player.int_var.clamp(0, 5)).unwrap_or(0)];
-                if let Some(skate) = find(&mut self.root, &["mcThrowdownHUD", &format!("mcSkate{i}")]) {
+                if self.shows_skate3_letters() {
+                    self.set_skate3_letters(assets, i, letters)?;
+                } else if let Some(skate) = find(&mut self.root, &["mcThrowdownHUD", &format!("mcSkate{i}")]) {
                     skate.goto(assets, letters)?;
                 }
                 self.update_highlight(assets, true, i, player.highlighted, player.int_var);
@@ -399,6 +429,61 @@ impl LeaderboardMovie {
             }
         }
         self.last_color.insert(row, colour);
+    }
+
+    /// Whether the letter board's rows show Skate 3's 1-Up letters.
+    fn shows_skate3_letters(&self) -> bool {
+        self.skate3_letters && self.layout_type == LAYOUT_ONE_UP
+    }
+
+    /// The row's Skate 3 `mUp` at `letters`, made over its `mcSkate` row when absent; Skate 3's
+    /// `SetupScreen` hides the S.K.A.T.E. letters it replaces.
+    fn set_skate3_letters(&mut self, assets: &Assets, row: i32, letters: &str) -> RenderResult<()> {
+        let Some(hud) = assets.skate3_hud else { return Ok(()) };
+        let transform = match self.skate3_letters_transform {
+            Some(transform) => transform,
+            None => {
+                let transform = skate3_letters_transform(assets, hud.leaderboard, &mut self.root)?;
+                self.skate3_letters_transform = Some(transform);
+                transform
+            }
+        };
+        let depth = SKATE3_LETTERS_DEPTH + row;
+        let board = self.root.named(&["mcThrowdownHUD"])?;
+        let made = board.children.contains_key(&depth);
+        let Some(skate) = find_child(board, &format!("mcSkate{row}")) else { return Ok(()) };
+        skate.clip.visible = false;
+        if !made {
+            let mut entry = skate.entry.clone();
+            entry.matrix = concatenate(entry.matrix, transform);
+            entry.name = Some(format!("mcUp{row}"));
+            let clip = Clip::new(assets, hud.leaderboard, SKATE3_ONE_UP_LETTERS)?;
+            board.children.insert(depth, Child { entry, clip });
+        }
+        let Some(up) = board.children.get_mut(&depth) else { return Ok(()) };
+        up.clip.visible = true;
+        up.clip.goto(assets, letters)
+    }
+
+    /// The Skate 3 letters' rows follow the count as the `mcSkate` rows do, which they keep
+    /// hidden; a board without them removes any.
+    fn refresh_visibility_of_skate3_letters(&mut self) -> RenderResult<()> {
+        let skate3 = self.shows_skate3_letters();
+        let count = self.num_players;
+        let board = self.root.named(&["mcThrowdownHUD"])?;
+        if !skate3 {
+            board.children.retain(|&depth, _| depth < SKATE3_LETTERS_DEPTH);
+            return Ok(());
+        }
+        for i in 0..ROWS {
+            if let Some(skate) = find_child(board, &format!("mcSkate{i}")) {
+                skate.clip.visible = false;
+            }
+            if let Some(up) = board.children.get_mut(&(SKATE3_LETTERS_DEPTH + i)) {
+                up.clip.visible = i < count;
+            }
+        }
+        Ok(())
     }
 
     /// `UpdatePlayerTurn(true, position, playerTurn)`, which only the letter board calls: a
@@ -621,6 +706,20 @@ fn height(piece: &Child, assets: &Assets) -> RenderResult<f32> {
 }
 
 /// A member, `None` (`undefined`) when absent.
+/// The transform from Skate 3's letter strips into this board's `mcSkate` rows: Skate 3's
+/// `mSkate` S.K.A.T.E. letters (where its `mUp` sits) scaled and moved onto this board's, at
+/// their first frames.
+fn skate3_letters_transform(assets: &Assets, skate3: usize, root: &mut Clip) -> RenderResult<Matrix> {
+    let skate = root.named(&["mcThrowdownHUD", "mcSkate0"])?;
+    let ours = bounds(&Clip::new(assets, skate.asset, skate.character)?, assets)?.ok_or("letter board's letters without bounds")?;
+    let theirs = bounds(&Clip::new(assets, skate3, SKATE3_SKATE_LETTERS)?, assets)?.ok_or("Skate 3's letters without bounds")?;
+    let scale = (ours.bottom - ours.top) / (theirs.bottom - theirs.top);
+    if !scale.is_finite() || scale <= 0. {
+        return Err("Skate 3's letters without height".into());
+    }
+    Ok(Matrix { a: scale, b: 0., c: 0., d: scale, tx: theirs.left.mul_add(-scale, ours.left), ty: theirs.top.mul_add(-scale, ours.top) })
+}
+
 pub(super) fn find_child<'a>(clip: &'a mut Clip, name: &str) -> Option<&'a mut Child> {
     clip.children.values_mut().find(|c| c.entry.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name)))
 }

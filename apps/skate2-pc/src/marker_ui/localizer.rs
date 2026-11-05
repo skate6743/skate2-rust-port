@@ -21,7 +21,12 @@ pub(super) fn packed_string(assets: &Assets, label: &[u8]) -> Vec<u16> {
 
 /// `GetPackedString` for a label's hash.
 fn packed_hash(assets: &Assets, label: u32) -> Vec<u16> {
-    assets.localized.get(&label).cloned().unwrap_or_else(|| vec![u16::from(b' ')])
+    assets
+        .localized
+        .get(&label)
+        .cloned()
+        .or_else(|| super::assets::skate3_label(label))
+        .unwrap_or_else(|| vec![u16::from(b' ')])
 }
 
 /// `mLanguageDetails.mNumberFormatting` from `SetupNumberFormat`

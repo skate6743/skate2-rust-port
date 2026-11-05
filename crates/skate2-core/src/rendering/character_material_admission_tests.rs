@@ -102,6 +102,7 @@ fn empty_mesh_scene() -> Arc<CharacterScene> {
                         }],
                         anti_frustums: Vec::new(),
                         emitter_waypoints: Vec::new(),
+                        visual_indicators: Vec::new(),
                     },
                 }],
             }],

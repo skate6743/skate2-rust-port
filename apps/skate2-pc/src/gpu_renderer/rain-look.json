@@ -1,0 +1,46 @@
+{
+  "format": "skate-underground-rain",
+  "version": 1,
+  "units": {
+    "distance": "metres",
+    "time": "seconds",
+    "density": "drops per 1000 cubic metres",
+    "up_axis": "Y"
+  },
+  "saved_at": "2026-10-21T03:22:12.269046+00:00",
+  "rain": {
+    "density": 10.4,
+    "speed": 18.0,
+    "length": 0.446,
+    "width": 0.0288,
+    "opacity": 0.225,
+    "wind_x": 1.45,
+    "wind_z": -0.58,
+    "radius": 40.0,
+    "height": 23.2,
+    "color": [
+      0.72,
+      0.79,
+      0.86
+    ]
+  },
+  "surfaces": {
+    "enabled": true,
+    "wetness": 0.639,
+    "puddles": 0.306,
+    "size": 3.5,
+    "reflections": 0.41200000000000003,
+    "ripples": 1.0
+  },
+  "preview": {
+    "brightness": 1.06,
+    "roof_occlusion": true,
+    "camera_position": [
+      12.90012001573184,
+      0.48892675271599195,
+      8.140953156576899
+    ],
+    "camera_yaw": 221.87999999999758,
+    "camera_pitch": -2.160000000000064
+  }
+}

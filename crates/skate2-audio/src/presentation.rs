@@ -43,6 +43,10 @@ pub struct PhysOutView {
     /// `mAverageLeftLegSpeedLocal`, right leg, left arm, right arm.
     pub average_limb_speed: [f32; 4],
     pub is_wipeout_over: bool,
+    /// PC port: a Skate 3 physics darkcatch (TU3 `PhysOut_State` +0x50).
+    pub skate3_dark_catch: bool,
+    /// PC port: the skater runs Skate 3 physics.
+    pub skate3_physics: bool,
     pub is_left_foot_on_deck: bool,
     pub is_right_foot_on_deck: bool,
     pub is_grabbing_left: bool,
@@ -119,6 +123,11 @@ pub struct PhysOutView {
     pub banked_point_change_this_frame: i32,
     pub audio_banked_point_change: i32,
     pub raw_scorable_id: i32,
+    /// The scorable's (AudioTrickType, AudioTrickFinishType, AudioIsTrickWithScrape) when the
+    /// host resolves it from another Vault (Skate 3 physics); otherwise read from this Vault.
+    pub scorable_audio: Option<(i32, i32, bool)>,
+    /// PC port: the raw scorable exists only in the linked Skate 3 data.
+    pub skate3_only_scorable: bool,
     /// `PhysOut_OffBoard`.
     pub left_foot_surface_id: u32,
     pub right_foot_surface_id: u32,
@@ -162,6 +171,12 @@ pub struct SkaterData {
     pub wheel_hardness: bool,
     pub is_wipe_out_over: bool,
     pub is_wiping_out: bool,
+    /// TU3 SkaterData +0x98 bit 0x20 (`SFXCTL_PlayerPhysics` +0x301).
+    pub skate3_dark_catch: bool,
+    /// PC port: the trick is a Skate 3-only scorable, whose audio types name TU3's sounds.
+    pub skate3_only_trick: bool,
+    /// PC port: the skater runs Skate 3 physics.
+    pub skate3_physics: bool,
     pub right_foot_on_deck: bool,
     pub left_foot_on_deck: bool,
     pub deck_in_contact: bool,
@@ -355,12 +370,19 @@ pub fn fill_skater_data(
     if id != -1 {
         data.is_performing_trick = true;
         data.is_hippy_jump = id == 234;
-        let key = skate2_formats_key(scorable_id_string(id));
-        let collection = Collection::new(SCORABLE_CLASS, key);
-        if vault.has_collection(collection) {
-            data.trick_type = vault.layout_word(collection, 41) as i32;
-            data.trick_finish_type = vault.layout_word(collection, 43) as i32;
-            data.is_trick_with_scrape = vault.layout_word(collection, 44) >> 24 != 0;
+        data.skate3_only_trick = view.skate3_only_scorable;
+        if let Some((trick, finish, scrape)) = view.scorable_audio {
+            data.trick_type = trick;
+            data.trick_finish_type = finish;
+            data.is_trick_with_scrape = scrape;
+        } else {
+            let key = skate2_formats_key(scorable_id_string(id));
+            let collection = Collection::new(SCORABLE_CLASS, key);
+            if vault.has_collection(collection) {
+                data.trick_type = vault.layout_word(collection, 41) as i32;
+                data.trick_finish_type = vault.layout_word(collection, 43) as i32;
+                data.is_trick_with_scrape = vault.layout_word(collection, 44) >> 24 != 0;
+            }
         }
     }
     data.wheel_pos = view.wheel_pos;
@@ -375,6 +397,8 @@ pub fn fill_skater_data(
     data.skeleton_collision_info = view.averaged_skeleton_collision_info;
     data.is_wiping_out = view.is_wiping_out;
     data.is_wipe_out_over = view.is_wipeout_over;
+    data.skate3_dark_catch = view.skate3_dark_catch;
+    data.skate3_physics = view.skate3_physics;
     data.front_truck_in_contact = view.is_front_truck_in_contact;
     data.back_truck_in_contact = view.is_back_truck_in_contact;
     data.deck_in_contact = view.is_deck_in_contact;

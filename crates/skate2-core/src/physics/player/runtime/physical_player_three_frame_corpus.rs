@@ -814,27 +814,29 @@ fn check_mode(
                 scripted_release_completed = true;
             }
         }
-        assert!(Arc::ptr_eq(&completed.before.update1.owner, &owner));
-        assert!(Arc::ptr_eq(&completed.before.update3.owner, &owner));
+        let before = completed.before.as_ref().expect("ground pre-solve completed");
+        let hands = completed.hands.as_ref().expect("hands/face published");
+        let after = completed.after.as_ref().expect("ground animation completed");
+        assert!(Arc::ptr_eq(&before.update1.owner, &owner));
+        assert!(Arc::ptr_eq(&before.update3.owner, &owner));
         assert_eq!(
-            completed.before.grind_policy,
+            before.grind_policy,
             GroundPreparationGrindPolicy::ParkedByUser
         );
         assert_eq!(completed.report.processed_assemblies, 2);
         for pose in [
-            &completed.hands.left,
-            &completed.hands.right,
-            &completed.hands.face,
+            &hands.left,
+            &hands.right,
+            &hands.face,
         ] {
             assert!(
                 !pose.read().unwrap().1.is_empty(),
                 "LOD0 must publish synchronized presentation inputs"
             );
         }
-        assert!(Arc::ptr_eq(&completed.after.owner, &owner));
+        assert!(Arc::ptr_eq(&after.owner, &owner));
         assert!(
-            completed
-                .after
+            after
                 .animation
                 .matches_output(&owner.phys_out().lock().unwrap())
         );

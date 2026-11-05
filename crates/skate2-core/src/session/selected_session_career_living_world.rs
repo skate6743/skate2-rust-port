@@ -574,7 +574,7 @@ impl Owners<'_, '_> {
             Some(id) => {
                 let triggers = self.frame.triggers.lock().map_err(|_| "trigger lock")?;
                 let Some(record) = triggers
-                    .try_find_volume_id((id as f64) as f32)
+                    .try_find_volume_id(crate::skate3::id_float(id))
                     .map_err(|e| format!("cull trigger lookup: {e:?}"))?
                 else {
                     return Ok(());

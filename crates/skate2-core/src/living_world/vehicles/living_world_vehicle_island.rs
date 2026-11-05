@@ -221,6 +221,24 @@ impl<C> SimulationAssemblyConstraintSession<AssemblyPartMaterial, C> {
             .try_live_part_velocities_host(&self.backend, part)
             .map_err(|e| format!("pedestrian Part body velocities: {e:?}"))
     }
+    /// `Body::SetVelocity` on Part `part` of a pedestrian collision body (TU3's shove, 0x82e38cc0).
+    pub(crate) fn try_set_pedestrian_collision_part_velocity(&mut self, handle: &SimulationDmoAssemblyHandle,
+        part: usize, velocity: [f32; 3],
+    ) -> Result<(), String> {
+        self.living_world_body_member_for_contacts(LivingWorldBodyKind::Pedestrian, handle)
+            .map_err(|e| format!("pedestrian velocity membership: {e:?}"))?;
+        let candidate = self.pedestrians.as_ref().ok_or("pedestrian pool absent")?
+            .island_body(handle).ok_or("pedestrian body absent")?;
+        candidate.parts.try_set_body_part_velocity(&mut self.backend, part, velocity)
+            .map_err(|e| format!("pedestrian Body.SetVelocity: {e:?}"))
+    }
+    /// PC port (Skate 3 physics): the Part of a pedestrian collision Body that a rigid body is.
+    pub(crate) fn pedestrian_body_part(&self, handle: &SimulationDmoAssemblyHandle,
+        body: crate::simulation_rigid_body_pool::SimulationRigidBodyObservation,
+    ) -> Option<u32> {
+        let publication = self.pedestrians.as_ref()?.publication(handle)?;
+        u32::try_from(publication.rigid_bodies().iter().position(|candidate| *candidate == body)?).ok()
+    }
     /// DynamicObject.GetPartAngularVelocity82d2ab68 reads the HiLOD world
     /// collision body's Part `part` RigidBody mOmega (+0x30).
     pub(crate) fn try_dmo_collision_part_velocities(&self, handle: &SimulationDmoAssemblyHandle,

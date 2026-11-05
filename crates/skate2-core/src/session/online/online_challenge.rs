@@ -74,8 +74,10 @@ const GM_ONLINE_FREE_SKATE: u32 = 4;
 /// `eChallengeTypes` S.K.A.T.E. and Own the Spot (the online Spot Battle).
 const SKATE: i32 = 4;
 const OWN_THE_SPOT: i32 = 9;
-/// PC port (user request): the longest a wipeout runs in their online rounds before its respawn.
+/// PC port (user request): the longest a wipeout runs in their online rounds before its respawn:
+/// S.K.A.T.E.'s, then Spot Battle's.
 const TURN_BAIL_LIMIT: f32 = 5.0;
+const SPOT_BATTLE_BAIL_LIMIT: f32 = 4.0;
 /// PC port (user request): a player waiting through another's turn whose skater shows farther
 /// than this from the spot the challenge put them on (x and z) is not drawn on this console, so
 /// skating around through others' turns shows nothing to anyone; their own console still shows
@@ -204,6 +206,9 @@ pub(super) struct Round {
     /// The freeskate activity the round plays (`mActivityKey`), whose objective groups each read
     /// their own player.
     activity: Option<crate::online::activities::Activity>,
+    /// PC port: a linked Skate 3 data folder's game that runs Skate 3's own state graph, whose
+    /// objective groups each read their own player too (`crate::skate3`).
+    own_graph: bool,
     pub(super) stage: Stage,
     /// The players by challenge index (`GameReset`'s table).
     players: Vec<u64>,
@@ -238,8 +243,9 @@ pub(super) struct Round {
     contributors: u8,
     /// S.K.A.T.E., Spot Battle, Hall of Meat and 1-Up: one player plays at a time.
     turn_based: bool,
-    /// S.K.A.T.E. and Spot Battle: a wipeout lasts at most `TURN_BAIL_LIMIT` (PC port).
-    bail_limited: bool,
+    /// S.K.A.T.E. and Spot Battle: the longest a wipeout lasts (`TURN_BAIL_LIMIT`,
+    /// `SPOT_BATTLE_BAIL_LIMIT`; PC port).
+    bail_limit: Option<f32>,
     /// Each player's waiting spot in a turn-based round, by player index (PC port).
     spots: [Option<Spot>; MAX_PLAYERS],
     /// S.K.A.T.E.: a round that waits [`STALL_TICKS`] at a tick for one other player's facts
@@ -311,6 +317,7 @@ impl Round {
             session,
             challenge,
             activity,
+            own_graph: false,
             stage: Stage::Loading { sent: false },
             players,
             local,
@@ -328,7 +335,7 @@ impl Round {
             stalls: 0,
             contributors: u8::MAX,
             turn_based,
-            bail_limited: false,
+            bail_limit: None,
             spots: [None; MAX_PLAYERS],
             stall_reports: false,
             awaiting: None,
@@ -854,7 +861,10 @@ impl<T, C> SelectedLiveSession<T, C> {
         let activity = if activity == 0 { None } else { Some(self.online_round_activity(activity)?) };
         let challenge = activity.as_ref().map_or(location, |activity| activity.key);
         let game_type = if activity.is_some() { Some(crate::online::activities::CHALLENGE_TYPE) } else { catalog::game_challenge_type(net_type) };
-        let scope = game_type.map_or(FactsScope::ALL, FactsScope::for_challenge_type);
+        // A Skate 3 game that runs Skate 3's own graph reads what Skate 2's challenge of its type
+        // does not: its facts go whole.
+        let own_graph = activity.is_none() && crate::skate3::linked().is_some_and(|data| data.runs_own_graph(challenge));
+        let scope = if own_graph { FactsScope::ALL } else { game_type.map_or(FactsScope::ALL, FactsScope::for_challenge_type) };
         let stance = Arc::new(Mutex::new([true; MAX_PLAYERS]));
         let backend = self.online_players_backend(&players, local, &stance)?;
         let local = i32::try_from(local).unwrap_or(0);
@@ -863,8 +873,13 @@ impl<T, C> SelectedLiveSession<T, C> {
         trace(format_args!("loading challenge {challenge:016x} as player {local} of {}", players.len()));
         let turn_based = game_type.is_some_and(|kind| matches!(kind, 4 | 9 | 31 | 32));
         let mut round = Round::loading(session, challenge, activity, players, local, scope, turn_based, stance);
-        round.bail_limited = game_type.is_some_and(|kind| matches!(kind, SKATE | OWN_THE_SPOT));
+        round.bail_limit = match game_type {
+            Some(SKATE) => Some(TURN_BAIL_LIMIT),
+            Some(OWN_THE_SPOT) => Some(SPOT_BATTLE_BAIL_LIMIT),
+            _ => None,
+        };
         round.stall_reports = game_type == Some(SKATE);
+        round.own_graph = own_graph;
         self.online.round = Some(round);
         Ok(())
     }
@@ -932,10 +947,11 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
 
     /// PC port (user request): in an online round of S.K.A.T.E. or Spot Battle a wipeout lasts at
-    /// most [`TURN_BAIL_LIMIT`] before its respawn, so Hall of Meat moves that keep the body going
-    /// cannot hold the next player's turn; elsewhere the original's timing holds.
+    /// most [`TURN_BAIL_LIMIT`] or [`SPOT_BATTLE_BAIL_LIMIT`] before its respawn, in either physics,
+    /// so Hall of Meat moves that keep the body going cannot hold the next player's turn;
+    /// elsewhere the original's timing holds.
     pub(in super::super) fn sync_turn_bail_limit(&mut self) -> Result<(), SelectedLiveError> {
-        let limit = self.online.round.as_ref().filter(|round| round.bail_limited).map(|_| TURN_BAIL_LIMIT);
+        let limit = self.online.round.as_ref().and_then(|round| round.bail_limit);
         if limit == self.online.turn_bail_limit {
             return Ok(());
         }
@@ -951,9 +967,10 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
 
     /// Whether the round's objective groups each read their own player's state, every player's
-    /// on every console: a freeskate activity's.
+    /// on every console: a freeskate activity's, and a Skate 3 game's that runs Skate 3's own
+    /// graph (its 1-Up gives each competitor an objective group).
     pub(in super::super) fn online_round_per_player_objectives(&self) -> bool {
-        self.online.round.as_ref().is_some_and(|round| round.activity.is_some())
+        self.online.round.as_ref().is_some_and(|round| round.activity.is_some() || round.own_graph)
     }
 
     /// `GameReset(Challenge)` (`HandleLobbySkateReset` 0x82776f90): `PopAllStates`, then
@@ -1010,7 +1027,18 @@ impl<T, C> SelectedLiveSession<T, C> {
             on_board: true,
             session_marker: false,
         });
-        Ok(())
+        self.online_fresh_scoring()
+    }
+
+    /// The scoring of the new skater native online spawns (`ScoreModule`'s constructor ends with
+    /// its `Reset`): the port keeps the local skater, so its scoring, the momentum meter's
+    /// multiplier among it, resets at the next conditioner update as `SetResetScoring` resets it.
+    /// Nothing of lobby skate's lines carries into the challenge, nor of one contest round's
+    /// into the next.
+    fn online_fresh_scoring(&self) -> Result<(), SelectedLiveError> {
+        let input = self.inner.bound_input.as_ref().ok_or_else(|| error("input absent"))?;
+        let settings = &self.inner.player.as_ref().ok_or_else(|| error("player absent"))?.selected.owners.services.settings;
+        settings.try_set_scoring(input.player_index(), |scoring| scoring.reset_scoring = true).map_err(error)
     }
 
     /// `PlayerUI::ResetPlayer` after its spawn command: the game's new session marker is not
@@ -1864,8 +1892,11 @@ impl<T, C> SelectedLiveSession<T, C> {
 
     /// `StateOnlineGame::OnMessage`'s sync point completion (0x8276b9cc): `kPAUSE_STATE_ONLINE`
     /// pulled and `Net::ResumeGame` (the round runs again), the local skater's `cMsgTeleport` to
-    /// its spawn point (the `cMsgSetPlayer` before it reaches only Party Play's UI), then
-    /// `cMsgOnlineSyncComplete`, which every console's next challenge tick delivers.
+    /// its spawn point, then `cMsgOnlineSyncComplete`, which every console's next challenge tick
+    /// delivers. Before the teleport the original sends `cMsgSpawnPlayer` (kind `0x4D9828B9`,
+    /// through the folded `SendMsg<cMsgSetPlayer>`) for the round's start location: spawn command 3
+    /// (`PlayerUI::ReceiveSpawnMsg` 0x828ac8b0), so `SkaterManager::OnCommand` destroys the skater
+    /// and spawns a new one. The port keeps its skater, as it does for `PlayerUI::ResetPlayer`.
     fn online_sync_point_complete(&mut self) -> Result<(), SelectedLiveError> {
         let Some(state) = self.online.round.as_mut() else { return Ok(()) };
         let Some(sync) = state.sync.take() else { return Ok(()) };
@@ -1888,6 +1919,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
         if let Some(spawn) = sync.spawn {
             self.online_sync_teleport(spawn)?;
+            self.online_fresh_scoring()?;
         }
         if let Some(career) = self.career.as_mut() {
             career.online_sync_complete(challenge);
@@ -2017,13 +2049,19 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
 
     /// `GetOnlineChallengeInstanceData`'s challenge `Title` and its global data's
-    /// `ChallengeIcon` `fe_map_icons` name.
+    /// `ChallengeIcon` `fe_map_icons` name, from the challenge system that runs the round (whose
+    /// database holds a linked Skate 3 game's challenge, [`crate::skate3`]).
     fn online_challenge_presentation(&mut self, challenge: u64) -> Result<(String, String), SelectedLiveError> {
         const TITLE: u64 = 0xE2A5_0788_B6C2_0C92;
         const GLOBAL_DATA: u64 = 0x2449_1BF0_0316_AA45;
         const CHALLENGE_ICON: u64 = 0xE616_ACDF_5A36_BFAC;
-        self.online_data()?;
-        let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+        let db = match self.career.as_ref() {
+            Some(career) => Arc::clone(&career.system.world().db),
+            None => {
+                self.online_data()?;
+                Arc::clone(&self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?.0)
+            }
+        };
         let title = db.attribute(crate::challenge::keys::class::CHALLENGES, challenge, TITLE).and_then(|value| value.text(0)).unwrap_or_default().to_owned();
         let icon = db
             .attribute(crate::challenge::keys::class::CHALLENGES, challenge, GLOBAL_DATA)

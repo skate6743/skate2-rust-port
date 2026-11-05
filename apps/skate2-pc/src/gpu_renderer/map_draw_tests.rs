@@ -690,6 +690,7 @@ fn ported_effects_validate_and_draw_on_an_available_adapter() {
         .expect("sky material");
     map.push_sky(
         &mesh,
+        EnvironmentEffect::Sky,
         sky_material,
         InstanceMaterial::sky([[0.75, 1.6, 0.0, 0.0], [1.0; 4]], true),
     )

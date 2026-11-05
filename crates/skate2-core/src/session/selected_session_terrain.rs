@@ -171,6 +171,9 @@ struct OnlineSimArea {
     position: [f32; 3],
     /// The XML's first tile; none without a usable XML, leaving the spatial selection there.
     tile: Option<Vec<usize>>,
+    /// PC port: a linked Skate 3 game's own stream XML (`data\stream\<name>.xml`, Skate 3's
+    /// `miscload.big`), whose first tile is read on its district's Sim XSS once the district is in.
+    skate3_xml: Option<Vec<u8>>,
 }
 
 impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
@@ -570,7 +573,7 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
         self.try_update_focus(position)?;
         let focus = self.focus.as_ref().ok_or(SelectedSessionTerrainError::Focus("teleport focus missing"))?;
         // An online area holds the focus wherever the skater goes.
-        if (self.area.is_none() && focus.position() != position) || focus.entries().is_empty() {
+        if (self.held_area().is_none() && focus.position() != position) || focus.entries().is_empty() {
             return Err(SelectedSessionTerrainError::Focus("teleport destination has no admitted focus"));
         }
         let ids: Vec<_> = focus.entries().iter().map(|entry| entry.id).collect();
@@ -582,13 +585,22 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
     /// holds nothing, as at another world's location (the training facility's), which the port
     /// does not load.
     pub(crate) fn landable(&self, position: [f32; 3]) -> Result<bool, SelectedSessionTerrainError> {
-        if self.area.is_some() {
+        if self.held_area().is_some() {
             return Ok(true);
         }
         if position.iter().any(|value| !value.is_finite()) {
             return Ok(false);
         }
         Ok(!self.focus_selection(position)?.is_empty())
+    }
+
+    /// PC port: the online area holding the simulation focus. A linked Skate 3 game's area names
+    /// its district's tiles, so it holds only while that district stands in San Vanelona's place;
+    /// over BAM's tiles it would select nothing (the district gone first, as a career started after
+    /// the online game unloads it).
+    fn held_area(&self) -> Option<&OnlineSimArea> {
+        let district = self.additional.as_ref().and_then(additional::AdditionalWorld::exclusive).is_some();
+        self.area.as_ref().filter(|area| area.skate3_xml.is_none() || district)
     }
 
     /// Where the simulation focus is.
@@ -605,17 +617,19 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
             self.area = None;
             return Ok(());
         };
-        let tile = match self.source.mounts.read_path(&format!("data\\stream\\{name}.xml")) {
+        let path = format!("data\\stream\\{name}.xml");
+        let (tile, skate3_xml) = match self.source.mounts.read_path(&path) {
             Ok(bytes) => {
                 let space = self.focus_space.as_ref().ok_or(E::Focus("simulation XSS missing"))?;
-                skate2_formats::stream_xml::StreamXml::parse(&bytes, "Sim", space)
+                let tile = skate2_formats::stream_xml::StreamXml::parse(&bytes, "Sim", space)
                     .map_err(E::Focus)?
                     .first_tile()
-                    .map(<[usize]>::to_vec)
+                    .map(<[usize]>::to_vec);
+                (tile, None)
             }
-            Err(_) => None,
+            Err(_) => (None, crate::skate3::linked().and_then(|data| data.mounts.read_path(&path).ok())),
         };
-        self.area = Some(OnlineSimArea { position, tile });
+        self.area = Some(OnlineSimArea { position, tile, skate3_xml });
         Ok(())
     }
 
@@ -653,14 +667,18 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
         use SelectedSessionTerrainError as E;
         let space = self.focus_space.as_ref().ok_or(E::Focus("simulation XSS missing"))?;
         let additional = self.additional.as_ref().and_then(additional::AdditionalWorld::selectable);
+        // A Skate 3 district alone is known, on Skate 3's tiles.
+        let district = self.additional.as_ref().and_then(additional::AdditionalWorld::exclusive);
         let terrain = self.terrain.as_ref().ok_or(E::Pending)?;
-        let known = |id| {
-            std::iter::once(&**space).chain(additional).any(|space| space.collections.iter().any(|entry| entry.lod == 0 && entry.id == id))
+        let known = |id| match district {
+            Some(district) => district.collections.iter().any(|entry| entry.lod == 0 && entry.id == id),
+            None => std::iter::once(&**space).chain(additional).any(|space| space.collections.iter().any(|entry| entry.lod == 0 && entry.id == id)),
         };
-        crate::streaming::area_loaded::is_area_loaded(
+        crate::streaming::area_loaded::is_area_loaded_tiled(
             position,
             radius,
             crate::game_stream::StreamKind::Simulation,
+            district.is_some(),
             |id| Ok(!known(id) || terrain.collection_registered(id)),
             |at| Ok(self.focus_selection(at)?.iter().map(|collection| collection.id).collect()),
         )
@@ -680,6 +698,11 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
         cap: usize,
     ) -> Vec<skate2_formats::stream::FocusCollection> {
         use skate2_formats::stream::{MAX_FOCUS_ENTRIES, merge_focus_collections};
+        if let Some(district) = self.additional.as_ref().and_then(additional::AdditionalWorld::exclusive) {
+            let mut selected = district.focus_collections(position, radius, MAX_FOCUS_ENTRIES);
+            selected.truncate(cap);
+            return selected;
+        }
         let first = match xml {
             Some(xml) => xml.focus_collections(space, position, radius, MAX_FOCUS_ENTRIES),
             None => space.focus_collections(position, radius, MAX_FOCUS_ENTRIES),
@@ -707,7 +730,19 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
             .as_ref()
             .ok_or(E::Focus("simulation XSS missing"))?;
         let radius = skate2_formats::stream::WORLD_FOCUS_RADIUS;
-        if let Some(area) = &self.area {
+        // A Skate 3 district alone, whatever area or stream XML BAM's selection would use; an
+        // online game there holds its own XML's tile whole, without the cap, as BAM's does.
+        if let Some(district) = self.additional.as_ref().and_then(additional::AdditionalWorld::exclusive) {
+            if let Some(xml) = self.area.as_ref().and_then(|area| area.skate3_xml.as_deref())
+                && let Some(tile) = skate2_formats::stream_xml::StreamXml::parse_skate3(xml, "Sim", district).map_err(E::Focus)?.first_tile()
+            {
+                let mut selected = tile.iter().map(|&index| district.focus_collection(index, position)).collect::<Vec<_>>();
+                selected.sort_by(|a, b| a.distance_xz.total_cmp(&b.distance_xz));
+                return Ok(selected);
+            }
+            return Ok(self.spatial_selection(space, None, position, radius, cap.min(16)));
+        }
+        if let Some(area) = self.held_area() {
             // Online mode: the area's tile whole, else the spatial selection without the cap.
             return Ok(match &area.tile {
                 Some(tile) => {
@@ -739,7 +774,7 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
             .try_disable_stream_focus_movement()
             .map_err(E::Cvar)?;
         // MoveStreamFocus824d8250 rejects NaNs instead of replacing coordinates.
-        let position = if let Some(area) = &self.area {
+        let position = if let Some(area) = self.held_area() {
             area.position
         } else if disabled || position.iter().any(|v| v.is_nan()) {
             // Movement rejection does not stop an already accepted load.

@@ -65,3 +65,4 @@ macro_rules! println {
 }
 
 pub mod read_trace;
+pub mod test_log;

@@ -42,6 +42,7 @@ pub(crate) enum ActorBreadCrumbPostUpdateError {
     Collision(BreadCrumbCollisionGateError<ReckoningHostNumericError>),
     NavMesh(BreadCrumbNavMeshGateError),
     FootForward(ActorBreadCrumbMountError),
+    Skate3Lock,
 }
 
 impl ActorConstruction {
@@ -83,6 +84,12 @@ impl ActorConstruction {
         drop(state);
 
         let physical = self.cached_physical_allocation().map_err(E::Physical)?;
+        // With Skate 3 physics, TU3's breadcrumb Update (82BFB1E0) runs after the source tick
+        // and this manager mirrors its history.
+        #[cfg(feature = "skate3-runtime")]
+        if physical.owner().skate3.lock().map_err(|_| E::Skate3Lock)?.is_some() {
+            return Ok(false);
+        }
         let output = physical
             .owner()
             .phys_out()

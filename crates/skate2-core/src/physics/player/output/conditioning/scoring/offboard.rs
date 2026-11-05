@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     reckoning_numeric::{HostReckoningNumeric, ReckoningNumeric},
-    skeleton_root_transforms::SkeletonRootMatrix,
+    skeleton_root_transforms::{SkeletonRootMatrix, SkeletonRootVector},
 };
 
 pub(super) struct OffboardFrame<'a> {
@@ -19,8 +19,32 @@ pub(super) struct OffboardFrame<'a> {
     pub player_matrix: SkeletonRootMatrix,
     pub board_matrix: SkeletonRootMatrix,
     pub ground: &'a GroundRemainder,
+    /// SystemReckoning +0 (damped velocity) and its up vector.
+    pub system_velocity: SkeletonRootVector,
+    pub system_up: SkeletonRootVector,
 }
+
+/// TU3 82DABE98: a hippy jump starts at a fifth of its points unless the system moves
+/// faster than 4 m/s across its up vector.
+#[cfg(feature = "skate3-runtime")]
+fn skate3_hippy_point_scalar(velocity: SkeletonRootVector, up: SkeletonRootVector) -> f32 {
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let (v, u) = (velocity.xyz, up.xyz);
+    let along = dot(v, u) / dot(u, u);
+    let across = [v[0] - u[0] * along, v[1] - u[1] * along, v[2] - u[2] * along];
+    if 16.0 > dot(across, across) { f32::from_bits(0x3e4c_cccd) } else { 1.0 }
+}
+
 impl OffboardCollector {
+    #[cfg(feature = "skate3-runtime")]
+    fn skate3(&self) -> bool {
+        self.base.states.skate3_enabled()
+    }
+    #[cfg(not(feature = "skate3-runtime"))]
+    fn skate3(&self) -> bool {
+        false
+    }
+
     pub(super) fn update_tricks(
         &mut self,
         db: &TrickDatabase,
@@ -33,7 +57,38 @@ impl OffboardCollector {
             active = true;
         }
         if active {
-            if self.is_hippy_jumping {
+            if self.is_hippy_jumping && self.skate3() {
+                // TU3 UpdateHippyJumps 82DAC068: the count is the physics' landing half turns
+                // and its points are halved.
+                #[cfg(feature = "skate3-runtime")]
+                {
+                    self.hippy_jump180_count = f.ground.landing_half_turns;
+                    out.hippy_jump180_count = self.hippy_jump180_count;
+                    let points = curve(
+                        &self.base.states,
+                        880,
+                        (self.hippy_jump180_count as f32 * 180.0).abs(),
+                    )? * 0.5;
+                    let change = points - self.hippy_jump180_points;
+                    self.hippy_jump180_points = points;
+                    if change > 0.0 {
+                        self.hippy_jump_scorable.score = self
+                            .hippy_jump_scorable
+                            .point_scalar
+                            .mul_add(change, self.hippy_jump_scorable.score);
+                    }
+                    let mut holder = self
+                        .base
+                        .score_holder
+                        .as_ref()
+                        .ok_or(ScoreError::Missing("offboard holder"))?
+                        .lock()
+                        .map_err(|_| ScoreError::Poisoned)?;
+                    if !holder.trick_score_held() {
+                        holder.trick_score += self.hippy_jump_scorable.score;
+                    }
+                }
+            } else if self.is_hippy_jumping {
                 self.player_spin_tracker.update(f.player_matrix)?;
                 self.board_spin_tracker.update(f.board_matrix)?;
                 let degrees = f32::from_bits(0x4265_2ee1);
@@ -80,11 +135,19 @@ impl OffboardCollector {
                     .name
                     .decode()
                     .map_err(|_| ScoreError::Invalid("hippy animation name"))?;
+                #[cfg(feature = "skate3-runtime")]
+                let point_scalar = if self.skate3() {
+                    skate3_hippy_point_scalar(f.system_velocity, f.system_up)
+                } else {
+                    1.0
+                };
+                #[cfg(not(feature = "skate3-runtime"))]
+                let point_scalar = 1.0;
                 self.base.start_scorable(
                     db,
                     &name,
                     self.base.filtered_scorable_id,
-                    1.0,
+                    point_scalar,
                     &mut self.hippy_jump_scorable,
                     f.tick,
                     0.0,
@@ -100,8 +163,10 @@ impl OffboardCollector {
                     .attempt_beginning(&mut self.hippy_jump_scorable)?;
                 self.hippy_jump180_points = 0.0;
                 self.hippy_jump180_count = 0;
-                self.player_spin_tracker.reset(f.player_matrix);
-                self.board_spin_tracker.reset(f.board_matrix);
+                if !self.skate3() {
+                    self.player_spin_tracker.reset(f.player_matrix);
+                    self.board_spin_tracker.reset(f.board_matrix);
+                }
             }
         } else if self.is_hippy_jumping {
             self.base
@@ -119,7 +184,7 @@ impl OffboardCollector {
             if !self.hippy_jump_scorable.had_object_between_board_and_skater {
                 self.base.check_hippy_flip(f.ground, out)?;
                 if out.is_hippy_flipping {
-                    if !self.hippy_jump_scorable.trick_scoring_settings.is_valid {
+                    if !self.skate3() && !self.hippy_jump_scorable.trick_scoring_settings.is_valid {
                         return Err(ScoreError::Invalid("hippy flip bonus on invalid trick"));
                     }
                     let raw = self.hippy_jump_scorable.trick_scoring_settings.base_score as f32;

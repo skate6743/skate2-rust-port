@@ -31,6 +31,7 @@ fn component(name: &str, id: u64) -> CharacterComponentAsset {
                     }],
                     anti_frustums: Vec::new(),
                     emitter_waypoints: Vec::new(),
+                    visual_indicators: Vec::new(),
                 },
             }],
         }],

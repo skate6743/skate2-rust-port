@@ -295,9 +295,8 @@ fn setup_spawn_points(world: &mut World, activity: usize, volume: f32, density: 
 }
 
 /// A `tTriggerVolumeInstanceID`'s 64-bit ID as `LoadCrowd` passes it on: `__u64tod`, then `frsp`.
-#[expect(clippy::cast_precision_loss, clippy::cast_possible_truncation, reason = "the native's conversions")]
 fn volume_float(volume: u64) -> f32 {
-    volume as f64 as f32
+    crate::skate3::id_float(volume)
 }
 
 /// A `tLargeCrowd`: the volume (as the float the generators keep), density and generator type.

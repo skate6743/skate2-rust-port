@@ -184,6 +184,8 @@ impl AnimationEvalCommands for TreeCommands {
     ) -> Option<Result<(), Self::Error>> {
         Some(self.set_fixed_sqt(owner, id))
     }
+    fn external_sqt(&mut self, source:&crate::actor_animation_construction::initialization::bind_pose::sqt_output::OwnedAnimationSqtBuffer)
+        ->Option<Result<(),Self::Error>> {Some(self.set_external_sqt(source))}
     fn fetch(&mut self, plan: ClipFetchPlan) -> Result<(), Self::Error> {
         let guid = plan.guid;
         self.push_fetch(Fetch::Clip(plan), guid)
@@ -265,7 +267,7 @@ impl AnimationEvalCommands for TreeCommands {
     clippy::cast_sign_loss,
     reason = "source floor then low13 command field"
 )]
-fn encode_coefficient(coefficient: f32) -> Result<u16, BindPoseError> {
+pub(crate) fn encode_coefficient(coefficient: f32) -> Result<u16, BindPoseError> {
     if !coefficient.is_finite() || coefficient < -0.0001 || coefficient > 1.0001 {
         return Err(BindPoseError::TreeCoefficientBits(coefficient.to_bits()));
     }

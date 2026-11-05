@@ -2,7 +2,7 @@
 //! The caller selects the save location; original asset directories are never
 //! selected implicitly. Existing unknown career chunks survive edits.
 use skate2_formats::skater_profile::{
-    CacRecord, MemcardLeaf, PcDisplaySettings, ProfileData, ProfileError, ProfileMusicPlayer, ProfileSettings, SkaterProfile,
+    CacRecord, MemcardLeaf, PcDisplaySettings, PcGameplayModes, ProfileData, ProfileError, ProfileMusicPlayer, ProfileSettings, SkaterProfile,
 };
 use std::{
     cell::Cell,
@@ -166,6 +166,12 @@ impl EditSkaterProfileStore {
             .map(Option::flatten)
             .map_err(Into::into)
     }
+    pub fn load_gesture_settings(&self) -> Result<skate2_formats::skater_profile::PcGestureSettings, EditSkaterProfileError> {
+        self.profile.as_ref().map_or(Ok(Default::default()), SkaterProfile::gesture_settings).map_err(Into::into)
+    }
+    pub fn load_skate3_style(&self) -> Result<skate2_formats::skater_profile::PcSkate3Style, EditSkaterProfileError> {
+        self.profile.as_ref().map_or(Ok(Default::default()), SkaterProfile::skate3_style).map_err(Into::into)
+    }
     /// `ProfileBackEnd::mNewProfile`. A missing file or a save without a
     /// `SKATER_PROFILE` savable is a profile `ResetProfile` just created.
     pub fn is_new_profile(&self) -> Result<bool, EditSkaterProfileError> {
@@ -197,6 +203,21 @@ impl EditSkaterProfileStore {
         let validated = SkaterProfile::parse(&bytes)?;
         if validated.display_settings()? != settings {
             return Err(skate2_formats::skater_profile::ProfileError("display settings read-back mismatch").into());
+        }
+        self.commit(&bytes, validated)
+    }
+    /// PC port addition: Physics Settings and Weather Settings.
+    pub fn load_gameplay_modes(&self) -> Result<PcGameplayModes, EditSkaterProfileError> {
+        self.profile.as_ref().map_or(Ok(PcGameplayModes::default()), |p| p.gameplay_modes()).map_err(Into::into)
+    }
+    pub fn save_gameplay_modes(&mut self, modes: PcGameplayModes) -> Result<(), EditSkaterProfileError> {
+        let _file = access();
+        let mut next = Self::read(self.path.clone())?.profile.unwrap_or_else(SkaterProfile::new_empty);
+        next.set_gameplay_modes(modes)?;
+        let bytes = next.encode()?;
+        let validated = SkaterProfile::parse(&bytes)?;
+        if validated.gameplay_modes()? != modes {
+            return Err(skate2_formats::skater_profile::ProfileError("gameplay modes read-back mismatch").into());
         }
         self.commit(&bytes, validated)
     }
@@ -289,11 +310,42 @@ impl EditSkaterProfileStore {
     /// replacement uses a same-directory backup because rename cannot replace
     /// an existing file. The previous save remains in that backup on success.
     pub fn save_record(&mut self, record: &CacRecord) -> Result<(), EditSkaterProfileError> {
+        self.save_record_and_gestures(record, None)
+    }
+    /// Commit the CAC record and the optional PC gesture catalog in the same
+    /// verified SKATER.P replacement. Other save writers retain this leaf.
+    pub fn save_record_and_gestures(
+        &mut self,
+        record: &CacRecord,
+        gestures: Option<skate2_formats::skater_profile::PcGestureSettings>,
+    ) -> Result<(), EditSkaterProfileError> {
+        self.save_record_and_mod_preferences(record, gestures, None)
+    }
+    /// Merge native CAC, gestures and animation choices in one verified save,
+    /// reading the latest career/autosave before applying the edit.
+    pub fn save_record_and_mod_preferences(
+        &mut self,
+        record: &CacRecord,
+        gestures: Option<skate2_formats::skater_profile::PcGestureSettings>,
+        style: Option<skate2_formats::skater_profile::PcSkate3Style>,
+    ) -> Result<(), EditSkaterProfileError> {
         let _file = access();
         let mut next = Self::read(self.path.clone())?.profile.unwrap_or_else(SkaterProfile::new_empty);
         next.set_cac_record(record)?;
+        if let Some(gestures) = gestures { next.set_gesture_settings(gestures)?; }
+        if let Some(style) = style { next.set_skate3_style(style)?; }
         let bytes = next.encode()?;
         let validated = SkaterProfile::parse(&bytes)?;
+        if let Some(gestures) = gestures {
+            if validated.gesture_settings()? != gestures {
+                return Err(skate2_formats::skater_profile::ProfileError("gesture settings read-back mismatch").into());
+            }
+        }
+        if let Some(style) = style {
+            if validated.skate3_style()? != style {
+                return Err(ProfileError("Skate 3 style read-back mismatch").into());
+            }
+        }
         if validated.cac_record()?.as_ref() != Some(record) {
             return Err(skate2_formats::skater_profile::ProfileError(
                 "CAC save read-back mismatch",

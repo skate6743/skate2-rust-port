@@ -8,6 +8,7 @@ pub mod behaviour;
 pub mod big;
 pub mod collision;
 pub mod cac_parts;
+pub mod disc;
 pub mod ea_movie;
 pub mod ea_xa;
 pub mod hash;

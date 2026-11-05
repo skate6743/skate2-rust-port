@@ -29,6 +29,8 @@ impl ScoreHolder {
             return Ok(false);
         }
         if animation.just_analyzed_sketchyness {
+            #[cfg(feature = "skate3-runtime")]
+            { self.skate3_clean_landing = animation.sketchyness_anim_result == 0; }
             let sketchy = match animation.sketchyness_anim_result {
                 0 | 2 => false,
                 1 => {
@@ -38,6 +40,10 @@ impl ScoreHolder {
                     !(animation.sketchyness_side_speed <= speed
                         || animation.sketchyness_anim_scalar.abs() <= minimum_scalar)
                 }
+                // TU3 checks kind==1 for sketchy and kind==0 for clean;
+                // its valid kind3 is neither. S2 keeps its own error policy.
+                #[cfg(feature = "skate3-runtime")]
+                _ if self.general.skate3_enabled() => false,
                 _ => return Err(ScoreError::Invalid("sketchy animation result")),
             };
             self.pending_air_period.just_landed = true;
@@ -68,6 +74,11 @@ impl ScoreHolder {
     }
     fn record_finished(&mut self, id: i32) -> bool {
         let Some(item) = info(id) else { return false };
+        // TU3 EndTrickGeneric 82DA6198: no history while ScoreHolder+0x1C5D is set; the
+        // callers still bank their points.
+        if self.trick_score_held() {
+            return true;
+        }
         accumulate(&mut self.line_accumulator[id as usize], 1);
         if item.trick_type != 0 {
             accumulate(&mut self.tricks_in_sequence[id as usize], 1);
@@ -84,7 +95,8 @@ impl ScoreHolder {
         }
     }
     pub(super) fn end_air_trick(&mut self, id: i32, points: f32) {
-        if !self.record_finished(id) {
+        // TU3 EndAirTrick 82DA629C: nothing is banked while ScoreHolder+0x1C5D is set.
+        if !self.record_finished(id) || self.trick_score_held() {
             return;
         }
         let category = info(id).unwrap().category;
@@ -118,7 +130,8 @@ impl ScoreHolder {
     }
     pub(super) fn update_active(&mut self, trick: &mut Scorable) -> Result<bool, ScoreError> {
         let began = self.attempt_beginning(trick)?;
-        if trick.valid_id().is_some() && !trick.is_ending_announced {
+        // TU3 82DA5F4C: not recorded while ScoreHolder+0x1C5D is set.
+        if trick.valid_id().is_some() && !trick.is_ending_announced && !self.trick_score_held() {
             self.sequence_mut()?.active_scorables.add(trick)?;
         }
         Ok(began)
@@ -138,7 +151,10 @@ impl ScoreHolder {
         if trick.valid_id().is_some() {
             trick.announce_ending(&self.general)?;
             self.tricks_ended.add(trick)?;
-            self.sequence_mut()?.add_scorable(db, trick)?;
+            // TU3 82DA6034: the sequence skips it while ScoreHolder+0x1C5D is set.
+            if !self.trick_score_held() {
+                self.sequence_mut()?.add_scorable(db, trick)?;
+            }
         }
         Ok(())
     }

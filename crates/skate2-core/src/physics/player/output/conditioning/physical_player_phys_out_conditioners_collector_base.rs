@@ -4,15 +4,16 @@ use super::{
     score_holder::ScoreHolder,
     sequence::GlobalMetrics,
 };
-use crate::attribute_runtime::{AttributeRuntimeInstance, AttributeRuntimeVault};
+use crate::attribute_runtime::{AttributeRuntimeVault};
+use super::scoring_attributes::ScoringAttributes;
 use std::sync::{Arc, Mutex};
 
 pub(super) struct CollectorBase {
     pub(super) output: Arc<()>,
     pub(super) global_metrics: Option<Arc<Mutex<GlobalMetrics>>>,
     pub(super) score_holder: Option<Arc<Mutex<ScoreHolder>>>,
-    pub(super) states: AttributeRuntimeInstance,
-    pub(super) general: AttributeRuntimeInstance,
+    pub(super) states: ScoringAttributes,
+    pub(super) general: ScoringAttributes,
     pub(super) raw_scorable_id: i32,
     pub(super) filtered_scorable_id: i32,
     pub(super) animation_trick: AnimOutTrickData,
@@ -28,8 +29,8 @@ impl CollectorBase {
             output,
             global_metrics,
             score_holder,
-            states: vault.instance(0x546c_36b6_5603_8e04, 0xd7ed_bd36_2d7d_2152),
-            general: vault.instance(0x3492_15e2_e817_703c, 0xd7ed_bd36_2d7d_2152),
+            states: ScoringAttributes::new(vault.instance(0x546c_36b6_5603_8e04, 0xd7ed_bd36_2d7d_2152), 0x546c_36b6_5603_8e04),
+            general: ScoringAttributes::new(vault.instance(0x3492_15e2_e817_703c, 0xd7ed_bd36_2d7d_2152), 0x3492_15e2_e817_703c),
             raw_scorable_id: -1,
             filtered_scorable_id: -1,
             animation_trick: AnimOutTrickData::reset_values(),
@@ -48,7 +49,7 @@ impl CollectorBase {
 /// cached layout identity; a null instance selects native `DefaultDataArea`.
 /// Construction forms this address without reading any graph samples.
 pub(super) struct GraphAddress {
-    pub(super) instance: AttributeRuntimeInstance,
+    pub(super) instance: ScoringAttributes,
     pub(super) graph_index: usize,
 }
 pub(super) struct TimedArcLength {
@@ -123,7 +124,7 @@ impl RotationTracker {
 }
 
 pub(super) struct ScoringMeter {
-    pub(super) general: AttributeRuntimeInstance,
+    pub(super) general: ScoringAttributes,
     pub(super) output: Arc<()>,
     pub(super) points: f32,
     pub(super) just_reached_zero: bool,
@@ -131,7 +132,7 @@ pub(super) struct ScoringMeter {
 impl ScoringMeter {
     pub(super) fn new(output: Arc<()>, vault: &Arc<AttributeRuntimeVault>) -> Self {
         Self {
-            general: vault.instance(0x3492_15e2_e817_703c, 0xd7ed_bd36_2d7d_2152),
+            general: ScoringAttributes::new(vault.instance(0x3492_15e2_e817_703c, 0xd7ed_bd36_2d7d_2152), 0x3492_15e2_e817_703c),
             output,
             points: 0.0,
             just_reached_zero: false,

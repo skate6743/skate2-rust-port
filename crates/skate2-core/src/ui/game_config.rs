@@ -16,6 +16,9 @@ pub struct GameConfig {
     /// they were linked: content packages or archives extracted from them (`linked_dlc`). A
     /// launch checks each and drops one that no longer opens as downloadable content.
     pub linked_dlc: Vec<String>,
+    /// PC port: the Skate 3 game folder linked on the Downloadable Content screen ("Link
+    /// Skate 3 Data", `skate3_data`), the folder of its `default.xex`; empty for none.
+    pub skate3_data: String,
 }
 
 impl GameConfig {
@@ -51,9 +54,10 @@ impl GameConfig {
             format!("[\n{}\n  ]", lines.join(",\n"))
         };
         format!(
-            "{{\n  \"game_root\": {},\n  \"changelog_seen\": {},\n  \"linked_dlc\": {dlc}\n}}\n",
+            "{{\n  \"game_root\": {},\n  \"changelog_seen\": {},\n  \"linked_dlc\": {dlc},\n  \"skate3_data\": {}\n}}\n",
             quote(&self.game_root),
-            quote(&self.changelog_seen)
+            quote(&self.changelog_seen),
+            quote(&self.skate3_data)
         )
     }
 }
@@ -67,7 +71,7 @@ fn parse(text: &str) -> GameConfig {
         .find(|(key, _)| key == "linked_dlc")
         .map(|(_, list)| list)
         .unwrap_or_default();
-    GameConfig { game_root: field("game_root"), changelog_seen: field("changelog_seen"), linked_dlc }
+    GameConfig { game_root: field("game_root"), changelog_seen: field("changelog_seen"), linked_dlc, skate3_data: field("skate3_data") }
 }
 
 #[cfg(test)]
@@ -80,6 +84,7 @@ mod tests {
             game_root: r#"D:\Games\Skate 2 "Copy" \ é"#.into(),
             changelog_seen: "0.2.5".into(),
             linked_dlc: vec![r"D:\DLC\4541087F\00000002\B6E4D01C47E3928D521B81CE44E209CCEBE809E1".into(), r"D:\DLC\filmpack_xbox2.big".into()],
+            skate3_data: r"D:\Games\Skate 3".into(),
         };
         assert_eq!(parse(&config.text()), config);
         let none = GameConfig { linked_dlc: Vec::new(), ..config };

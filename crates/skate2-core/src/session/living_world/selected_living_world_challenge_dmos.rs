@@ -68,8 +68,7 @@ impl SelectedRecipeFrame<'_> {
     /// as the float the native converts it to.
     pub(crate) fn challenge_trigger(&self, volume: u64) -> Result<Option<ChallengeTrigger>, String> {
         let triggers = self.triggers.lock().map_err(|_| "challenge trigger lock")?;
-        #[expect(clippy::cast_precision_loss, reason = "(float)_u64tod")]
-        let id = volume as f64 as f32;
+        let id = crate::skate3::id_float(volume);
         let Some(record) = triggers
             .try_find_volume_id(id)
             .map_err(|e| format!("challenge trigger lookup: {e:?}"))?

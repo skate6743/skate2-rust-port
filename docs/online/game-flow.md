@@ -133,8 +133,10 @@ Update:
 - a *sync point* (flow message 17 from the challenge script, `FilterImpl`) sets `mInSyncPoint`,
   the NIS to preload and the respawn transform. When the loading screen, challenge hulls and NIS
   preload are ready, send `GameSyncPoint` once ("We are loaded, waiting for everyone else to
-  sync up"); the RB's `GameSyncPoint` releases it (unpause, `cMsgSetPlayer`, unspawn AI,
-  `cMsgPostChallengeDisplayExit`);
+  sync up"); the RB's `GameSyncPoint` releases it (unpause; `cMsgSpawnPlayer` at the round's
+  start location, which `PlayerUI::ReceiveSpawnMsg` turns into spawn command 3, so
+  `SkaterManager::OnCommand` destroys the local skater and spawns a new one; `cMsgTeleport` to the
+  respawn transform, off the board; `cMsgPostChallengeDisplayExit`);
 - local completion (flow message 16 carries the result into `mMyGameResult`) or an
   `AllPlayersComplete` from the RB → `WaitingForGameToFinish`;
 - an NIS start (flow message 4) runs `StateLoading` as a sub-state.

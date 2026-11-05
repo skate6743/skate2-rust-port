@@ -59,6 +59,39 @@ pub(crate) const LAYER_GUIDS: [u64; 19] = [
     0x0000_001c_03e3_87c2,
 ];
 
+/// PC port: a linked Skate 3 district's painted layers. TU3's `RegisterStreamedTile`
+/// (0x82c0ed80) knows a layer by the asset's GUID word +12 against the low word of
+/// `Attrib::hash64` of the layer's name (dynamic initializer 0x82f8b9d0; the districts' GUIDs are
+/// the whole hash), in Skate 2's layer order.
+const SKATE3_LAYER_NAMES: [&str; 19] = [
+    "test_layer0",
+    "test_layer1",
+    "livingworld_npc_census",
+    "livingworld_vehicle_census",
+    "districts",
+    "district_locations",
+    "livingworld_security_guard_areas",
+    "audio_ambience",
+    "audio_emitters",
+    "challenge_zone_races",
+    "audio_reverb",
+    "rendering_colorcube",
+    "cameras_race",
+    "services",
+    "livingworld_dmo_safety",
+    "rendering_fog",
+    "rendering_sky",
+    "rendering_exposure",
+    "rendering_bloom",
+];
+
+fn skate3_layer(guid: u64) -> Option<usize> {
+    static WORDS: std::sync::OnceLock<[u32; 19]> = std::sync::OnceLock::new();
+    let words = WORDS.get_or_init(|| SKATE3_LAYER_NAMES.map(|name| u32::try_from(string_hash64(name) & 0xffff_ffff).unwrap_or(0)));
+    let word = u32::try_from(guid & 0xffff_ffff).unwrap_or(0);
+    words.iter().position(|&candidate| candidate == word)
+}
+
 /// `WorldPainter::eCameras_Race`.
 pub(crate) const CAMERAS_RACE: usize = 12;
 
@@ -69,6 +102,8 @@ const LOWER_CASE_LAYERS: [usize; 2] = [5, 13];
 struct TileHandle {
     offset: [f32; 4],
     layers: [Option<WorldPainterLayerAsset>; 32],
+    /// PC port: a linked Skate 3 district's layers at the tile ([`SKATE3_LAYER_NAMES`]).
+    skate3: [Option<WorldPainterLayerAsset>; 19],
     // Native pLayerMan identity is implicit in this owning map, no second owner.
 }
 struct KeyCache {
@@ -128,7 +163,7 @@ impl WorldPainterLayerMan {
         let (offset, width) = registration_coordinates(&asset)?;
         let key = tile_id(offset, width)?;
         if !self.tiles.contains_key(&key) {
-            if self.tiles.len() == 128 {
+            if self.tiles.len() == crate::skate3::stream_capacity(128) {
                 return Err(WorldPainterLayerError::TileCapacity);
             }
             self.tiles.insert(
@@ -136,6 +171,7 @@ impl WorldPainterLayerMan {
                 TileHandle {
                     offset,
                     layers: std::array::from_fn(|_| None),
+                    skate3: std::array::from_fn(|_| None),
                 },
             );
         }
@@ -145,6 +181,18 @@ impl WorldPainterLayerMan {
                 .get_mut(&key)
                 .expect("existing or newly published tile")
                 .layers[layer] = Some(asset);
+        } else if crate::skate3::linked().is_some() {
+            static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let layer = skate3_layer(guid);
+            if *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_PAINTER").is_some()) {
+                eprintln!("world painter: tile {key:08x} layer guid {guid:016x} -> skate 3 layer {layer:?}");
+            }
+            if let Some(layer) = layer {
+                self.tiles
+                    .get_mut(&key)
+                    .expect("existing or newly published tile")
+                    .skate3[layer] = Some(asset);
+            }
         }
         Ok(())
     }
@@ -162,10 +210,21 @@ impl WorldPainterLayerMan {
         };
         let guid = asset.layer_guid().map_err(WorldPainterLayerError::Source)?;
         let Some(layer) = LAYER_GUIDS.iter().position(|candidate| *candidate == guid) else {
+            // PC port: a linked Skate 3 district's layer leaves its own slot; any other layer
+            // Skate 2 does not know leaves its tile as it was. The tile goes with its last layer
+            // of either game, or every district's tiles would stay.
+            if crate::skate3::linked().is_some() {
+                if let Some(layer) = skate3_layer(guid) {
+                    tile.skate3[layer] = None;
+                }
+                if tile.layers.iter().chain(&tile.skate3).all(Option::is_none) {
+                    self.tiles.remove(&key);
+                }
+            }
             return Ok(());
         };
         tile.layers[layer] = None;
-        if tile.layers.iter().all(Option::is_none) {
+        if tile.layers.iter().chain(&tile.skate3).all(Option::is_none) {
             self.tiles.remove(&key);
         }
         Ok(())
@@ -205,6 +264,39 @@ impl WorldPainterLayerMan {
             string_hash64(name)
         })
     }
+    /// PC port: TU3's layer key (0x82c0eac0) inside a linked Skate 3 district: the tile, its
+    /// Skate 3 layer, `DoQuadTreeLookup`, then the dictionary entry's whole 64-bit key, which
+    /// names the region's collection directly (Skate 3 has no palette). 0 for a missing tile,
+    /// layer or tree, or the -1 miss, as TU3 returns.
+    pub(crate) fn try_skate3_key(
+        &self,
+        layer: usize,
+        position: [f32; 2],
+    ) -> Result<u64, WorldPainterLayerError> {
+        if layer >= SKATE3_LAYER_NAMES.len() {
+            return Err(WorldPainterLayerError::LayerIndex(layer));
+        }
+        let key = tile_id(
+            [position[0], position[1], position[0], position[1]],
+            [128.0; 4],
+        )?;
+        let Some(asset) = self
+            .tiles
+            .get(&key)
+            .and_then(|tile| tile.skate3[layer].as_ref())
+        else {
+            return Ok(0);
+        };
+        // TU3 returns 0 for `DoQuadTreeLookup`'s -1 (0xFFFF) as for a missing tree.
+        let Some(index) = asset
+            .dictionary_lookup(position)
+            .map_err(WorldPainterLayerError::Source)?
+            .filter(|&index| index != u16::MAX)
+        else {
+            return Ok(0);
+        };
+        asset.region_key(index).map_err(WorldPainterLayerError::Source)
+    }
     /// `GetRegionName` 0x82ceb1e8 reads the same TOC entry as `GetAttribData`,
     /// retaining the original case and returning NULL for a missing region.
     pub(crate) fn try_region_name(
@@ -221,6 +313,11 @@ impl WorldPainterLayerMan {
     ) -> Result<Option<usize>, WorldPainterLayerError> {
         if layer >= LAYER_GUIDS.len() {
             return Err(WorldPainterLayerError::LayerIndex(layer));
+        }
+        // PC port: a linked Skate 3 district's painted regions name Skate 3's own palette, which
+        // its data holds rather than this table; inside one no region is painted.
+        if crate::skate3::district_active() {
+            return Ok(None);
         }
         let key = tile_id(
             [position[0], position[1], position[0], position[1]],

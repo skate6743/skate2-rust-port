@@ -1,0 +1,45 @@
+//! Value snapshot copied by82D87E80 into Processed1104..1519 after manager post.
+//! Native pointers are stable host identities; all geometry/control values are
+//! retained independently. Zero is the native416-byte investigation reset.
+use super::RawVector;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GrindInvestigationFields {
+    pub tangent_1104: RawVector,
+    pub point_1120: RawVector,
+    pub direction_1136: RawVector,
+    pub normal_1152: RawVector,
+    pub target_up_1168: RawVector,
+    pub entry_velocity_1184: RawVector,
+    pub front_contact_1200: RawVector,
+    pub rear_contact_1216: RawVector,
+    pub vector_1232: RawVector,
+    pub family_1248: u32,
+    pub entry_kind_1252: u32,
+    pub primitive_start_1264: RawVector,
+    pub primitive_end_1280: RawVector,
+    pub owner_1296: Option<u64>,
+    pub primitive_flags_1300: u32,
+    pub second_start_1312: RawVector,
+    pub second_end_1328: RawVector,
+    pub second_owner_1344: Option<u64>,
+    pub second_flags_1348: u32,
+    pub center_1360: RawVector,
+    pub far_points_1376_1392: [RawVector; 2],
+    pub upmost_normal_1408: RawVector,
+    pub surface_direction_1424: RawVector,
+    pub high_side_1440: RawVector,
+    pub normal_limits_1456_1460: [f32; 2],
+    pub geometry_kind_1464: u32,
+    pub audio_surface_1468: u32,
+    pub physics_surface_1472: u32,
+    pub geometry_flags_1476: u32,
+    pub valid_1488: bool,
+    pub impact_speed_1492: f32,
+    pub friction_1496: f32,
+    pub exit_lean_1500: f32,
+    pub yaw_1504: f32,
+    pub pitch_1508: f32,
+    pub gravity_relief_1512: f32,
+    pub flags_1516: u32,
+}

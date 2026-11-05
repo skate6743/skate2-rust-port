@@ -292,6 +292,9 @@ pub struct WorldAudioState {
     /// is loaded, else `GlobalData.ambienceKey`, which `DoSimSubmit` reads from `WorldPainter`
     /// layer 7 at the same point; 0 is no ambience bed.
     pub ambience_key: u64,
+    /// PC port: the local skater stands in a linked Skate 3 district, whose painter's
+    /// `ambience_key` names one of Skate 3's beds.
+    pub skate3_district: bool,
     /// `AudioPresentation` `mVehicleCount`/`mVehicle`: the cars `DoSimSubmit` 0x827fb2f8 found
     /// around the camera, with their presentation matrices.
     pub vehicles: Vec<crate::world::traffic::VehicleData>,
@@ -516,6 +519,10 @@ pub struct AudioSystem {
     players: Option<PlayerManager>,
     collisions: Option<CollisionManager>,
     environment: Option<EnvironmentManager>,
+    /// PC port: Skate 3's attributes for the environment manager `InitializeMixer` makes next.
+    pending_skate3: Option<Option<Arc<Vault>>>,
+    /// PC port: the linked Skate 3 attributes the players' contacts read (darkcatch sounds).
+    skate3_vault: Option<Arc<Vault>>,
     traffic: Option<TrafficManager>,
     pedestrians: Option<PedestrianManager>,
     emitters: Option<EmitterManager>,
@@ -696,6 +703,8 @@ impl AudioSystem {
             players: None,
             collisions: None,
             environment: None,
+            pending_skate3: None,
+            skate3_vault: None,
             traffic: None,
             pedestrians: None,
             emitters: None,
@@ -714,6 +723,19 @@ impl AudioSystem {
     /// The host's files the stream pools read (`rw::core::filesys`) and resident loads use.
     pub fn set_stream_files(&mut self, files: Arc<dyn crate::rwac::stream_pool::StreamFiles>) {
         self.core.stream_pools.set_files(files);
+    }
+
+    /// PC port: a linked Skate 3 data folder's attributes, whose district ambience beds play in
+    /// its districts; none unlinked.
+    pub fn set_skate3_attributes(&mut self, vault: Option<Vault>) {
+        let vault = vault.map(Arc::new);
+        self.skate3_vault.clone_from(&vault);
+        self.reverb.set_skate3(vault.clone());
+        if let Some(environment) = self.environment.as_mut() {
+            environment.set_skate3(vault);
+        } else {
+            self.pending_skate3 = Some(vault);
+        }
     }
 
     /// The splicer banks `GetHOMBank` 0x824e6a08 names, in `sHOMBankNames` order
@@ -859,6 +881,9 @@ impl AudioSystem {
         self.players = Some(PlayerManager::new(&self.vault, map, &self.grains));
         self.collisions = Some(CollisionManager::new(&self.vault, map));
         self.environment = Some(EnvironmentManager::new(&self.vault, map));
+        if let (Some(environment), Some(vault)) = (self.environment.as_mut(), self.pending_skate3.take()) {
+            environment.set_skate3(vault);
+        }
         self.traffic = Some(TrafficManager::new(&self.vault, map));
         self.pedestrians = Some(PedestrianManager::new(&self.vault, map));
         self.emitters = Some(EmitterManager::new(&self.vault, map));
@@ -1557,11 +1582,11 @@ impl AudioSystem {
         }
         self.update_master(t);
         self.update_speaker_object(self.camera_man_io, speech::CHANNEL_CAMERA_MAN);
-        let reverb_key = self.world.as_ref().map_or(0, |world| world.reverb_key);
+        let (reverb_key, skate3_reverb) = self.world.as_ref().map_or((0, false), |world| (world.reverb_key, world.skate3_district));
         let local_board = self.world.as_ref().and_then(|world| world.player.skaters.iter().find(|skater| skater.local)).map(|skater| (skater.board_pos, skater.board_look));
         if let Some(map) = self.mixer.map_mut() {
             let presentation = self.state.presentation.is_some();
-            self.reverb.update_params(t, presentation, reverb_key, local_board, &self.emitter_system, &mut self.core, map, &self.vault, &mut self.global_effects);
+            self.reverb.update_params(t, presentation, reverb_key, skate3_reverb, local_board, &self.emitter_system, &mut self.core, map, &self.vault, &mut self.global_effects);
         }
         self.update_nis();
         self.update_pause();
@@ -1642,7 +1667,7 @@ impl AudioSystem {
         let crowd_start = crowd_start.map(|(kind, challenge)| (kind, challenge, self.crowds_load_status() >= module_status::LOADED, self.local_skater_position()));
         let in_own_the_spot = self.in_own_the_spot || self.state.in_own_the_spot;
         let cond_score_delta = self.cond_score - self.cond_prev_score;
-        let Self { core, splicer, mixer, master_sub_mix, music_master_sub_mix, global_effects, vault, rng, microphones, players, collisions, collision_requests, cvars, world, aems, state, times, environment, traffic, pedestrians, emitters, emitter_system, crowds, crowd_pod_infos, crowd_banks_loaded, dynamic_objects, speakers, whooshes, object_instances, nis_characters, speech, .. } = self;
+        let Self { core, splicer, mixer, master_sub_mix, music_master_sub_mix, global_effects, vault, skate3_vault, rng, microphones, players, collisions, collision_requests, cvars, world, aems, state, times, environment, traffic, pedestrians, emitters, emitter_system, crowds, crowd_pod_infos, crowd_banks_loaded, dynamic_objects, speakers, whooshes, object_instances, nis_characters, speech, .. } = self;
         let crowd_env = match world.as_ref() {
             Some(world) => Some(CrowdEnv { skaters: &world.player.skaters, emitter_system: &*emitter_system, pods: &*crowd_pod_infos, banks_loaded: &*crowd_banks_loaded }),
             None => None,
@@ -1657,6 +1682,7 @@ impl AudioSystem {
             splicer,
             map,
             vault,
+            skate3: skate3_vault.as_deref(),
             rng,
             master_sub_mix: *master_sub_mix,
             global_effects,
@@ -1803,7 +1829,7 @@ impl AudioSystem {
         }
         let in_own_the_spot = self.in_own_the_spot || self.state.in_own_the_spot;
         let cond_score_delta = self.cond_score - self.cond_prev_score;
-        let Self { core, splicer, mixer, master_sub_mix, global_effects, vault, rng, microphones, players, collisions, collision_requests, cvars, world, aems, state, times, reverb, nis_io, nis_volumes, bloom, environment, traffic, pedestrians, emitters, crowds, dynamic_objects, speakers, whooshes, object_instances, nis_characters, speech, .. } = self;
+        let Self { core, splicer, mixer, master_sub_mix, global_effects, vault, skate3_vault, rng, microphones, players, collisions, collision_requests, cvars, world, aems, state, times, reverb, nis_io, nis_volumes, bloom, environment, traffic, pedestrians, emitters, crowds, dynamic_objects, speakers, whooshes, object_instances, nis_characters, speech, .. } = self;
         let Some(map) = mixer.map_mut() else { return };
         reverb.process_update(core, map, global_effects);
         *nis_volumes = NisVolumes::read(map, *nis_io);
@@ -1817,6 +1843,7 @@ impl AudioSystem {
             splicer,
             map,
             vault,
+            skate3: skate3_vault.as_deref(),
             rng,
             master_sub_mix: *master_sub_mix,
             global_effects,
@@ -1927,6 +1954,8 @@ impl AudioSystem {
             self.update_speech();
             self.update_contexts();
             self.splicer.update(&mut self.core);
+            // TU3 0x82485344: the effect sub mixes off again after the queued splices.
+            self.global_effects.reset_skate3_effects();
             // No additional location loads (`mAdditionalDataKeyToLoad`/`ToUnload` stay 0), so
             // only `Sk8EmitterSystem::UpdateDLCAsyncLoad` 0x824f9098 runs.
             self.emitter_system.update_dlc_async_load();
@@ -2116,7 +2145,9 @@ impl AudioSystem {
     fn update_emitter_system(&mut self, t: f32) {
         let presentation_key = self.world.as_ref().filter(|_| self.state.presentation.is_some()).map(|world| world.emitter_key);
         let key = emitter_system::audio_emitter_key(presentation_key, self.state.challenge_type);
+        let district = self.world.as_ref().is_some_and(|world| world.skate3_district);
         let Self { core, mixer, vault, rng, microphones, aems, emitters, emitter_system, .. } = self;
+        emitter_system.set_skate3_district(district);
         let (Some(map), Some(emitters)) = (mixer.map_mut(), emitters.as_mut()) else { return };
         let mut io = EmitterIo { core, aems, map, vault, rng };
         emitter_system.update(t, microphones.microphones[0].cur_position, key, emitters, &mut io);

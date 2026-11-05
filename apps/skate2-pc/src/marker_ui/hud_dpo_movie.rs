@@ -125,7 +125,9 @@ impl DpoMovie {
         params.named(&["numerator", "labeltext"])?.text = Some(first_text(assets, data.formatted_first)?);
         params.named(&["denominator", "labeltext"])?.text = Some(second_text(assets, data.formatted_second)?);
         self.root.named(&["mDPO", "mPosHolder", "mTitle", "title_txt"])?.text = Some(assets.initial_text(&data.title));
-        self.icon_request = icon_name(data.icon, &view.challenge_icon);
+        // PC port: a Skate 3 game's DPO shows no icon, as Skate 3's movie has none.
+        self.root.named(&["mDPO", "mPosHolder", "icon_mc"])?.visible = !view.skate3;
+        self.icon_request = if view.skate3 { None } else { icon_name(data.icon, &view.challenge_icon) };
         self.align_text(assets)
     }
 

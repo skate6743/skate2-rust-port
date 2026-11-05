@@ -415,8 +415,8 @@ pub struct CareerHud {
     /// (`0x82615ec8`) formats a line and `RefreshSubtitle` (`0x82614c80`) shows
     /// it only when set.
     pub subtitles: bool,
-    /// `HUD2.ShowModifiedCentralMessage` HAL keys not yet shown.
-    pub modified_central_messages: Vec<String>,
+    /// `HUD2.ShowModifiedCentralMessage` lines and clears of them not yet shown, in order.
+    pub modified_central: Vec<crate::challenge::hud::ModifiedCentral>,
     /// `FrontEndState_PressA` is open: the turn it shows, answered with that
     /// player's A.
     pub press_a: Option<PressADialog>,
@@ -744,8 +744,15 @@ impl CareerSession {
         mounts: &Arc<MountSet>,
         wipeout_almost_over_time: f32,
         host_calendar: Option<fn() -> [u16; 6]>,
+        skate3: Option<&crate::skate3::Skate3Data>,
     ) -> Result<Self, String> {
-        let db = Arc::new(AttribDb::load_career(mounts).map_err(|e| e.to_string())?);
+        let mut db = AttribDb::load_career(mounts).map_err(|e| e.to_string())?;
+        // PC port: a linked Skate 3 data folder's online S.K.A.T.E. games join the challenges,
+        // and its global locators the locations their spots name (`crate::skate3`).
+        if let Some(skate3) = skate3 {
+            skate3.graft_online_challenges(&mut db);
+        }
+        let db = Arc::new(db);
         let global = mounts.read_path(GLOBAL_LUA).map_err(|e| e.to_string())?;
         let mut system = ChallengeSystem::new_career(db, &global).map_err(|e| e.to_string())?;
         system.world_mut().hom_local_calendar = host_calendar;
@@ -759,7 +766,24 @@ impl CareerSession {
             system.world_mut().locations.insert(key, location.transform);
             location_transforms.insert(key, location.transform);
         }
-        let (directory, cameras) = nis::directory::load_with_content(mounts)?;
+        if let Some(skate3) = skate3 {
+            for (&key, &transform) in skate3.locator_transforms() {
+                system.world_mut().locations.entry(key).or_insert(transform);
+                location_transforms.entry(key).or_insert(transform);
+            }
+        }
+        let (mut directory, mut cameras) = nis::directory::load_with_content(mounts)?;
+        // PC port: a Skate 3 game plays Skate 3's own scenes at its spots.
+        if let Some(skate3) = skate3 {
+            match skate3.scenes() {
+                Ok((scenes, ice)) => {
+                    let names = directory.add_new_camera_scenes(&scenes);
+                    cameras.add_new_groups(ice);
+                    crate::skate3::set_scenes(names);
+                }
+                Err(error) => eprintln!("skate 3 data: scenes: {error}"),
+            }
+        }
         let subtitles = mounts.read_path(nis::subtitles::BIG_PATH).map_err(|e| e.to_string())?;
         // LanguageManager::GetCurrentLanguageName of the English build.
         let mut nis = NisSystem::new(
@@ -768,6 +792,7 @@ impl CareerSession {
             Some(Arc::new(subtitles)),
             "English",
         );
+        nis.set_dlc_subtitles(crate::dlc::subtitle_archives(mounts).into_iter().map(Arc::new).collect());
         let scene_source = Arc::new(CareerSceneSource::new(Arc::clone(mounts), nis::characters::twist_ratios(mounts)?));
         nis.set_character_source(Arc::clone(&scene_source) as Arc<dyn nis::characters::SceneCharacterSource>);
         Ok(Self {
@@ -777,7 +802,7 @@ impl CareerSession {
             tester: TesterTuning::default(),
             previous: BTreeMap::new(),
             location_transforms,
-            locations: Arc::new(Mutex::new(locations::LocationManager::with_global_locations(mounts)?)),
+            locations: Arc::new(Mutex::new(locations::LocationManager::with_global_locations_over(mounts, skate3.map(|data| &*data.mounts))?)),
             hud: CareerHud::default(),
             poster_blocked: false,
             poster_input_blocked: false,
@@ -1786,7 +1811,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             .try_scalar_word(WIPEOUT_ALMOST_OVER, 0)
             .map_err(error)?
             .map_or(0.0, f32::from_bits);
-        let mut session = CareerSession::new(&assets.mounts, almost_over, self.host_calendar).map_err(error)?;
+        // PC port: a linked Skate 3 data folder's games join the challenges, as the online ones do,
+        // so the party's list and the change-game screen can run them.
+        let skate3 = crate::skate3::linked();
+        let mut session = CareerSession::new(&assets.mounts, almost_over, self.host_calendar, skate3.as_deref()).map_err(error)?;
         session.set_audio(self.audio.interface.clone());
         let store = EditSkaterProfileStore::open(EditSkaterProfileStore::default_path().map_err(error)?).map_err(error)?;
         let unlocks = store.load_leaf(unlockables::SAVABLE, unlockables::DATA).map_err(error)?;
@@ -1819,7 +1847,9 @@ impl<T, C> SelectedLiveSession<T, C> {
             .try_scalar_word(WIPEOUT_ALMOST_OVER, 0)
             .map_err(error)?
             .map_or(0.0, f32::from_bits);
-        let mut session = CareerSession::new(&assets.mounts, almost_over, self.host_calendar).map_err(error)?;
+        // A Skate 3 game's round runs over the linked Skate 3 data's spot.
+        let skate3 = crate::skate3::linked().filter(|data| data.online_spot(challenge).is_some());
+        let mut session = CareerSession::new(&assets.mounts, almost_over, self.host_calendar, skate3.as_deref()).map_err(error)?;
         session.set_audio(self.audio.interface.clone());
         let store = EditSkaterProfileStore::open(EditSkaterProfileStore::default_path().map_err(error)?).map_err(error)?;
         let unlocks = store.load_leaf(unlockables::SAVABLE, unlockables::DATA).map_err(error)?;
@@ -1863,7 +1893,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             .try_scalar_word(WIPEOUT_ALMOST_OVER, 0)
             .map_err(error)?
             .map_or(0.0, f32::from_bits);
-        let mut career = CareerSession::new(&assets.mounts, almost_over, self.host_calendar).map_err(error)?;
+        let mut career = CareerSession::new(&assets.mounts, almost_over, self.host_calendar, None).map_err(error)?;
         career.set_audio(self.audio.interface.clone());
         self.bind_challenge_players(&mut career, crate::challenge::players::GM_SINGLE_PLAYER)?;
         let store = EditSkaterProfileStore::open(EditSkaterProfileStore::default_path().map_err(error)?).map_err(error)?;
@@ -1902,6 +1932,11 @@ impl<T, C> SelectedLiveSession<T, C> {
         career.system.loading_reset();
         career.system.start_in_game(false);
         self.career = Some(career);
+        // GameLoad's single player branch (BackToSP 0x8273da50, UnloadSimStreamXml): an online
+        // game's area no longer holds the simulation focus.
+        if let Some(terrain) = self.inner.terrain.as_mut() {
+            terrain.try_set_online_area(None).map_err(|e| error(format!("{e:?}")))?;
+        }
         if continued {
             self.place_continued_career()?;
         } else {
@@ -2245,6 +2280,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     pub fn take_career_hud(&mut self) -> Option<CareerHud> {
         let career = self.career.as_mut()?;
         let central_messages = std::mem::take(&mut career.hud.central_messages);
+        let modified_central = std::mem::take(&mut career.hud.modified_central);
         let objective_screen = std::mem::take(&mut career.hud.objective_screen);
         let tutorial_screen = std::mem::take(&mut career.hud.tutorial_screen);
         let signup_screen = std::mem::take(&mut career.hud.signup_screen);
@@ -2267,6 +2303,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             sponsor_labels: crate::challenge::sponsors::frontend_sponsor_labels(career.system.world()),
             hom_completed:career.system.world().hom.completed_count(),
             central_messages,
+            modified_central,
             objective_screen,
             tutorial_screen,
             signup_screen,
@@ -2512,6 +2549,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 demo_world: sponsors::sponsor_world(world, sponsors::board_sponsor_key(world)),
                 demo_sponsor: sponsors::demo_sponsor_hal_id(world),
             };
+            sponsors::publish_sponsor_world(Some(&career.hud.frontend_arguments.sponsor_world));
         }
         let states = std::mem::take(&mut career.system.world_mut().objective_hud.screen_states);
         career.hud.objective_screen.extend(states);
@@ -2551,6 +2589,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// scoring it shared outlives it here, and takes `ChallengeScoring::game_unload`.
     pub(super) fn drop_career(&mut self) -> Result<(), SelectedLiveError> {
         self.career = None;
+        crate::challenge::sponsors::publish_sponsor_world(None);
         self.inner.challenge_scoring.lock().map_err(|_| error("challenge scoring lock poisoned"))?.game_unload();
         Ok(())
     }
@@ -3027,7 +3066,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     drop(locations);
                     requests.extend(transform.map(SkaterRequest::Teleport));
                 }
-                Output::ModifiedCentralMessage(message) => career.hud.modified_central_messages.push(message.hal_id),
+                Output::ModifiedCentralMessage(change) => career.hud.modified_central.push(change),
                 Output::OpenPressADialog { player_turn, round } => {
                     let player = u32::try_from(player_turn - 1).ok();
                     let row = player.zip(settings.as_ref());
@@ -3270,8 +3309,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 // cSignPostUtil::HandleCaughtMessage: mMovieKey, then PushState(28).
                 Output::PlayMovie { key, .. } => career.movie.push(key),
                 Output::ResetTriggerVolumeState { volume } => {
-                    #[expect(clippy::cast_precision_loss, clippy::cast_possible_truncation, reason = "the native (float)(double) id")]
-                    let matches = |id: u64| id as f64 as f32 == volume;
+                    let matches = |id: u64| crate::skate3::id_float(id) == volume;
                     for entries in career.previous.values_mut() {
                         entries.retain(|&(_, guid, local)| !matches(guid) && !matches(local));
                     }
@@ -3646,12 +3684,42 @@ impl<T, C> SelectedLiveSession<T, C> {
 
     /// Diagnostics: the local player teleported on board to `position`, unrotated.
     pub fn diagnostic_teleport_local_player(&mut self, position: [f32; 3]) -> bool {
+        self.diagnostic_teleport_local_player_facing(position, 0.0)
+    }
+
+    /// The same, facing `yaw` radians about +y from +z.
+    pub fn diagnostic_teleport_local_player_facing(&mut self, position: [f32; 3], yaw: f32) -> bool {
+        let (sin, cos) = yaw.sin_cos();
         let mut transform = [0.0; 16];
-        for axis in 0..4 {
-            transform[axis * 5] = 1.0;
-        }
+        transform[0] = cos;
+        transform[2] = -sin;
+        transform[5] = 1.0;
+        transform[8] = sin;
+        transform[10] = cos;
         transform[12..15].copy_from_slice(&position);
+        transform[15] = 1.0;
         self.teleport_local_player(transform).is_ok()
+    }
+
+    /// Diagnostics: the local skater teleported where it is, facing `yaw` radians about +y from
+    /// +z, on its board or off it (as an online round's sync point teleports it): a respawn of a
+    /// skater still moving.
+    pub fn diagnostic_teleport_here(&mut self, on_board: bool, yaw: f32) -> bool {
+        let position = match self.inner.player.as_ref().and_then(|player| player.selected.actor.as_deref()) {
+            Some(actor) => super::local_skater_position(self.inner.world.as_ref().map(|world| &world.world), actor),
+            None => return false,
+        };
+        let Ok(position) = position else { return false };
+        let (sin, cos) = yaw.sin_cos();
+        let mut transform = [0.0; 16];
+        transform[0] = cos;
+        transform[2] = -sin;
+        transform[5] = 1.0;
+        transform[8] = sin;
+        transform[10] = cos;
+        transform[12..15].copy_from_slice(&position);
+        transform[15] = 1.0;
+        if on_board { self.teleport_local_player(transform) } else { self.online_sync_teleport(transform) }.is_ok()
     }
 
     /// Diagnostics: visit an authored location without bypassing global activity/trigger updates.
@@ -3703,6 +3771,38 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.map_travel_presentation_ready = false;
         self.map_travel_dispatched = false;
         self.map_travel_on_board = true;
+    }
+
+    /// Diagnostics (`SKATE2_DIAGNOSTIC_SKATE3_SPOT`): the challenge map's travel to a linked
+    /// Skate 3 data folder's teleport named `name` (its `fe_locations` name or its title), into
+    /// its district, as `MapAction::TeleportSkate3` travels. False without such a spot.
+    pub fn diagnostic_skate3_teleport(&mut self, name: &str) -> bool {
+        let Some(data) = crate::skate3::linked() else { return false };
+        // SKATE2_DIAGNOSTIC_SKATE3_GRAFT: the online games' grafts onto a fresh challenge
+        // database, which report what joined.
+        if std::env::var_os("SKATE2_DIAGNOSTIC_SKATE3_GRAFT").is_some()
+            && let Some(assets) = self.inner.assets.as_ref()
+            && let Ok(mut db) = AttribDb::load_career(&assets.mounts)
+        {
+            data.graft_online_challenges(&mut db);
+        }
+        let found = data.districts.iter().find_map(|district| {
+            district
+                .spots
+                .iter()
+                .find(|spot| spot.name.eq_ignore_ascii_case(name) || spot.title.eq_ignore_ascii_case(name))
+                .map(|spot| (district.spec.stream, district.render_location, spot.transform))
+        });
+        let Some((stream, location, transform)) = found else {
+            for district in &data.districts {
+                let names: Vec<&str> = district.spots.iter().map(|spot| spot.name.as_str()).collect();
+                eprintln!("diagnostic: skate 3 spots of {}: {}", district.spec.key, names.join(" "));
+            }
+            return false;
+        };
+        let world = self.world_operation(location, Some(stream)).unwrap_or_default();
+        self.start_world_travel(world, transform, true);
+        true
     }
 
     /// Diagnostics: an event on the career challenge system's queue, as the game's own
@@ -4049,17 +4149,22 @@ impl<T, C> SelectedLiveSession<T, C> {
         Ok(())
     }
 
-    fn player_ui_queues(&mut self) -> Result<&mut crate::session_marker::teleport::SessionMarkerTeleportQueues, SelectedLiveError> {
+    pub(super) fn player_ui_queues(&mut self) -> Result<&mut crate::session_marker::teleport::SessionMarkerTeleportQueues, SelectedLiveError> {
         Ok(&mut self.inner.session_marker.as_mut().ok_or_else(|| error("session marker absent"))?.teleport)
     }
 
-    /// Diagnostics: `SKATE2_DIAGNOSTIC_RACE_GATES=<ticks>`: every so many completed ticks the
-    /// local skater goes on its board to the next gate of its race leg (the next leg's first
-    /// gate past the last, then the race's end), so a race runs to its finish.
+    /// Diagnostics: `SKATE2_DIAGNOSTIC_RACE_GATES=<ticks>[:<metres>]`: every so many completed
+    /// ticks the local skater goes on its board to the next gate of its race leg (the next leg's
+    /// first gate past the last, then the race's end), so a race runs to its finish; with metres
+    /// it first stops that far short of each, facing it.
     pub(super) fn diagnostic_race_gates(&mut self, player: i32) -> Result<(), SelectedLiveError> {
-        let Some(interval) = std::env::var("SKATE2_DIAGNOSTIC_RACE_GATES").ok().and_then(|ticks| ticks.parse::<u32>().ok()).filter(|&ticks| ticks > 0) else {
+        static SHORT_OF_GATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_RACE_GATES") else { return Ok(()) };
+        let (ticks, short) = spec.split_once(':').unwrap_or((&spec, "0"));
+        let Some(interval) = ticks.parse::<u32>().ok().filter(|&ticks| ticks > 0) else {
             return Ok(());
         };
+        let short = short.parse::<f32>().unwrap_or(0.0);
         if self.completed_frames % interval != 0 {
             return Ok(());
         }
@@ -4082,7 +4187,19 @@ impl<T, C> SelectedLiveSession<T, C> {
             transform[axis * 5] = 1.0;
         }
         transform[12..15].copy_from_slice(&target[..3]);
-        eprintln!("online: diagnostic race gate leg {leg} gate {gate} -> {:?}", &target[..3]);
+        let from = race.legs.get(leg).and_then(|current| current.gates.get(gate)).copied().unwrap_or(race.start_point);
+        if short > 0.0 && !SHORT_OF_GATE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let (dx, dz) = (target[0] - from[0], target[2] - from[2]);
+            let length = dx.hypot(dz).max(1e-3);
+            let (dx, dz) = (dx / length, dz / length);
+            transform[0..3].copy_from_slice(&[dz, 0.0, -dx]);
+            transform[8..11].copy_from_slice(&[dx, 0.0, dz]);
+            transform[12] -= dx * short;
+            transform[14] -= dz * short;
+        } else {
+            SHORT_OF_GATE.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        eprintln!("online: diagnostic race gate leg {leg} gate {gate} -> {:?}", &transform[12..15]);
         self.teleport_local_player(transform)
     }
 

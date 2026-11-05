@@ -20,6 +20,30 @@ impl std::fmt::Display for ActorTeleportError {
 }
 
 impl ActorConstruction {
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn try_skate3_teleport_publication(&self)
+        -> Result<(u32,crate::skeleton_root_transforms::SkeletonRootMatrix,bool,bool),ActorTeleportError> {
+        let state=self.prefix().map_err(ActorTeleportError::Actor)?;
+        let fields=state.fields.as_ref().ok_or(ActorTeleportError::Missing("initial fields"))?;
+        let reset=state.external_player_reset.as_ref().ok_or(ActorTeleportError::Missing("external-reset allocation"))?;
+        let flags=state.input_generation_flags.ok_or(ActorTeleportError::Missing("input flags"))?;
+        Ok((fields.teleport_count,reset.transform,reset.on_board,flags & 0x2000_0000 != 0))
+    }
+
+    /// PC mod counterpart of Actor.Update825f1138's reset acknowledgement.
+    /// Clear only the request the alternate solver actually consumed; a newer
+    /// Actor reset must remain pending. No native physics or animation runs.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn try_acknowledge_skate3_teleport(&self, generation:u32)->Result<bool,ActorTeleportError> {
+        let mut state=self.prefix().map_err(ActorTeleportError::Actor)?;
+        if state.fields.as_ref().ok_or(ActorTeleportError::Missing("initial fields"))?.teleport_count != generation {
+            return Ok(false);
+        }
+        let flags=state.input_generation_flags.as_mut().ok_or(ActorTeleportError::Missing("input flags"))?;
+        *flags &= !0x2000_0000;
+        Ok(true)
+    }
+
     /// Read Actor::Teleport's generation and retained reset without mutating it.
     pub(crate) fn try_teleport_publication(
         &self,
@@ -121,6 +145,26 @@ mod tests {
     use crate::actor_construction::{
         animation_mount::ExternalPlayerResetStorage, tests::actor_with_listener,
     };
+
+    #[test]
+    #[cfg(feature = "skate3-runtime")]
+    fn skate3_acknowledgement_cannot_clear_a_newer_actor_reset() {
+        let (actor, _route) = actor_with_listener();
+        let matrix = crate::skeleton_root_transforms::SkeletonRootMatrix::known([0.;16]);
+        {
+            let mut state = actor.prefix().unwrap();
+            state.external_player_reset=Some(ExternalPlayerResetStorage { transform:matrix,on_board:true });
+            state.input_generation_flags=Some(0x0800_0000);
+        }
+        actor.try_publish_teleport(&matrix,true).unwrap();
+        let generation=actor.try_teleport_publication().unwrap().0;
+        actor.try_publish_teleport(&matrix,false).unwrap();
+        assert!(!actor.try_acknowledge_skate3_teleport(generation).unwrap());
+        assert_eq!(actor.try_input_generation_flags().unwrap(),0x2800_0000);
+        assert!(actor.try_acknowledge_skate3_teleport(generation+1).unwrap());
+        assert_eq!(actor.try_input_generation_flags().unwrap(),0x0800_0000);
+        assert_eq!(actor.try_teleport_publication().unwrap().0,generation+1);
+    }
 
     #[test]
     fn publishes_all_matrix_lanes_and_actor_reset_flag_from_existing_owner() {

@@ -246,6 +246,11 @@ impl<A: ReckoningAttributeRead> Reckoning<A> {
         self.attributes.clone()
     }
 
+    #[cfg(all(test, feature = "skate3-runtime"))]
+    pub(crate) fn skate3_assist_snapshot(&self) -> (bool, [f32; 3]) {
+        (self.is_flipping, [self.flip_angle, self.flip_speed, self.target_flip_speed])
+    }
+
     pub(crate) fn body_spin(&self) -> (f32, f32) {
         (self.spin_speed, self.spin_angle)
     }

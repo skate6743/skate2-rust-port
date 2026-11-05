@@ -4,7 +4,7 @@
 //! native `Instance::GetAttributePointer`.
 
 /// `Attrib::Instance::GetAttributePointer` and the layout pointer of one collection.
-pub trait AttribSource: Send {
+pub trait AttribSource: Send + Sync {
     /// Element `index` of attribute `key` (its definition-sized bytes), `None` for a null
     /// pointer (missing collection or attribute, or an index past the array).
     fn attribute(&self, class: u64, collection: u64, key: u64, index: u32) -> Option<Vec<u8>>;

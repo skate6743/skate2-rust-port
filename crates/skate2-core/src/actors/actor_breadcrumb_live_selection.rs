@@ -37,6 +37,8 @@ pub(crate) enum LiveBreadCrumbSelectionError {
     MissingWorldServices,
     Network(PhysicalWorldServicesError),
     MissingRingRadii,
+    Skate3Owner(crate::actor_construction::physical_mount::ActorPhysicalMountError),
+    Skate3(String),
 }
 
 /// The Actor constructor's weak pointers and attribute binding are copied as
@@ -87,6 +89,17 @@ impl<'a> LiveBreadCrumbSelectionSource<'a> {
         pedestrian_radius: f32,
         vehicle_radius: f32,
     ) -> Result<bool, LiveBreadCrumbSelectionError> {
+        self.try_living_world_accepts_position(transform.columns()[3], pedestrian_radius, vehicle_radius, None)
+    }
+
+    /// `capsule` (height, radius) replaces this manager's own capsule attributes.
+    fn try_living_world_accepts_position(
+        &mut self,
+        position: SkeletonRootVector,
+        pedestrian_radius: f32,
+        vehicle_radius: f32,
+        capsule: Option<(f32, f32)>,
+    ) -> Result<bool, LiveBreadCrumbSelectionError> {
         use LiveBreadCrumbSelectionError as E;
         let services = self
             .world
@@ -99,7 +112,6 @@ impl<'a> LiveBreadCrumbSelectionSource<'a> {
             .owners
             .try_verify_living_world_in_world(self.simulation, self.world)
             .map_err(E::Owner)?;
-        let position = transform.columns()[3];
         let attributes = &self.attributes;
         self.world
             .try_offline_respawn_lw_constraints(
@@ -110,10 +122,13 @@ impl<'a> LiveBreadCrumbSelectionSource<'a> {
                 pedestrian_radius,
                 self.cvars,
                 || {
-                    let height = BreadCrumbFloatAttribute::CapsuleHeightForCollisionTest
-                        .try_read(attributes)?;
-                    let radius = BreadCrumbFloatAttribute::CapsuleRadiusForCollisionTest
-                        .try_read(attributes)?;
+                    let (height, radius) = match capsule {
+                        Some(capsule) => capsule,
+                        None => (
+                            BreadCrumbFloatAttribute::CapsuleHeightForCollisionTest.try_read(attributes)?,
+                            BreadCrumbFloatAttribute::CapsuleRadiusForCollisionTest.try_read(attributes)?,
+                        ),
+                    };
                     let start = position.zip(
                         SkeletonRootVector::known([0.0, radius, 0.0, 0.0]),
                         |a, b| a + b,
@@ -135,8 +150,76 @@ impl<'a> LiveBreadCrumbSelectionSource<'a> {
     }
 }
 
+#[cfg(feature = "skate3-runtime")]
+impl LiveBreadCrumbSelectionSource<'_> {
+    fn try_skate3_history(&mut self, pop: bool) -> Result<Option<SkaterBreadCrumb>, LiveBreadCrumbSelectionError> {
+        use LiveBreadCrumbSelectionError as E;
+        let physical = self.actor.cached_physical_allocation().map_err(E::Skate3Owner)?;
+        let owner = std::sync::Arc::clone(physical.owner());
+        let mut mode = owner.skate3.lock().map_err(|_| E::Skate3("Skate 3 player lock".into()))?;
+        let Some(player) = mode.as_mut() else { return Ok(None) };
+        let crumb = if pop { player.pop_breadcrumb(self) } else { player.suggested_breadcrumb(self) };
+        crumb.map(Some).map_err(E::Skate3)
+    }
+
+    /// IsPositionOk 82BFAFF0 when the Actor's physics is Skate 3's; None otherwise.
+    pub(crate) fn try_skate3_position_ok(&mut self, marker: &SkeletonRootMatrix) -> Result<Option<bool>, LiveBreadCrumbSelectionError> {
+        use LiveBreadCrumbSelectionError as E;
+        let physical = self.actor.cached_physical_allocation().map_err(E::Skate3Owner)?;
+        let owner = std::sync::Arc::clone(physical.owner());
+        let mode = owner.skate3.lock().map_err(|_| E::Skate3("Skate 3 player lock".into()))?;
+        let Some(player) = mode.as_ref() else { return Ok(None) };
+        player.breadcrumb_position_ok(marker, self).map(Some).map_err(E::Skate3)
+    }
+}
+
+/// TU3's breadcrumb checks of a position with this Actor's own services.
+#[cfg(feature = "skate3-runtime")]
+impl crate::skate3_native::physics::player::RespawnHost for LiveBreadCrumbSelectionSource<'_> {
+    fn network_game(&mut self) -> Result<bool, String> {
+        self.world
+            .physical_world_services()
+            .ok_or("breadcrumb world services absent")?
+            .try_is_network_game()
+            .map_err(|error| format!("{error:?}"))
+    }
+    /// `82BFBB48`: the network game's collision query with radius -1; with no boundaries loaded
+    /// `IsPositionOk` walks an empty map and passes.
+    fn network_position_ok(&mut self, position: [f32; 4]) -> Result<bool, String> {
+        let services = self.world.physical_world_services().ok_or("breadcrumb world services absent")?;
+        match services.game_info().try_online_boundaries().map_err(|error| format!("{error:?}"))? {
+            Some(boundaries) => Ok(boundaries.is_position_ok([position[0], position[1], position[2]], -1.0)),
+            None => Ok(true),
+        }
+    }
+    fn living_world_clear(
+        &mut self,
+        position: [f32; 4],
+        radii: crate::skate3_native::physics::player::LivingWorldRadii,
+    ) -> Result<bool, String> {
+        self.try_living_world_accepts_position(
+            SkeletonRootVector::known(position),
+            radii.pedestrian,
+            radii.vehicle,
+            Some((radii.capsule_height, radii.capsule_radius)),
+        )
+        .map_err(|error| format!("{error:?}"))
+    }
+}
+
 impl BreadCrumbSelectionSource for LiveBreadCrumbSelectionSource<'_> {
     type Error = LiveBreadCrumbSelectionError;
+
+    /// The Actor's Skate 3 player, when its physics is Skate 3's, answers from its history.
+    fn try_skate3_selection(&mut self, pop: bool) -> Result<Option<SkaterBreadCrumb>, Self::Error> {
+        #[cfg(feature = "skate3-runtime")]
+        return self.try_skate3_history(pop);
+        #[cfg(not(feature = "skate3-runtime"))]
+        {
+            let _ = pop;
+            Ok(None)
+        }
+    }
 
     fn try_wipeout_spot(
         &mut self,

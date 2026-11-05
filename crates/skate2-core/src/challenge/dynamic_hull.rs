@@ -289,7 +289,7 @@ pub(crate) fn game_load(world: &mut World, game_type_flags: u32) {
         let Some(location) = global(world, activity, field::LOCATION).and_then(|a| a.text(0)) else { continue };
         let radius = global(world, activity, field::RADIUS).and_then(|a| a.f32(0)).unwrap_or(0.0);
         // cLocationManager::IsValidLocation, then GetLocationPosition.
-        let Some(transform) = world.locations.get(&hash_value32(location)) else { continue };
+        let Some(transform) = world.location(hash_value32(location)) else { continue };
         let bounds = location_bounds([transform[12], transform[13], transform[14]], radius);
         world.dynamic_hulls.tree.push((activity, bounds));
     }

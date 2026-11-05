@@ -41,6 +41,62 @@ pub fn compose_recipe(db:&CacPartDb,parts:&[CacPartId;26],
     Ok(recipe)
 }
 
+/// PC port: a saved skater can wear parts whose files are absent, as Skate 3 clothes are once the
+/// Skate 3 data is unlinked. Each component with a missing model or texture takes its slot's
+/// native default part (`GetDefaultPartID` 0x82b68f78) for this load only; the saved record keeps
+/// the original parts. A slot with no loadable default is left empty. Returns the slots replaced.
+pub(crate) fn fill_missing_parts(mounts:&skate2_formats::mount::MountSet,recipe:&mut CharacterRecipe,
+    is_male:bool,category:&str)->EditSkaterCharacterResult<Vec<String>> {
+    let template=CharacterRecipe{components:Vec::new(),..recipe.clone()};
+    let present=|component:&skate2_formats::recipe::CharacterComponent| {
+        let single=CharacterRecipe{components:vec![component.clone()],..template.clone()};
+        single.asset_requests(category).iter().all(|request|mounts.contains_path(&request.entry_path))
+    };
+    if recipe.components.iter().all(|component|present(component)) {return Ok(Vec::new());}
+    static DB:std::sync::OnceLock<Arc<CacPartDb>>=std::sync::OnceLock::new();
+    let db=match DB.get() {
+        Some(db)=>Arc::clone(db),
+        None=>{
+            let db=Arc::new(CacPartDb::parse(&mounts.read_path(skate2_formats::cac_parts::DATABASE_PATH)?)?);
+            Arc::clone(DB.get_or_init(||db))
+        }
+    };
+    let customizations=recipe.customizations.clone();
+    let mut replaced=Vec::new();
+    let mut components=Vec::with_capacity(recipe.components.len());
+    for component in std::mem::take(&mut recipe.components) {
+        if present(&component) {components.push(component);continue;}
+        replaced.push(component.name.clone());
+        let Some(slot)=SLOT_NAMES.iter().position(|name|name.eq_ignore_ascii_case(&component.name)) else {continue};
+        let Some(part)=crate::edit_skater_record::default_part(&db,slot as u8,is_male) else {continue};
+        let parts:[CacPartId;26]=std::array::from_fn(|i| if i==slot {
+            CacPartId{model:part.model_id,material:part.material_id}
+        } else {CacPartId::invalid()});
+        let Some(customizations)=customizations.clone() else {continue};
+        let Ok(default)=compose_recipe(&db,&parts,customizations) else {continue};
+        if let Some(fallback)=default.components.into_iter().next() && present(&fallback) {
+            components.push(fallback);
+        }
+    }
+    components.sort_by_key(|p|skate2_formats::hash::rw_hash32_string(&p.name));
+    recipe.components=components;
+    if recipe.components.is_empty(){return Err("CAS recipe has no loadable components".into());}
+    Ok(replaced)
+}
+
+/// PC port: installed parts the database lacks (Skate 3 clothes with the Skate 3 data unlinked)
+/// show as their slots' native defaults; the record keeps the original ids.
+pub(crate) fn wearable_parts(db:&CacPartDb,parts:[CacPartId;26],is_male:bool)->[CacPartId;26] {
+    std::array::from_fn(|slot| {
+        let id=parts[slot];
+        let known=id==CacPartId::invalid() || db.master.components.iter()
+            .find(|c|c.name==SLOT_NAMES[slot]).is_none_or(|c|c.models.iter().any(|m|m.asset_id==id.model));
+        if known {return id;}
+        crate::edit_skater_record::default_part(db,slot as u8,is_male)
+            .map_or_else(CacPartId::invalid,|part|CacPartId{model:part.model_id,material:part.material_id})
+    })
+}
+
 /// CreateCopyFromComponents82d13f34..406c matches both model/material, then
 /// resolves the FIRST record with the matching key. Raw PPC confirms both
 /// comparisons are full64-bit, despite Hex-Rays splitting the registers.

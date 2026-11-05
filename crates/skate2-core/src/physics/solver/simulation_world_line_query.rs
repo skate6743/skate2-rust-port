@@ -213,6 +213,8 @@ pub(crate) struct SimulationWorldLineQueries {
 }
 
 impl SimulationWorldLineQueries {
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn skate3_island_flags(&self) -> u32 { self.island_flags }
     /// DynamicPool.Remove827c92b0 and BeginUpdate827c93f0 synchronize these
     /// four job families before changing mesh storage. Sync does not release
     /// a caller's batch lease; completed synchronous results remain retained.

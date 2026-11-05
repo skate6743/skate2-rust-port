@@ -259,6 +259,10 @@ impl CharacterCollisionPublication {
     }
     /// Actual backing of the copied inline aggregate record for this Part.
     /// Retained at Create, alongside the original Volume pointer projection.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn part_mesh_owner(&self, part: usize) -> Option<Arc<crate::world::CollisionArena>> {
+        self.mesh_arenas.get(part).and_then(Option::as_ref).map(Arc::clone)
+    }
     pub(crate) fn part_mesh_arena(&self, part: usize) -> Option<&crate::world::CollisionArena> {
         self.mesh_arenas.get(part).and_then(Option::as_deref)
     }

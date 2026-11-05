@@ -1034,9 +1034,14 @@ impl<N: fmt::Debug> fmt::Display for SimulationRigidBodyDisplacementError<N> {
     }
 }
 
+#[path = "external_player_driver.rs"]
+mod external_player_driver;
+
 /// Preallocated semantic body pool with four index-backed circular lists.
 #[derive(Debug)]
 pub struct SimulationRigidBodyPool {
+    externally_driven: Vec<SimulationRigidBodyObservation>,
+    mode_body_views: Vec<external_player_driver::ModeBodyView>,
     authority: SimulationRigidBodyPoolAuthority,
     /// Host-only ring validation is invariant between topology changes. Body
     /// reads still validate their exact authority/occurrence on every access.
@@ -1242,6 +1247,8 @@ impl SimulationRigidBodyPool {
         Ok(Self {
             authority,
             validated_topology: OnceLock::new(),
+            externally_driven: Vec::new(),
+            mode_body_views: Vec::new(),
             slots: storage.into_boxed_slice(),
             solver_delta_rows: solver_delta_rows.into_boxed_slice(),
             anchors,
@@ -1558,6 +1565,7 @@ impl SimulationRigidBodyPool {
     ) -> Result<[f32; 16], SimulationRigidBodyPoolError> {
         let index = self.validate_handle(handle)?;
         self.validate_integrity()?;
+        if let Some(view) = self.mode_body_view(handle.observation()) { return Ok(view.transform); }
         let slot = &self.slots[index];
         Ok([
             slot.right[0],
@@ -1785,7 +1793,7 @@ impl SimulationRigidBodyPool {
     ) -> Result<[f32; 3], SimulationRigidBodyPoolError> {
         let index = self.validate_observation(observation)?;
         self.validate_integrity()?;
-        Ok(self.slots[index].center_of_mass)
+        Ok(self.mode_body_view(observation).map_or(self.slots[index].center_of_mass, |view| view.center_of_mass()))
     }
 
     /// Current XYZ linear velocity for Island contact-list creation: A's side
@@ -1797,7 +1805,7 @@ impl SimulationRigidBodyPool {
     ) -> Result<[f32; 3], SimulationRigidBodyPoolError> {
         let index = self.validate_observation(observation)?;
         self.validate_integrity()?;
-        Ok(self.slots[index].velocity)
+        Ok(self.mode_body_view(observation).map_or(self.slots[index].velocity, |view| view.velocity))
     }
 
     /// `SkeletonCollision::Update` reads cached `RigidBody.mInvm`+0x7c at
@@ -1873,15 +1881,16 @@ impl SimulationRigidBodyPool {
         let index = self.validate_observation(observation)?;
         self.validate_integrity()?;
         let slot = &self.slots[index];
+        let view = self.mode_body_view(observation);
         Ok(SimulationRigidBodySerialisedAssemblySnapshot {
             observation,
             state: slot.state,
-            center_of_mass: slot.center_of_mass,
-            velocity: slot.velocity,
-            omega: slot.omega,
-            right: slot.right,
-            up: slot.up,
-            at: slot.at,
+            center_of_mass: view.map_or(slot.center_of_mass, |view| view.center_of_mass()),
+            velocity: view.map_or(slot.velocity, |view| view.velocity),
+            omega: view.map_or(slot.omega, |view| view.omega),
+            right: view.map_or(slot.right, |view| view.axis(0)),
+            up: view.map_or(slot.up, |view| view.axis(1)),
+            at: view.map_or(slot.at, |view| view.axis(2)),
             tag: slot.tag,
             force: slot.force,
             kinematic_value: slot.kinematic_value,
@@ -1947,21 +1956,22 @@ impl SimulationRigidBodyPool {
         let index = self.validate_observation(observation)?;
         self.validate_integrity()?;
         let slot = &self.slots[index];
+        let view = self.mode_body_view(observation);
         Ok(SimulationRigidBodyDriveBuildSnapshot {
             observation,
             state: slot.state,
-            quaternion: slot.quaternion,
-            center_of_mass: slot.center_of_mass,
-            velocity: slot.velocity,
-            omega: slot.omega,
-            right: slot.right,
-            up: slot.up,
-            at: slot.at,
+            quaternion: view.map_or(slot.quaternion, |view| view.quaternion),
+            center_of_mass: view.map_or(slot.center_of_mass, |view| view.center_of_mass()),
+            velocity: view.map_or(slot.velocity, |view| view.velocity),
+            omega: view.map_or(slot.omega, |view| view.omega),
+            right: view.map_or(slot.right, |view| view.axis(0)),
+            up: view.map_or(slot.up, |view| view.axis(1)),
+            at: view.map_or(slot.at, |view| view.axis(2)),
             force: slot.force,
             torque: slot.torque,
-            inverse_inertia_full: slot.inverse_inertia_full,
-            inverse_mass: slot.inverse_mass,
-            inverse_inertia_split: slot.inverse_inertia_split,
+            inverse_inertia_full: view.map_or(slot.inverse_inertia_full, |view| view.inverse_inertia_full),
+            inverse_mass: view.map_or(slot.inverse_mass, |view| view.inverse_mass),
+            inverse_inertia_split: view.map_or(slot.inverse_inertia_split, |view| view.inverse_inertia_split),
         })
     }
 
@@ -2376,6 +2386,18 @@ impl SimulationRigidBodyPool {
         Ok(index)
     }
 
+    /// Test probe: raw state word, cooldown and list membership.
+    #[cfg(test)]
+    pub(crate) fn probe_body(&self, observation: SimulationRigidBodyObservation) -> String {
+        match self.validate_observation(observation) {
+            Ok(index) => {
+                let slot = &self.slots[index];
+                format!("state={:#x} cooldown={} list={:?}", slot.state, slot.cooldown, slot.membership)
+            }
+            Err(e) => format!("{e:?}"),
+        }
+    }
+
     fn validate_observation(
         &self,
         observation: SimulationRigidBodyObservation,
@@ -2620,17 +2642,18 @@ impl<'pool> SimulationRigidBodyDynamicUpdatePhase<'pool> {
     ) -> Result<SimulationRigidBodyNetworkContactSnapshot, SimulationRigidBodyPoolError> {
         let index = self.pool.validate_observation(observation)?;
         let slot = &self.pool.slots[index];
+        let view = self.pool.mode_body_view(observation);
         Ok(SimulationRigidBodyNetworkContactSnapshot {
             observation,
-            center_of_mass: slot.center_of_mass,
-            velocity: slot.velocity,
-            omega: slot.omega,
-            right: slot.right,
-            up: slot.up,
-            at: slot.at,
-            inverse_inertia_full: slot.inverse_inertia_full,
-            inverse_mass: slot.inverse_mass,
-            inverse_inertia_split: slot.inverse_inertia_split,
+            center_of_mass: view.map_or(slot.center_of_mass, |view| view.center_of_mass()),
+            velocity: view.map_or(slot.velocity, |view| view.velocity),
+            omega: view.map_or(slot.omega, |view| view.omega),
+            right: view.map_or(slot.right, |view| view.axis(0)),
+            up: view.map_or(slot.up, |view| view.axis(1)),
+            at: view.map_or(slot.at, |view| view.axis(2)),
+            inverse_inertia_full: view.map_or(slot.inverse_inertia_full, |view| view.inverse_inertia_full),
+            inverse_mass: view.map_or(slot.inverse_mass, |view| view.inverse_mass),
+            inverse_inertia_split: view.map_or(slot.inverse_inertia_split, |view| view.inverse_inertia_split),
             state: slot.state,
             force: slot.force,
             kinematic_value: slot.kinematic_value,
@@ -2664,21 +2687,22 @@ impl<'pool> SimulationRigidBodyDynamicUpdatePhase<'pool> {
     ) -> Result<SimulationRigidBodyJointBuildSnapshot, SimulationRigidBodyPoolError> {
         let index = self.pool.validate_observation(observation)?;
         let slot = &self.pool.slots[index];
+        let view = self.pool.mode_body_view(observation);
         Ok(SimulationRigidBodyJointBuildSnapshot {
             observation,
             state: slot.state,
-            quaternion: slot.quaternion,
-            center_of_mass: slot.center_of_mass,
-            velocity: slot.velocity,
-            omega: slot.omega,
-            right: slot.right,
-            up: slot.up,
-            at: slot.at,
+            quaternion: view.map_or(slot.quaternion, |view| view.quaternion),
+            center_of_mass: view.map_or(slot.center_of_mass, |view| view.center_of_mass()),
+            velocity: view.map_or(slot.velocity, |view| view.velocity),
+            omega: view.map_or(slot.omega, |view| view.omega),
+            right: view.map_or(slot.right, |view| view.axis(0)),
+            up: view.map_or(slot.up, |view| view.axis(1)),
+            at: view.map_or(slot.at, |view| view.axis(2)),
             force: slot.force,
             torque: slot.torque,
-            inverse_inertia_full: slot.inverse_inertia_full,
-            inverse_mass: slot.inverse_mass,
-            inverse_inertia_split: slot.inverse_inertia_split,
+            inverse_inertia_full: view.map_or(slot.inverse_inertia_full, |view| view.inverse_inertia_full),
+            inverse_mass: view.map_or(slot.inverse_mass, |view| view.inverse_mass),
+            inverse_inertia_split: view.map_or(slot.inverse_inertia_split, |view| view.inverse_inertia_split),
         })
     }
 
@@ -2692,21 +2716,22 @@ impl<'pool> SimulationRigidBodyDynamicUpdatePhase<'pool> {
     ) -> Result<SimulationRigidBodyDriveBuildSnapshot, SimulationRigidBodyPoolError> {
         let index = self.pool.validate_observation(observation)?;
         let slot = &self.pool.slots[index];
+        let view = self.pool.mode_body_view(observation);
         Ok(SimulationRigidBodyDriveBuildSnapshot {
             observation,
             state: slot.state,
-            quaternion: slot.quaternion,
-            center_of_mass: slot.center_of_mass,
-            velocity: slot.velocity,
-            omega: slot.omega,
-            right: slot.right,
-            up: slot.up,
-            at: slot.at,
+            quaternion: view.map_or(slot.quaternion, |view| view.quaternion),
+            center_of_mass: view.map_or(slot.center_of_mass, |view| view.center_of_mass()),
+            velocity: view.map_or(slot.velocity, |view| view.velocity),
+            omega: view.map_or(slot.omega, |view| view.omega),
+            right: view.map_or(slot.right, |view| view.axis(0)),
+            up: view.map_or(slot.up, |view| view.axis(1)),
+            at: view.map_or(slot.at, |view| view.axis(2)),
             force: slot.force,
             torque: slot.torque,
-            inverse_inertia_full: slot.inverse_inertia_full,
-            inverse_mass: slot.inverse_mass,
-            inverse_inertia_split: slot.inverse_inertia_split,
+            inverse_inertia_full: view.map_or(slot.inverse_inertia_full, |view| view.inverse_inertia_full),
+            inverse_mass: view.map_or(slot.inverse_mass, |view| view.inverse_mass),
+            inverse_inertia_split: view.map_or(slot.inverse_inertia_split, |view| view.inverse_inertia_split),
         })
     }
 
@@ -3420,6 +3445,11 @@ impl<'pool> SimulationRigidBodyDynamicUpdatePhase<'pool> {
         let (slots, solver_delta_rows) = (&mut pool.slots, &mut pool.solver_delta_rows);
         for SimulationRigidBodyDynamicUpdatePlanEntry { index, inertia } in active {
             let slot = &mut slots[index];
+            if pool.externally_driven.iter().any(|body| {
+                body.id.0 as usize == index && Some(body.occurrence) == slot.occurrence
+            }) {
+                continue;
+            }
             simulation_dynamic_update(
                 SimulationDynamicUpdateBody {
                     quaternion: &mut slot.quaternion,
@@ -6256,6 +6286,68 @@ mod tests {
         assert!(
             matches!(slot.inertia.as_ref(), Some(RetainedInertia::Immutable(owner)) if Arc::ptr_eq(owner, &source))
         );
+    }
+
+    #[test]
+    #[cfg(feature = "skate3-runtime")]
+    fn native_mode_publication_never_rewrites_a_second_physical_body() {
+        let source = inertia(1.0);
+        let mut pool = pool_with_state(1, [0.0, -9.8, 0.0], 9);
+        let body = add(&mut pool, Some(&source), 4);
+        let original = pool.snapshot().slots[body.id().index() as usize].clone();
+        pool.try_set_externally_driven(&[body.observation()]).unwrap();
+        let transform = [1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,9.,8.,7.,1.];
+        let values = [(body.observation(), transform, [3.,2.,1.], [0.1,0.2,0.3])];
+        pool.try_publish_mode_body_views(&values).unwrap();
+        assert_eq!(pool.snapshot().slots[body.id().index() as usize], original,
+            "a completed mode publication must not copy physical state into the dormant native body");
+        assert_eq!(pool.try_rigid_body_pose(body).unwrap(), transform);
+        let view = pool.try_drive_build_snapshot(body.observation()).unwrap();
+        assert_eq!(view.center_of_mass, [9.,8.,7.]);
+        assert_eq!(view.velocity, [3.,2.,1.]);
+        assert_eq!(view.omega, [0.1,0.2,0.3]);
+        assert!(pool.try_publish_mode_body_views(&[]).is_err());
+        assert_eq!(pool.try_rigid_body_pose(body).unwrap(), transform);
+        pool.try_remove_rigid_body(body).unwrap();
+        let next = add(&mut pool, Some(&source), 4);
+        assert_eq!(next.id(), body.id());
+        assert!(pool.mode_body_view(next.observation()).is_none());
+        assert!(pool.try_publish_mode_body_views(&values).is_err());
+        pool.try_set_externally_driven(&[]).unwrap();
+        assert!(pool.mode_body_views.is_empty());
+    }
+
+    #[test]
+    fn alternate_solver_owns_only_exact_body_occurrences() {
+        let source = inertia(1.0);
+        let mut pool = pool_with_state(2, [0.0, -9.8, 0.0], 9);
+        let external = add(&mut pool, Some(&source), 4);
+        let native = add(&mut pool, Some(&source), 4);
+        pool.slots[external.id().index() as usize].velocity = [1., 0., 0.];
+        pool.slots[native.id().index() as usize].velocity = [1., 0., 0.];
+        pool.try_set_externally_driven(&[external.observation()]).unwrap();
+        let before = pool.snapshot().slots[external.id().index() as usize].clone();
+        pool.begin_dynamic_update_frame(0.5);
+        pool.try_integrate_active_bodies_ordinary_finite().unwrap();
+        assert_eq!(pool.snapshot().slots[external.id().index() as usize].clone(), before);
+        assert_ne!(pool.snapshot().slots[native.id().index() as usize].center_of_mass, before.center_of_mass);
+
+        let foreign_pool = pool_with_state(1, [0.; 3], 9);
+        let mut foreign_pool = foreign_pool;
+        let foreign = add(&mut foreign_pool, Some(&source), 4);
+        assert_eq!(pool.try_set_externally_driven(&[foreign.observation()]), Err(SimulationRigidBodyPoolError::ForeignHandle));
+        assert!(pool.is_externally_driven(external.observation()));
+        assert!(!pool.is_externally_driven(native.observation()));
+
+        // Removing/reusing a slot must never transfer alternate ownership to
+        // its next allocation occurrence, even before the driver refreshes.
+        pool.try_remove_rigid_body(external).unwrap();
+        let replacement = add(&mut pool, Some(&source), 4);
+        assert_eq!(replacement.id(), external.id());
+        assert!(!pool.is_externally_driven(replacement.observation()));
+        assert!(pool.try_set_externally_driven(&[external.observation()]).is_err());
+        pool.try_set_externally_driven(&[]).unwrap();
+        assert!(pool.externally_driven.is_empty());
     }
 
     #[test]

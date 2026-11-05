@@ -786,9 +786,9 @@ mod tests {
 
         let queues = build_recipe_loading_queues(&mappings, 3, 64).unwrap();
 
-        assert_eq!(queues.required(), []);
+        assert!(queues.required().is_empty());
         assert_eq!(queues.initial(), [30, 20, 10]);
-        assert_eq!(queues.secondary(), []);
+        assert!(queues.secondary().is_empty());
     }
 
     #[test]

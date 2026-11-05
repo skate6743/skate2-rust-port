@@ -76,10 +76,12 @@ impl ActorConstruction {
                 .and_then(|g| g.state.as_ref())
                 .ok_or(E::MissingOwner("Motion state"))?
                 .flags;
-            if flags.known_mask & 0x0400_0000 == 0 {
-                return Err(E::MissingOwner("Motion powerslide flag"));
+            // ISkaterMotionGraph+0x64 (82ca2a88) is IsDoingTrick825fe0b8, bit27 of
+            // Motion+0xca4: a trick in progress keeps the old riding-fakie answer.
+            if flags.known_mask & 0x0800_0000 == 0 {
+                return Err(E::MissingOwner("Motion IsDoingTrick flag"));
             }
-            eligible = flags.bits & 0x0400_0000 == 0;
+            eligible = flags.bits & 0x0800_0000 == 0;
         }
         let physical = self.cached_physical_allocation().map_err(E::Physical)?;
         if !eligible && filtered == FilteredPhysicsState::Grind {

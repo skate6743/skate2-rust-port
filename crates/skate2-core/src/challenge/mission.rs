@@ -313,6 +313,9 @@ impl MissionSystem {
     #[expect(clippy::too_many_lines, reason = "one native function")]
     fn generate_scoring_messages(&mut self, frame: &MissionFrame, tuning: MissionTuning, send: &mut impl FnMut(Event)) {
         if let Some(grind) = frame.finished_grind {
+            if std::env::var_os("SKATE2_TRACE_SCORE_SEQUENCE").is_some() {
+                eprintln!("score: mission grind completed player {} length {} pathed {:#x}", frame.player, grind.length, grind.pathed_guid);
+            }
             send(message(
                 "cMsgGrindCompleted",
                 frame,

@@ -52,6 +52,8 @@ pub(crate) enum AnimationPhaseError {
     Tree(TreeAttributeError),
     BlendSpace(BlendSpaceJobError),
     Time(GestureChannelError),
+    #[cfg(feature = "skate3-runtime")]
+    PcGesture(String),
     Write(GestureAnimationWriteError),
 }
 impl From<TreeAttributeError> for AnimationPhaseError {
@@ -67,6 +69,8 @@ impl std::fmt::Display for AnimationPhaseError {
             Self::Tree(error) => write!(f, "animation phase: {error}"),
             Self::BlendSpace(error) => error.fmt(f),
             Self::Time(error) => write!(f, "animation phase: {error}"),
+            #[cfg(feature = "skate3-runtime")]
+            Self::PcGesture(error)=>write!(f,"gesture phase: {error}"),
             Self::Write(error) => write!(f, "animation phase: {error}"),
         }
     }
@@ -124,6 +128,11 @@ impl<K, W> ActorAnimationConstruction<K, W> {
     }
 
     pub(super) fn phase_flag(&self, mask: u32) -> Result<bool, AnimationPhaseError> {
+        // S3's controller owns its trajectory queries. Do not schedule native
+        // S2 walking futures against an inactive native S2 player solver.
+        if self.skate3_movement && matches!(mask, 0x0010_0000 | 0x0008_0000) {
+            return Ok(false);
+        }
         let player = self
             .player
             .as_ref()
@@ -639,6 +648,8 @@ impl<K, W> ActorAnimationConstruction<K, W> {
         &mut self,
         dt: f32,
     ) -> Result<bool, AnimationPhaseError> {
+        #[cfg(feature = "skate3-runtime")]
+        if let Some(gesture)=self.pc_gesture_playback.as_mut(){gesture.advance(dt).map_err(AnimationPhaseError::PcGesture)?;}
         let was = self.phase_flag(0x0008_0000)?;
         if !was || !self.phase_flag(0x0010_0000)? {
             self.try_add_animation_time(dt)

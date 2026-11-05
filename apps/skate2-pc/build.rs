@@ -15,6 +15,23 @@ fn main() {
         // Windows reserves 1 MB (Linux and macOS 8).
         println!("cargo:rustc-link-arg-bins=/STACK:{}", 16 << 20);
     }
+    embed_pool_ground();
+}
+
+/// PC weather: the seven outdoor pools' floor heights the rain's water field fills
+/// (`weather_hydrology::solve_named_pools`), a game-derived grid kept outside the repository and
+/// given as `SKATE2_POOL_GROUND`. Without it the build carries none and those pools collect
+/// water from the live ground alone.
+fn embed_pool_ground() {
+    println!("cargo:rerun-if-env-changed=SKATE2_POOL_GROUND");
+    let bytes = std::env::var_os("SKATE2_POOL_GROUND").map_or_else(Vec::new, |path| {
+        println!("cargo:rerun-if-changed={}", std::path::Path::new(&path).display());
+        let bytes = std::fs::read(path).expect("the pool-ground grid");
+        assert_eq!(bytes.len(), 7 * (8 + 73 * 73 * 4), "a pool-ground grid of seven 73x73 pools");
+        bytes
+    });
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo's output folder"));
+    std::fs::write(out.join("pool-ground.bin"), bytes).expect("pool-ground.bin");
 }
 
 /// Links `icon` into the executable as icon group 1, the one Explorer shows and the window

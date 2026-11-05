@@ -56,6 +56,8 @@ pub(crate) mod crowd;
 pub(crate) mod deck_ao;
 pub(crate) mod movie;
 mod stereoscopy;
+mod weather;
+pub(crate) mod rain;
 
 pub(crate) use dynamic_object::{
     DynamicObjectDraw, DynamicObjectEffect, DynamicObjectMeshInput, GpuDynamicObject,
@@ -125,6 +127,10 @@ impl GpuTexture {
         self.cube
     }
 }
+
+/// Without PostFX: how far the scene's brightness rises with the NIS/challenge white fade (1 +
+/// this at a full fade).
+const NIS_WHITE_BLOWOUT: f32 = 3.0;
 
 /// Everything presented in one frame: the retained map draw list first, then
 /// individually bound objects such as the selected character and the spawned
@@ -1141,6 +1147,7 @@ impl GpuRenderer {
         capture: Option<(&wgpu::Buffer, u32, bool)>,
         eye: Option<&stereoscopy::Eye>,
     ) -> RenderResult<RecordedFrame> {
+        crate::weather::set_visible(scene.map.is_some());
         self.shadows.begin_frame();
         let gpu = self
             .gpu_profile
@@ -1391,6 +1398,10 @@ impl GpuRenderer {
             profile.stamp(&mut encoder, 3);
         }
         if let Some((parameters,_))=&scene.final_blit {
+            // PC weather composes over the scene before the native bloom and grading.
+            if let Some(map)=scene.map.as_ref() && let Some(frame)=map.weather_frame(eye) {
+                self.final_pass.as_mut().expect("initialized final pass").record_weather(&self.device,&self.queue,&mut encoder,map,frame,settings.postfx)?;
+            }
             if let Some((assets,frame))=scene.postfx.as_ref().filter(|_| settings.postfx) {
                 self.final_pass.as_mut().expect("initialized final pass").record_postfx(&self.device,&self.queue,&mut encoder,assets,frame,scene.deck_ao.as_ref(),eye)?;
             } else if let (Some((assets,frame)),Some(deck_ao),None)=(scene.postfx.as_ref(),scene.deck_ao.as_ref(),eye) {
@@ -1417,6 +1428,11 @@ impl GpuRenderer {
                 }
             }
             let mut parameters = parameters.for_display(settings);
+            // Without PostFX the bloom to white also blows the scene out as it rises, as the
+            // lowered bloom threshold does, under the white cover of the same value.
+            if !settings.postfx {
+                parameters.brightness *= scene.nis_white_alpha.mul_add(NIS_WHITE_BLOWOUT, 1.);
+            }
             parameters.supersample = self.scene_size(self.resolution_scale).0 > self.config.width;
             self.final_pass.as_mut().expect("initialized final pass").record(&self.queue,&mut encoder,view,&parameters,scene.out_of_boundary_amount,0.0,false)?;
             // Without PostFX its bloom to white has no pass to lower the bloom threshold in:

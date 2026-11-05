@@ -148,9 +148,31 @@ pub(crate) struct LivingWorldGrindServices {
     pedestrian_man_published: bool,
     pub(crate) mesh: Option<MeshMan>,
     pub(crate) rain: Option<RainMan>,
+    /// PC port (Skate 3 physics): this tick's Skate 3 solver contacts with pedestrian Parts, read
+    /// by the next `pedestrian_resolve_contacts`.
+    pub(crate) skate3_contacts: Vec<crate::pedestrian_collision::contacts::Skate3PedestrianContact>,
     attempted: bool,
 }
 impl LivingWorldGrindServices {
+    /// `PedestrianMan::ReleaseNavMeshTile` (`0x82e6e0f8`) for each tile the MeshStore removed
+    /// since the last frame: no pedestrian's rig or path keeps a cell or edge of it.
+    pub(crate) fn release_removed_nav_tiles(&mut self) -> Result<(), String> {
+        let Some(mesh) = self.mesh.as_ref() else { return Ok(()) };
+        let released = mesh.store.take_released().map_err(|e| format!("MeshStore released tiles: {e:?}"))?;
+        let Some(roster) = self.pedestrian_entities.as_mut() else { return Ok(()) };
+        for tile in &released {
+            for id in roster.ids() {
+                let Some(entity) = roster.get_mut(id) else { continue };
+                if let Some(rig) = entity.nav_rig.as_mut() {
+                    rig.mesh_info.release_tile(tile);
+                }
+                if let Some(navigation) = entity.mesh_navigation.as_mut() {
+                    navigation.release_tile(tile);
+                }
+            }
+        }
+        Ok(())
+    }
     pub(crate) const fn new() -> Self {
         Self {
             game_sim_events: None,
@@ -189,6 +211,7 @@ impl LivingWorldGrindServices {
             pedestrian_man_published: false,
             mesh: None,
             rain: None,
+            skate3_contacts: Vec::new(),
             attempted: false,
         }
     }

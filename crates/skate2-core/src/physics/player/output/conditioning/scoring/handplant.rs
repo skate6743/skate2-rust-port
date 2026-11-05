@@ -104,7 +104,10 @@ impl HandplantCollector {
                 .ok_or(ScoreError::Missing("handplant holder"))?
                 .lock()
                 .map_err(|_| ScoreError::Poisoned)?;
-            holder.trick_score = self.scorable.score + holder.trick_score;
+            // TU3 82DABC4C: held while ScoreHolder+0x1C5D is set.
+            if !holder.trick_score_held() {
+                holder.trick_score = self.scorable.score + holder.trick_score;
+            }
         }
         self.num_frames_in_collector = self.num_frames_in_collector.wrapping_add(1);
         self.update_height(ground)?;
@@ -115,7 +118,10 @@ impl HandplantCollector {
             .ok_or(ScoreError::Missing("handplant holder"))?
             .lock()
             .map_err(|_| ScoreError::Poisoned)?;
-        holder.trick_score = self.max_height_above_ground_points + holder.trick_score;
+        // TU3 82DAB8E0: held while ScoreHolder+0x1C5D is set.
+        if !holder.trick_score_held() {
+            holder.trick_score = self.max_height_above_ground_points + holder.trick_score;
+        }
         Ok(())
     }
 

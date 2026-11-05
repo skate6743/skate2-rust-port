@@ -78,4 +78,15 @@ impl SimulationInnerRegistryAsset {
             .object_bytes(&decoded.resources.resources, entry)
             .ok_or(InnerAssetError::ObjectBytes)
     }
+
+    /// The record's raw arena object type, of which a registry kind may admit more than one.
+    pub(crate) fn object_type(&self) -> Result<u32, InnerAssetError> {
+        let decoded = &self.plan.static_plan().asset().decoded;
+        decoded
+            .arena
+            .dictionary
+            .get(self.dictionary_index as usize)
+            .map(|entry| entry.type_id)
+            .ok_or(InnerAssetError::MissingDictionary(self.dictionary_index))
+    }
 }

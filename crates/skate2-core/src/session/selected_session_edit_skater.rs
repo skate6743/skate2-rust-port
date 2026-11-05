@@ -100,12 +100,13 @@ impl<T, C> SelectedLiveSession<T, C> {
             .map(|e| e.frontend.view().map_err(error))
             .transpose()
     }
-    pub fn edit_skater_character(&mut self) -> Option<(&mut EditSkaterCharacter, bool, u64, u64)> {
+    pub fn edit_skater_character(&mut self) -> Option<(&mut EditSkaterCharacter, bool, u64, u64, Option<u32>)> {
         self.editor.as_mut().map(|e| {
             let male = e.frontend.preview_record().data.is_male;
             let body = e.frontend.body_key();
             let camera = e.frontend.camera_key();
-            (&mut e.character, male, body, camera)
+            let gesture=e.frontend.skate3_gesture_preview();
+            (&mut e.character, male, body, camera, gesture)
         })
     }
     /// Original APT intro/outro completion messages gate frontend input/exit.
@@ -334,7 +335,9 @@ impl<T, C> SelectedLiveSession<T, C> {
             )
             .map_err(error)?;
         // Commit the native profile only after its return-to-game assets are ready.
-        editor.store.save_record(&record).map_err(error)?;
+        editor.store.save_record_and_mod_preferences(&record, Some(editor.frontend.gesture_settings), Some(editor.frontend.skate3_style)).map_err(error)?;
+        #[cfg(feature = "skate3-runtime")]
+        if let Some(tick)=self.inner.selected_tick.as_mut(){tick.gesture_preferences=None;tick.style_preferences=None;}
         let purchases = editor.frontend.shop.purchases().to_vec();
         self.editor_sounds.extend(editor.frontend.leave());
         self.editor = None;

@@ -1,6 +1,5 @@
-DLC support added, link XBOX DLCs in the "Downloadable Content" section
-Added spectating to online lobbies by pressing LB+B
-Freeskate activities added, propose them from the online menu
-Proper Controller Settings have been added
-Edit Skater can now be used live in online
-Fixed some crashes and updated netcode
+Skate 3 data can now optionally be linked to get access to Skate 3 maps, clothes, physics, online challenges
+New Gameplay Options such as Weather and FoV have been added (credits to Smokey for the weather system)
+New previously hidden 1-Up challenges added to online map pool (this gamemode was a leftover always in Skate 2)
+Fixed various online softlock issues
+Fixed scoring parity mistakes with flatground tricks

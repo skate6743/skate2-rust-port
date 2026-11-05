@@ -1,7 +1,8 @@
 //! PC port addition: the folder of the original game a launch plays from. `SKATE2_GAME_ROOT`
 //! names it when set; otherwise `config.json` does (`skate2_core::ui::game_config`), and when
 //! that names no folder holding the game's data the player picks the game's `.xex`, whose folder
-//! (holding the `data` folder) is checked and kept there.
+//! (holding the `data` folder) is checked and kept there. A disc image picked instead is the
+//! folder itself, read in place (`skate2_formats::disc`): nothing is unpacked.
 
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageLevel};
 use skate2_core::ui::game_config::GameConfig;
@@ -17,22 +18,37 @@ pub(crate) fn resolve() -> Result<Option<PathBuf>, String> {
     let mut config = GameConfig::load();
     let first = config.game_root.is_empty();
     let mut notice = if config.game_root.is_empty() {
-        (MessageLevel::Info, "Welcome! Locate your copy of Skate 2: select its .xex file (for example default.xex). The folder it is in has to hold the game's data folder.".to_owned())
+        (MessageLevel::Info, "Welcome! Locate your copy of Skate 2: select its .xex file (for example default.xex), whose folder has to hold the game's data folder, or its disc image (.iso).".to_owned())
     } else {
         let root = PathBuf::from(&config.game_root);
         match check_root(&root) {
             Ok(()) => return Ok(Some(root)),
-            Err(problem) => (MessageLevel::Warning, format!("Skate 2 was not found at {}: {problem}.\n\nLocate your copy of Skate 2 again: select its .xex file.", root.display())),
+            Err(problem) => (MessageLevel::Warning, format!("Skate 2 was not found at {}: {problem}.\n\nLocate your copy of Skate 2 again: select its .xex file or its disc image (.iso).", root.display())),
         }
     };
     loop {
         tell(notice.0, &notice.1);
-        let Some(xex) = FileDialog::new().set_title("Locate Skate 2's .xex file").add_filter("Xbox 360 executable", &["xex"]).pick_file() else {
+        let Some(picked) = FileDialog::new()
+            .set_title("Locate Skate 2's .xex file or disc image")
+            .add_filter("Xbox 360 executable or disc image", &["xex", "iso"])
+            .pick_file()
+        else {
             // Where no dialog can open (a Linux session without a desktop portal), the folder
             // can be written into config.json by hand.
             let config = GameConfig::path().map_or_else(|_| "config.json".into(), |path| path.display().to_string());
             eprintln!("no game folder was chosen: {config} names it as \"game_root\"");
             return Ok(None);
+        };
+        let xex = if skate2_formats::disc::is_image(&picked) {
+            match skate2_formats::disc::check_image(&picked) {
+                Ok(()) => picked.join("default.xex"),
+                Err(problem) => {
+                    notice = (MessageLevel::Warning, format!("The disc image could not be read: {problem}.\n\nSelect Skate 2's .xex file or disc image."));
+                    continue;
+                }
+            }
+        } else {
+            picked
         };
         let root = xex.parent().map(Path::to_path_buf).unwrap_or_default();
         match check_xex(&xex).and_then(|()| check_root(&root)) {
@@ -66,7 +82,7 @@ pub(crate) fn show_error(text: &str) {
 fn check_root(root: &Path) -> Result<(), String> {
     for spec in &SKATE2_ARCHIVES {
         let path = spec.path_under(root);
-        if !path.is_file() {
+        if !skate2_formats::host_path::is_file(&path) {
             return Err(format!("{} is missing", spec.relative_path));
         }
         MountedBig::open(&path, spec.use_external_header).map_err(|error| format!("{} cannot be read ({error})", spec.relative_path))?;
@@ -77,7 +93,7 @@ fn check_root(root: &Path) -> Result<(), String> {
 /// The file is an Xbox 360 executable.
 fn check_xex(path: &Path) -> Result<(), String> {
     let mut magic = [0_u8; 4];
-    std::fs::File::open(path).and_then(|mut file| file.read_exact(&mut magic)).map_err(|error| format!("the file cannot be read ({error})"))?;
+    skate2_formats::host_path::open(path).and_then(|mut file| file.read_exact(&mut magic)).map_err(|error| format!("the file cannot be read ({error})"))?;
     if magic == *b"XEX2" { Ok(()) } else { Err("the file is not an Xbox 360 executable".into()) }
 }
 

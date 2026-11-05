@@ -114,7 +114,7 @@ pub(crate) fn game_load(world: &mut World, flags: u32) {
     if flags == 4 {
         for activity in world.ots_discovery.all.clone() {
             let Some(name) = global_attribute(world, activity, LOCATION).and_then(|a| a.text(0)) else { continue };
-            let position = world.locations.get(&hash_value32(name)).map_or(world.default_location, |t| [t[12], t[13], t[14]]);
+            let position = world.location(hash_value32(name)).map_or(world.default_location, |t| [t[12], t[13], t[14]]);
             let bounds = activity::generate_location_activity_bbox(discovery_radius(world, activity), position);
             world.ots_discovery.tree.insert(activity, bounds);
         }

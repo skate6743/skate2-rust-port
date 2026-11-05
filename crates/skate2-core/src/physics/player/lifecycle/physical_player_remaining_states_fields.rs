@@ -567,11 +567,16 @@ impl OffBoardLocomotion {
 /// PDB 1136 bytes; preserves independently unwritten native fields.
 pub(crate) struct OffBoardPushing {
     pub(crate) base: StateConstructorBindings,
-    pub(crate) attribs: Option<AttributeRuntimeInstance>,
-    pub(crate) attribs_off_board: Option<AttributeRuntimeInstance>,
     pub(crate) player_grab_spline: Option<Option<StateOwnerLink>>,
     pub(crate) off_board_feet_ik: Option<Option<StateOwnerLink>>,
     pub(crate) skateboard_controller: Option<Option<StateOwnerLink>>,
+    /// The state's own fields, which the Skate 3 physics drives without a Skate 2 player.
+    pub(crate) core: PushingCore,
+}
+/// OffBoardPushing's fields besides its owner bindings.
+pub(crate) struct PushingCore {
+    pub(crate) attribs: Option<AttributeRuntimeInstance>,
+    pub(crate) attribs_off_board: Option<AttributeRuntimeInstance>,
     pub(crate) previous_spline_hands_transform: Option<Matrix>,
     pub(crate) current_spline_hands_transform: Option<Matrix>,
     pub(crate) blended_spline_hands_transform: Option<Matrix>,
@@ -630,15 +635,34 @@ pub(crate) struct OffBoardPushing {
     pub(crate) hand_ik_targets_valid: Option<bool>,
     pub(crate) hand_ik_targets_locked: Option<bool>,
 }
+impl std::ops::Deref for OffBoardPushing {
+    type Target = PushingCore;
+    fn deref(&self) -> &PushingCore {
+        &self.core
+    }
+}
+impl std::ops::DerefMut for OffBoardPushing {
+    fn deref_mut(&mut self) -> &mut PushingCore {
+        &mut self.core
+    }
+}
 impl OffBoardPushing {
     pub(super) fn before_constructor(base: StateConstructorBindings) -> Self {
         Self {
             base,
-            attribs: None,
-            attribs_off_board: None,
             player_grab_spline: None,
             off_board_feet_ik: None,
             skateboard_controller: None,
+            core: PushingCore::unconstructed(),
+        }
+    }
+}
+impl PushingCore {
+    /// Every field unwritten, as before the constructor runs.
+    pub(crate) fn unconstructed() -> Self {
+        Self {
+            attribs: None,
+            attribs_off_board: None,
             previous_spline_hands_transform: None,
             current_spline_hands_transform: None,
             blended_spline_hands_transform: None,

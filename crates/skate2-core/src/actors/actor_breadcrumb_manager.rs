@@ -49,6 +49,9 @@ pub(crate) struct ActorBreadCrumbManager {
     pub(crate) last_known_actor_position: SkeletonRootVector,
     pub(crate) attributes: AttributeRuntimeInstance,
     pub(crate) constructor_owners: ActorBreadCrumbConstructorOwners,
+    /// PC: counts the managers a new Actor would have had (`respawn`), so a breadcrumb history
+    /// kept by another physics owner of the same Actor restarts with them.
+    pub(crate) spawn_generation: u64,
     ring: [Option<SkaterBreadCrumb>; RING_STORAGE],
     begin: usize,
     end: usize,
@@ -79,6 +82,7 @@ impl ActorBreadCrumbManager {
             last_known_actor_position: spawn.columns()[3],
             attributes: vault.instance(CLASS, DEFAULT_COLLECTION),
             constructor_owners,
+            spawn_generation: 0,
             ring: [None; RING_STORAGE],
             begin: 0,
             end: 0,
@@ -106,6 +110,34 @@ impl ActorBreadCrumbManager {
         self.end = 0;
         self.size = 0;
         self.drop_breadcrumb(spawn, foot_forward_right, false);
+        self.spawn_generation = self.spawn_generation.wrapping_add(1);
+    }
+
+    /// The live ring, oldest first.
+    pub(crate) fn ring_oldest_first(&self) -> Vec<SkaterBreadCrumb> {
+        (0..self.size)
+            .filter_map(|age| self.ring[(self.begin + age) % RING_STORAGE])
+            .collect()
+    }
+
+    /// Skate 3 physics records the Actor's crumbs with TU3's breadcrumb Update (82BFB1E0) and
+    /// selects them with its own selectors; this manager shows that history to the rest of the
+    /// game: its entries, riding orientation and current position.
+    pub(crate) fn mirror(
+        &mut self,
+        entries: impl IntoIterator<Item = SkaterBreadCrumb>,
+        orientation: SkeletonRootMatrix,
+        position: SkeletonRootVector,
+    ) {
+        self.ring = [None; RING_STORAGE];
+        self.begin = 0;
+        self.end = 0;
+        self.size = 0;
+        for crumb in entries {
+            self.drop_breadcrumb(crumb.transform, crumb.foot_forward_right, crumb.offboard);
+        }
+        self.last_known_orientation = orientation;
+        self.last_known_actor_position = position;
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -212,6 +244,9 @@ impl ActorBreadCrumbManager {
             self.override_active = false;
             return Ok(self.override_respawn);
         }
+        if let Some(skate3) = source.try_skate3_selection(true)? {
+            return Ok(skate3);
+        }
         if let Some(wipeout_spot) = source.try_wipeout_spot(self)? {
             return Ok(wipeout_spot);
         }
@@ -229,6 +264,9 @@ impl ActorBreadCrumbManager {
         &self,
         source: &mut S,
     ) -> Result<SkaterBreadCrumb, S::Error> {
+        if let Some(skate3) = source.try_skate3_selection(false)? {
+            return Ok(skate3);
+        }
         if let Some(wipeout_spot) = source.try_wipeout_spot(self)? {
             return Ok(wipeout_spot);
         }
@@ -254,6 +292,11 @@ impl ActorBreadCrumbManager {
 /// this interface cannot silently assume the spawn is a valid reset location.
 pub(crate) trait BreadCrumbSelectionSource {
     type Error;
+    /// With Skate 3 physics the Actor's crumbs are TU3's: PopSuggestedRespawnPosition 82BFC9B0
+    /// (`pop`) or GetSuggestedRespawnPosition 82BFC828 over that history. None otherwise.
+    fn try_skate3_selection(&mut self, _pop: bool) -> Result<Option<SkaterBreadCrumb>, Self::Error> {
+        Ok(None)
+    }
     fn try_wipeout_spot(
         &mut self,
         breadcrumbs: &ActorBreadCrumbManager,
@@ -388,6 +431,10 @@ impl ActorConstruction {
             .map_err(E::Actor)?
             .ok_or(E::MissingAnimation)?;
         let animation = animation.lock().map_err(|_| E::AnimationLock)?;
+        #[cfg(feature = "skate3-runtime")]
+        if let Some(right) = animation.mode_foot_forward_right {
+            return Ok(right);
+        }
         let player = animation.player().ok_or(E::MissingAnimationPlayer)?;
         if player.flags_known_mask & 0x2000_0000 == 0 {
             return Err(E::UnknownRidingFakie);

@@ -2,6 +2,48 @@
 //! entity/interface owners; this module performs no replacement entity lookup.
 use super::{PedestrianBodyKind, PedestrianCollision};
 use crate::reckoning_numeric::{ReckoningNumeric, cross_full4, try_length};
+use crate::simulation_assembly_backend::constraint_session::physical_island::SimulationIslandBodyHandle;
+
+/// What a pedestrian's collision response reads of a contact: the Part, the normal on this Body's
+/// side, a self contact and the other Body.
+pub(crate) trait CollisionContact {
+    fn part(&self) -> u32;
+    fn normal(&self) -> &[f32; 3];
+    fn self_colliding(&self) -> bool;
+    fn other_body(&self) -> Option<&SimulationIslandBodyHandle>;
+}
+impl CollisionContact for crate::simulation_assembly_backend::constraint_session::physical_contact_list::PhysicalContactInfo {
+    fn part(&self) -> u32 { Self::part(self) }
+    fn normal(&self) -> &[f32; 3] { Self::normal(self) }
+    fn self_colliding(&self) -> bool { Self::self_colliding(self) }
+    fn other_body(&self) -> Option<&SimulationIslandBodyHandle> { Self::other_body(self) }
+}
+/// PC port (Skate 3 physics): the Skate 3 solver's contact between the local skater and a
+/// pedestrian collision Part, as TU3's shared island records it on the pedestrian's side
+/// (`cLivingWorldCollisionBody::GetContacts` 0x82e0e7b0).
+pub(crate) struct Skate3PedestrianContact {
+    pub(crate) body: crate::simulation_rigid_body_pool::SimulationRigidBodyObservation,
+    pub(crate) normal: [f32; 3],
+    pub(crate) other: SimulationIslandBodyHandle,
+}
+enum AnyContact<'a> {
+    Island(&'a crate::simulation_assembly_backend::constraint_session::physical_contact_list::PhysicalContactInfo),
+    Skate3 { part: u32, contact: &'a Skate3PedestrianContact },
+}
+impl CollisionContact for AnyContact<'_> {
+    fn part(&self) -> u32 {
+        match self { Self::Island(contact) => contact.part(), Self::Skate3 { part, .. } => *part }
+    }
+    fn normal(&self) -> &[f32; 3] {
+        match self { Self::Island(contact) => contact.normal(), Self::Skate3 { contact, .. } => &contact.normal }
+    }
+    fn self_colliding(&self) -> bool {
+        match self { Self::Island(contact) => contact.self_colliding(), Self::Skate3 { .. } => false }
+    }
+    fn other_body(&self) -> Option<&SimulationIslandBodyHandle> {
+        match self { Self::Island(contact) => contact.other_body(), Self::Skate3 { contact, .. } => Some(&contact.other) }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -113,7 +155,7 @@ impl crate::living_world_pedestrian_entity::PedestrianConstruction {
     /// All branches of OnEntityCollision82e95158. A false native callback
     /// return means traversal continues after every contact, even full hits.
     pub(crate) fn resolve_classified_collision<N: ReckoningNumeric>(&mut self,
-        contact: &crate::simulation_assembly_backend::constraint_session::physical_contact_list::PhysicalContactInfo,
+        contact: &impl CollisionContact,
         kind: PedestrianCollisionType, other: Option<&ContactEntity>,
         selected_animation: &crate::attribute_runtime::AttributeRuntimeInstance,
         world: &crate::physical_player_assembly::PhysicalAssemblyWorld,
@@ -191,7 +233,7 @@ impl crate::living_world_pedestrian_entity::PedestrianConstruction {
     /// determine_collision_type owner, before dispatching any response branch.
     /// ContactInfo carries the original sealed Spy/Body identities.
     pub(crate) fn record_collision_contact_owner(&mut self,
-        contact: &crate::simulation_assembly_backend::constraint_session::physical_contact_list::PhysicalContactInfo,
+        contact: &impl CollisionContact,
         kind: PedestrianCollisionType, other: Option<&ContactEntity>,
     ) -> Result<(), String> {
         if contact.self_colliding() || !matches!(kind, PedestrianCollisionType::Light | PedestrianCollisionType::Full) {
@@ -243,7 +285,7 @@ impl crate::living_world_pedestrian_entity::PedestrianConstruction {
     /// entity.velocity, or a substituted target transform. Other pedestrian is
     /// resolved from the original other Body owner, not a proximity search.
     pub(crate) fn resolve_full_collision<N: ReckoningNumeric>(&mut self,
-        contact: &crate::simulation_assembly_backend::constraint_session::physical_contact_list::PhysicalContactInfo,
+        contact: &impl CollisionContact,
         other_pedestrian: Option<bool>,
         selected_animation: &crate::attribute_runtime::AttributeRuntimeInstance,
         world: &crate::physical_player_assembly::PhysicalAssemblyWorld,
@@ -309,7 +351,7 @@ impl crate::living_world_pedestrian_entity::PedestrianConstruction {
     }
 }
 fn contact_degrees<N: ReckoningNumeric>(forward: [f32;4],
-    contact: &crate::simulation_assembly_backend::constraint_session::physical_contact_list::PhysicalContactInfo, numeric: &mut N,
+    contact: &impl CollisionContact, numeric: &mut N,
 ) -> Result<f32, String> where N::Error: std::fmt::Debug {
     use crate::reckoning_numeric::{normalize_from_squared_and_estimate, try_acos};
     use crate::physical_player_trajectory_owners::selector_grind::{vmax, vmin};
@@ -347,6 +389,7 @@ impl crate::living_world_grind_services::LivingWorldGrindServices {
         use crate::simulation_assembly_backend::constraint_session::physical_island::{
             SimulationIslandBodyHandle as Body, contact_owners::SimulationContactEntityOwner as Owner};
         use crate::living_world_chase::TargetableId;
+        let skate3_contacts = std::mem::take(&mut self.skate3_contacts);
         let random=self.random.as_mut().ok_or("pedestrian contacts require Manager RNG")?;
         let pedestrians = self.pedestrian_entities.as_deref_mut().ok_or("pedestrian contact roster absent")?;
         for id in pedestrians.ids() {
@@ -354,12 +397,20 @@ impl crate::living_world_grind_services::LivingWorldGrindServices {
             for body_kind in [PedestrianBodyKind::World, PedestrianBodyKind::Skater] {
                 let Some(handle) = entity.collision.as_ref().ok_or("pedestrian contact collision absent")?
                     .attached_handle(body_kind).cloned() else { continue; };
-                let body = Body::Pedestrian(handle);
+                let body = Body::Pedestrian(handle.clone());
                 //Clone preserves sealed Spy frame and exact Body handles; only
                 //releases the world borrow so callbacks can read actual Parts.
                 let contacts = world.try_get_island_collisions(&body)
                     .map_err(|e| format!("pedestrian Island contacts: {e:?}"))?.to_vec();
-                for contact in &contacts {
+                let mut all: Vec<AnyContact<'_>> = contacts.iter().map(AnyContact::Island).collect();
+                if body_kind == PedestrianBodyKind::Skater {
+                    for contact in &skate3_contacts {
+                        if let Some(part) = world.pedestrian_body_part(&handle, contact.body) {
+                            all.push(AnyContact::Skate3 { part, contact });
+                        }
+                    }
+                }
+                for contact in &all {
                     let owner = contact.other_body().map(|other| world.island_body_owner_for_contacts(other))
                         .transpose().map_err(|e| format!("pedestrian other contact owner: {e:?}"))?;
                     let other_id = match owner.as_ref() { Some(Owner::LivingWorld(id)) => Some(*id), _ => None };

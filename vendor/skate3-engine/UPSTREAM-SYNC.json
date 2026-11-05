@@ -1,0 +1,7 @@
+{
+  "base_capture": "60efdef86600d8d8d4feb4b7c608fa0efd0643d7",
+  "upstream": "2e16697797c8358d16f747a8259354ff2921041a",
+  "repository": "https://github.com/SK8-ENGINE/skate-3-rust-engine",
+  "preserved_capture_manifest": "SOURCE-SNAPSHOT.json",
+  "local_integration": "Native controller/physics calculations live in skate2-core; original local engine checkout is unchanged."
+}

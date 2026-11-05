@@ -12,6 +12,7 @@
 //! chase test of the info option are not ported.
 
 use super::{
+    attrib_db::AttribDb,
     keys::{class, hash64},
     map_icons::{self, MapIcon},
     signpost_progress,
@@ -48,14 +49,24 @@ pub mod category {
     pub const SPAWN_POINTS: i32 = 23;
     pub const DLC_SPAWN_POINTS: i32 = 24;
     pub const DLC_CAREER: i32 = 25;
-    /// `eFEStuffMenuCategory_Max`.
-    pub const MAX: i32 = 26;
+    /// PC port: linked Skate 3 data's districts under the downloaded content
+    /// (`crate::skate3::DISTRICTS`, in order), each listing its challenge map teleports.
+    pub const SKATE3_UNIVERSITY: i32 = 26;
+    pub const SKATE3_DOWNTOWN: i32 = 27;
+    pub const SKATE3_INDUSTRIAL: i32 = 28;
+    /// `eFEStuffMenuCategory_Max`, past the port's Skate 3 districts.
+    pub const MAX: i32 = 29;
 }
 use category as cat;
 
+/// The Skate 3 district categories, in `crate::skate3::DISTRICTS` order.
+const SKATE3_DISTRICTS: [i32; 3] = [cat::SKATE3_UNIVERSITY, cat::SKATE3_DOWNTOWN, cat::SKATE3_INDUSTRIAL];
+const CATEGORIES: usize = cat::MAX as usize;
+
 /// `FEStuffMenu::gSubCategory` (`0x82079860`): each category's sub-categories up to its
-/// `eFEStuffMenuCategory_None` (-99).
-const SUB_CATEGORIES: [&[i32]; 26] = [
+/// `eFEStuffMenuCategory_None` (-99). PC port: the downloaded content also holds linked Skate 3
+/// data's districts.
+const SUB_CATEGORIES: [&[i32]; CATEGORIES] = [
     &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 11],
     &[13, 14, 15, 16, 17, 18],
     &[],
@@ -67,7 +78,10 @@ const SUB_CATEGORIES: [&[i32]; 26] = [
     &[],
     &[],
     &[19, 20, 21, 22, 23],
-    &[24, 25],
+    &[24, 25, 26, 27, 28],
+    &[],
+    &[],
+    &[],
     &[],
     &[],
     &[],
@@ -84,8 +98,9 @@ const SUB_CATEGORIES: [&[i32]; 26] = [
     &[],
 ];
 
-/// `gStuffCategoryHAL` (`0x82fdb2f0`).
-pub const CATEGORY_HAL: [&str; 26] = [
+/// `gStuffCategoryHAL` (`0x82fdb2f0`); the Skate 3 districts are named by
+/// `crate::skate3::DistrictSpec::title` instead.
+pub const CATEGORY_HAL: [&str; CATEGORIES] = [
     "ID_COMMON_UNKNOWN",
     "ID_STUFFMENU_CATEGORY_CAREER",
     "ID_STUFFMENU_CATEGORY_RACES",
@@ -112,6 +127,9 @@ pub const CATEGORY_HAL: [&str; 26] = [
     "ID_STUFFMENU_CATEGORY_SPAWNPOINTS",
     "ID_STUFFMENU_CATEGORY_DLC_SPAWNPOINTS",
     "ID_STUFFMENU_CATEGORY_DLC_CAREER",
+    "ID_COMMON_UNKNOWN",
+    "ID_COMMON_UNKNOWN",
+    "ID_COMMON_UNKNOWN",
 ];
 
 /// `GetCategoryHAL` of the root, and the title the screen's constructor gives the Stuff panel.
@@ -138,6 +156,8 @@ mod field {
     /// `fe_locations.WorldFile` and `IsDLC`.
     pub const WORLD_FILE: u64 = 0x116c_a244_49c4_ce44;
     pub const IS_DLC: u64 = 0xd0cc_ffee_3455_65a4;
+    /// `fe_locations`' map: a `char*` image name and six words (28 bytes, `LoadMap` 0x8264cd88).
+    pub const MAP: u64 = 0x20bb_c594_cd2f_aef8;
     /// The `challenge_local_data` challenges that must all be complete before
     /// `PopulateMenuItemsVector` lists a challenge.
     pub const MENU_PREREQUISITES: u64 = 0xecec_13ce_a289_9d81;
@@ -293,6 +313,9 @@ pub enum Selection {
     HallOfMeat,
     /// `TriggerCreateASpotInfo`, which the port does not have.
     Unported,
+    /// PC port: a linked Skate 3 district's teleport (its `fe_locations` key in Skate 3's
+    /// database).
+    Skate3Location(u64),
 }
 
 /// `Sk8::FE::FEStuffMenu`.
@@ -301,7 +324,7 @@ pub struct StuffMenu {
     /// `mCategoryList`.
     lists: Vec<Vec<Item>>,
     /// `mCategoryMapping`: the level's shown sub-categories, as `FilterCategory` left them.
-    mapping: [i32; 26],
+    mapping: [i32; CATEGORIES],
     /// `mPopulateWithActiveChallenge`: the available challenges rather than the completed ones.
     pub populate_active: bool,
     /// `mbHasCompletedChallenge`.
@@ -320,7 +343,7 @@ impl Default for StuffMenu {
     fn default() -> Self {
         Self {
             lists: vec![Vec::new(); SUB_CATEGORIES.len()],
-            mapping: [0; 26],
+            mapping: [0; CATEGORIES],
             populate_active: true,
             has_completed: false,
             history: vec![cat::ROOT],
@@ -435,6 +458,7 @@ impl StuffMenu {
         }
         self.populate_dlc_spawn_points(world);
         self.populate_dlc_career(world);
+        self.populate_skate3_districts();
         self.populate_property(world);
     }
 
@@ -586,6 +610,19 @@ impl StuffMenu {
         }
     }
 
+    /// PC port: each linked Skate 3 district's teleports (`crate::skate3`), named by Skate 3's
+    /// English strings; none without linked Skate 3 data.
+    fn populate_skate3_districts(&mut self) {
+        let linked = crate::skate3::linked();
+        for (index, category) in SKATE3_DISTRICTS.into_iter().enumerate() {
+            self.clear(category);
+            let Some(district) = linked.as_ref().and_then(|data| data.districts.get(index)) else { continue };
+            for spot in &district.spots {
+                self.push(category, spot.title.clone(), spot.key);
+            }
+        }
+    }
+
     /// `PopulateMenuItemsVector_DlcCareer` (`0x82632fe0`) out of free skate, with `PopulateMenus`'
     /// flags (1 for the available challenges, 2 for the completed): with an additional world
     /// location (`sGameInfo.additionalWorldLocation`) that is downloadable content's (`IsDLC`),
@@ -670,13 +707,15 @@ impl StuffMenu {
                 }
             }
             cat::DOWNLOADED => {
-                if self.items(cat::DLC_SPAWN_POINTS).is_empty() {
-                    0
-                } else if self.items(cat::DLC_CAREER).is_empty() {
-                    1
-                } else {
-                    2
-                }
+                let skate3 = SKATE3_DISTRICTS.iter().filter(|&&district| !self.items(district).is_empty()).count();
+                skate3
+                    + if self.items(cat::DLC_SPAWN_POINTS).is_empty() {
+                        0
+                    } else if self.items(cat::DLC_CAREER).is_empty() {
+                        1
+                    } else {
+                        2
+                    }
             }
             cat::HALL_OF_MEAT => {
                 if !self.hom_active_determined {
@@ -697,7 +736,7 @@ impl StuffMenu {
     /// `FilterCategory` (`0x82629430`): the category's sub-categories with items, in
     /// `gSubCategory` order, become `mCategoryMapping` (the rest -1); their count.
     pub fn filter_category(&mut self, world: &World, category: i32) -> usize {
-        self.mapping = [-1; 26];
+        self.mapping = [-1; CATEGORIES];
         let Some(subs) = slot(category).map(|i| SUB_CATEGORIES[i]) else {
             return 0;
         };
@@ -725,6 +764,10 @@ impl StuffMenu {
 
     /// `GetCategoryHAL` (`0x8261cb48`).
     pub fn category_hal(&mut self, world: &World, category: i32) -> MenuText {
+        if let Some(index) = SKATE3_DISTRICTS.iter().position(|&district| district == category) {
+            let count = self.num_sub_menu_items(world, category);
+            return MenuText::Copied(format!("{} ({count})", crate::skate3::DISTRICTS[index].title));
+        }
         match slot(category) {
             Some(0) => MenuText::Copied(ROOT_HAL.to_owned()),
             Some(i) => MenuText::Category {
@@ -742,6 +785,10 @@ impl StuffMenu {
     pub fn challenge_hal(&self, index: usize) -> MenuText {
         match self.level() {
             cat::LEAF | cat::ROOT | cat::MAX | cat::CREATE_A_SPOTS => MenuText::Empty,
+            // A Skate 3 teleport's title is Skate 3's text itself.
+            level if SKATE3_DISTRICTS.contains(&level) => {
+                self.items(level).get(index).map_or(MenuText::Empty, |item| MenuText::Copied(item.hal_id.clone()))
+            }
             level => self
                 .items(level)
                 .get(index)
@@ -773,11 +820,11 @@ impl StuffMenu {
     /// whose items' map icons show (`StuffMenuFilter`); the index is kept for `FilterIcons()`.
     pub fn filter_icons(&mut self, world: &mut World, index: i32, mapped: bool) {
         let category = if mapped {
-            self.mapping[usize::try_from(index).ok().filter(|&i| i < 26).unwrap_or(0)]
+            self.mapping[usize::try_from(index).ok().filter(|&i| i < CATEGORIES).unwrap_or(0)]
         } else {
             index
         };
-        if (1..=25).contains(&category) {
+        if (1..cat::MAX).contains(&category) {
             let keys: Vec<u64> = self.items(category).iter().map(|item| item.key).collect();
             world.map_icons.stuff_menu_filter(&keys);
             self.filter_index = index;
@@ -798,6 +845,7 @@ impl StuffMenu {
         if Self::num_sub_categories(level) != 0
             || self.num_sub_menu_items(world, level) == 0
             || level == cat::HALL_OF_MEAT
+            || SKATE3_DISTRICTS.contains(&level)
         {
             return;
         }
@@ -837,6 +885,7 @@ impl StuffMenu {
                 | cat::SPAWN_POINTS
                 | cat::DLC_SPAWN_POINTS => Selection::Location(key),
                 cat::CREATE_A_SPOTS => Selection::Unported,
+                level if SKATE3_DISTRICTS.contains(&level) => Selection::Skate3Location(key),
                 cat::ROOT | cat::HALL_OF_MEAT => Selection::None,
                 _ if world.activities.find(key).is_none() => Selection::None,
                 cat::PROPERTY => Selection::Property(key),
@@ -915,6 +964,8 @@ pub enum Info {
     Location(u64),
     /// `eInfoComponentSubstate_PurchaseProperty`.
     Property(u64),
+    /// PC port: a linked Skate 3 district's teleport.
+    Skate3Location(u64),
 }
 
 /// A popup the map opens (`FrontEndManager::OpenPopup`, its `gPopupTemplate` `0x82fdbc58` row):
@@ -970,6 +1021,9 @@ pub enum MapAction {
     /// challenges start during loading, with `isReplayingChallenge` set.
     RetryChallenge(u64),
     TeleportLocation(u64),
+    /// PC port: a linked Skate 3 district's teleport (`crate::skate3::Skate3Data::spot`), into
+    /// the district as an additional world.
+    TeleportSkate3(u64),
 }
 
 /// The map's input: the menu picker's up and down, A (keycode 2, `OnMenuSelect`), B (3) and
@@ -1253,6 +1307,7 @@ impl ChallengeMap {
                         // states 20 and 72; _PurchaseProperty (0x8265f0f8): 72 and 22.
                         Selection::Challenge(key) => self.trigger_info(Info::Challenge(key)),
                         Selection::Location(key) => self.trigger_info(Info::Location(key)),
+                        Selection::Skate3Location(key) => self.trigger_info(Info::Skate3Location(key)),
                         Selection::Property(key) => self.trigger_info(Info::Property(key)),
                         Selection::HallOfMeat => {
                             // TriggerHomPanel8265f308: states70,40; APT
@@ -1364,6 +1419,7 @@ impl ChallengeMap {
     fn teleport(&self) -> MapAction {
         match self.info {
             Some(Info::Location(key)) => MapAction::TeleportLocation(key),
+            Some(Info::Skate3Location(key)) => MapAction::TeleportSkate3(key),
             Some(Info::Property(key)) => MapAction::TeleportChallenge(key),
             Some(Info::Challenge(key)) => {
                 if self.menu.populate_active {
@@ -1406,6 +1462,9 @@ impl ChallengeMap {
                 .db
                 .layout_text(class::FE_LOCATIONS, key, 2)
                 .map_or(MenuText::Empty, |name| MenuText::Copied(name.to_owned())),
+            Info::Skate3Location(key) => crate::skate3::linked()
+                .and_then(|data| data.spot(key).map(|(_, spot)| spot.title.clone()))
+                .map_or(MenuText::Empty, MenuText::Copied),
             Info::Challenge(key) | Info::Property(key) => match world
                 .db
                 .attribute(class::CHALLENGES, key, field::TITLE)
@@ -1433,7 +1492,7 @@ impl ChallengeMap {
                 option: self.info_option(world),
                 property: match info {
                     Info::Property(key) => Some(property_view(world, key)),
-                    Info::Challenge(_) | Info::Location(_) => None,
+                    Info::Challenge(_) | Info::Location(_) | Info::Skate3Location(_) => None,
                 },
             }),
             letterbox: self.letterbox,
@@ -1512,6 +1571,20 @@ pub fn location_world_file(world: &World, location: u64) -> Option<String> {
         return None;
     }
     world.db.attribute(class::FE_LOCATIONS, location, field::WORLD_FILE)?.text(0).map(str::to_owned)
+}
+
+/// `FrontEndState_ChallengeMap::LoadMap` (`0x8264ccf8`) with an additional world location: the
+/// map its `fe_locations` collection names, which `FEMapManager::LoadMap` loads.
+#[must_use]
+pub fn location_map(db: &AttribDb, location: u64) -> Option<crate::ui::map_menu::MapImage> {
+    let attribute = db.attribute(class::FE_LOCATIONS, location, field::MAP)?;
+    let name = attribute.text(0)?.to_owned();
+    let bytes = db.bytes(attribute.data(0)?, 28)?;
+    let mut words = [0; 6];
+    for (word, raw) in words.iter_mut().zip(bytes[4..].chunks_exact(4)) {
+        *word = i32::from_be_bytes(raw.try_into().ok()?);
+    }
+    Some(crate::ui::map_menu::MapImage { name, words })
 }
 
 /// An `fe_locations` collection's start location (layout text 1), which

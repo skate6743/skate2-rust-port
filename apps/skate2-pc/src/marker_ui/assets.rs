@@ -27,6 +27,23 @@ pub(super) struct Font {
     pub offset: [f32; 2],
     pub line_height_scale: f32,
 }
+/// PC port: a linked Skate 3 data folder's own HUD movies whose letters its 1-Ups show
+/// (`hud_leaderboard_movie`, `hud_throwmes_movie`), by their indices in [`Assets::movies`].
+#[derive(Clone, Copy)]
+pub(super) struct Skate3Hud {
+    pub leaderboard: usize,
+    pub throwdown_message: usize,
+}
+
+/// The Skate 3 movies [`Skate3Hud`] loads, each with the fingerprint its translation was made
+/// from: `leaderboardhud`, whose rows' `mUp` letters show, and `hudthrowmes`.
+const SKATE3_HUD_MOVIES: [(&str, u32); 2] =
+    [("data\\fe\\source\\screens\\hud2\\leaderboardhud", 0x74ef_24e4), ("data\\fe\\source\\screens\\hud2\\hudthrowmes", 0x320b_01a6)];
+
+/// The prefix of the Skate 3 movies' texture owners, which keeps their textures apart from the
+/// game's movies of the same names: none of the game's texture names ends with theirs.
+const SKATE3_TEXTURE_PREFIX: &str = "skate3_";
+
 pub(super) struct MapInfo {
     pub texture: String,
     // Original MapInfo: xmax,xmin,ymax,ymin,width,height.
@@ -42,13 +59,19 @@ pub(super) struct Assets {
     /// `screens.big`, for the DPO HUD's `dpoicons`.
     screens_archive: MountedBig,
     pub map_info: MapInfo,
+    /// The additional world locations' maps [`Assets::ensure_map`] loaded, by image name.
+    additional_maps: BTreeMap<String, MapInfo>,
     pub local_player_icon: String,
     /// Current FEBackEnd custom-argument values, refreshed with each career view.
     pub profile_name: String,
     pub pro_film_pro_name:String,
     pub sponsor_labels: [String; 4],
     pub frontend_arguments: skate2_core::FrontendArguments,
-    pub movies: [MovieAsset; 120],
+    /// The game's movies, then any [`Skate3Hud`] loaded.
+    pub movies: Vec<MovieAsset>,
+    pub skate3_hud: Option<Skate3Hud>,
+    /// Whether a linked Skate 3 data folder's HUD movies could not load, so none is tried again.
+    skate3_hud_failed: bool,
     pub fonts: BTreeMap<String, Font>,
     pub credits_source: String,
     /// The Flash name of the first font group entry whose file is not
@@ -138,6 +161,15 @@ impl MovieAsset {
             .map_or(actions, |&(_, offset)| ActionStream { offset })
     }
 }
+/// A label Skate 2 has no string for, from the linked Skate 3 data's own strings: the Skate 3
+/// physics mode's tricks and the Skate 3 gesture names. The game's own and DLC strings are looked
+/// up first; without linked Skate 3 data there is none.
+pub(super) fn skate3_label(hash: u32) -> Option<Vec<u16>> {
+    let data = skate2_core::skate3::linked()?;
+    let text = data.strings.get(&hash)?;
+    Some(text.encode_utf16().collect())
+}
+
 impl Assets {
     /// FEDynamicTexture resolves CAC thumbnails in the separately mounted
     /// data/fe/cas.big (original header has data\\fe\\cas\\...rx2 entries).
@@ -152,7 +184,17 @@ impl Assets {
             if self.textures.contains_key(&key) {
                 continue;
             }
-            let mut loaded = textures(&self.cac_archive.read_path(&format!("data\\{path}.rx2"))?)?;
+            let file = format!("data\\{path}.rx2");
+            // PC port: a linked Skate 3 data folder's clothing has its thumbnails in Skate 3's
+            // `fedynamic.big` (`skate2_core::skate3`).
+            let bytes = match self.cac_archive.read_path(&file) {
+                Ok(bytes) => bytes,
+                Err(error) => match skate2_core::skate3::linked().and_then(|data| data.mounts.read_path(&file).ok()) {
+                    Some(bytes) => bytes,
+                    None => return Err(error.into()),
+                },
+            };
+            let mut loaded = textures(&bytes)?;
             if loaded.len() != 1 {
                 return Err(format!("CAC thumbnail {path} has {} textures", loaded.len()).into());
             }
@@ -164,6 +206,59 @@ impl Assets {
         }
         Ok(changed)
     }
+    /// PC port: the linked Skate 3 data folder's [`Skate3Hud`], loaded on first use from its
+    /// `fedynamic.big` with their textures; `None` unlinked, or when its movies are not those
+    /// translated (the game's own then show). Answers whether they were loaded now.
+    pub(super) fn ensure_skate3_hud(&mut self) -> bool {
+        if self.skate3_hud.is_some() || self.skate3_hud_failed {
+            return false;
+        }
+        let Some(data) = skate2_core::skate3::linked() else { return false };
+        match self.load_skate3_hud(&data.mounts) {
+            Ok(hud) => {
+                self.skate3_hud = Some(hud);
+                true
+            }
+            Err(error) => {
+                eprintln!("skate 3 data: its 1-Up letters cannot load ({error}); the game's show");
+                self.skate3_hud_failed = true;
+                false
+            }
+        }
+    }
+
+    /// Loads the [`Skate3Hud`] from a Skate 3 data folder's `mounts`.
+    pub(super) fn load_skate3_hud(&mut self, mounts: &MountSet) -> RenderResult<Skate3Hud> {
+        let mut loaded = Vec::with_capacity(SKATE3_HUD_MOVIES.len());
+        let mut loaded_textures = Vec::new();
+        for (base, expected) in SKATE3_HUD_MOVIES {
+            let bytes = mounts.read_path(&format!("{base}.apt"))?;
+            let fingerprint = bytes.iter().fold(2166136261u32, |h, b| (h ^ u32::from(*b)).wrapping_mul(16777619));
+            if fingerprint != expected {
+                return Err(format!("{base} differs from the translated movie").into());
+            }
+            let name = base.rsplit('\\').next().ok_or("UI movie without basename")?;
+            loaded.push(MovieAsset {
+                texture_owner: format!("{SKATE3_TEXTURE_PREFIX}{name}"),
+                movie: Animation::parse(&bytes, &mounts.read_path(&format!("{base}.const"))?)?,
+                geometry: Geometry::parse(&mounts.read_path(&format!("{base}.geo"))?)?,
+                bytes,
+                moved_actions: &[],
+            });
+            for mut texture in textures(&mounts.read_path(&format!("{base}.rx2"))?)? {
+                texture.name = format!("{SKATE3_TEXTURE_PREFIX}{}", texture.name);
+                loaded_textures.push(texture);
+            }
+        }
+        let first = self.movies.len();
+        self.movies.extend(loaded);
+        for texture in loaded_textures {
+            self.textures.insert(texture.name.to_ascii_lowercase(), texture);
+        }
+        self.forget_texture_suffixes();
+        Ok(Skate3Hud { leaderboard: first, throwdown_message: first + 1 })
+    }
+
     /// `FrontEndState_FreeSkateOption::OnUpdate`8266a298's `LoadSyncArena` of
     /// data\fe\source\images\locations\<image>.rx2 and its `<image>.Texture`: the texture key,
     /// and whether it was loaded now.
@@ -195,6 +290,51 @@ impl Assets {
         self.forget_texture_suffixes();
         Ok((key, true))
     }
+    /// `FEMapManager::LoadMap` of an additional world location's map: its record's extents, and
+    /// its image from `screens.big` or, for a downloadable content location, its archives. Each
+    /// map loads once; a missing image is reported once and the default map stays. Returns the
+    /// textures loaded now.
+    pub(super) fn ensure_map(&mut self, image: &skate2_core::ui::map_menu::MapImage) -> RenderResult<Vec<String>> {
+        let key = image.name.to_ascii_lowercase();
+        if self.additional_maps.contains_key(&key) {
+            return Ok(Vec::new());
+        }
+        let [x_max, x_min, y_max, y_min, width, height] = image.words;
+        self.additional_maps.insert(
+            key,
+            MapInfo { texture: format!("{}.Texture", image.name), extents: [x_max, x_min, y_max, y_min], pixels: [width, height] },
+        );
+        let entry = format!("data\\fe\\source\\images\\map\\{}.rx2", image.name);
+        let bytes = match self.screens_archive.read_path(&entry) {
+            Ok(bytes) => bytes,
+            Err(MountError::EntryNotFound(_)) => self
+                .dlc_archives
+                .iter()
+                .find_map(|archive| archive.read_path(&entry).ok())
+                .ok_or_else(|| format!("map image {}.rx2 absent", image.name))?,
+            Err(error) => return Err(error.into()),
+        };
+        let mut loaded = Vec::new();
+        for texture in textures(&bytes)? {
+            let name = texture.name.to_ascii_lowercase();
+            if !self.textures.contains_key(&name) {
+                loaded.push(name.clone());
+                self.textures.insert(name, texture);
+            }
+        }
+        self.forget_texture_suffixes();
+        Ok(loaded)
+    }
+
+    /// The map `RenderMap` draws: the additional world location's once its image is loaded, else
+    /// the default location's.
+    pub(super) fn map(&self, image: Option<&skate2_core::ui::map_menu::MapImage>) -> &MapInfo {
+        image
+            .and_then(|image| self.additional_maps.get(&image.name.to_ascii_lowercase()))
+            .filter(|info| self.texture(&info.texture).is_ok())
+            .unwrap_or(&self.map_info)
+    }
+
     /// The DPO HUD's `LoadRX2Texture("fe\source\images\dpoicons\" + name)` from
     /// `screens.big`: the texture's key, and whether it was loaded now.
     pub(super) fn ensure_dpo_icon(&mut self, name: &str) -> RenderResult<(String, bool)> {
@@ -867,11 +1007,14 @@ impl Assets {
             dlc_archives: mounts.dlc_archives(),
             screens_archive: screens,
             map_info,
+            additional_maps: BTreeMap::new(),
             local_player_icon,
             profile_name: String::new(),pro_film_pro_name:String::new(),
             sponsor_labels: std::array::from_fn(|_| "ID_COMMON_UNKNOWN".to_owned()),
             frontend_arguments: Default::default(),
-            movies,
+            movies: movies.into(),
+            skate3_hud: None,
+            skate3_hud_failed: false,
             // Original char file uses single-byte Western European names, not UTF-8.
             credits_source: mounts.read_path("data\\credits\\credits.txt")?.into_iter().map(char::from).collect(),
             fonts,
@@ -916,20 +1059,24 @@ impl Assets {
         if let Some(literal) = label.strip_prefix('#') {
             return literal.encode_utf16().collect();
         }
+        let hash = string_hash(label.as_bytes());
         self.localized
-            .get(&string_hash(label.as_bytes()))
+            .get(&hash)
             .cloned()
+            .or_else(|| skate3_label(hash))
             .unwrap_or_else(|| vec![u16::from(b' ')])
     }
     pub fn localize(&self, label: &str) -> RenderResult<String> {
         if let Some(literal) = label.strip_prefix('#') {
             return Ok(literal.into());
         }
-        let units = self
-            .localized
-            .get(&string_hash(label.as_bytes()))
-            .ok_or_else(|| format!("missing original localized UI string {label}"))?;
-        Ok(String::from_utf16(units)?)
+        let hash = string_hash(label.as_bytes());
+        let units = match self.localized.get(&hash) {
+            Some(units) => units.clone(),
+            None => skate3_label(hash)
+                .ok_or_else(|| format!("missing original localized UI string {label}"))?,
+        };
+        Ok(String::from_utf16(&units)?)
     }
     pub fn texture(&self, suffix: &str) -> RenderResult<&NativeTexture> {
         let mut memo = self

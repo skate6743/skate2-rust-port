@@ -3,6 +3,9 @@
 use super::SkeletonNormalAssembly;
 #[path = "physical_player_post_wipeout_pose_board.rs"]
 pub(crate) mod board_visuals;
+#[cfg(feature = "skate3-runtime")]
+#[path = "../output/physical_player_movement_pose.rs"]
+mod movement_pose;
 use crate::{
     actor_construction::anim_out_phys_in::{
         AnimOutPhysInOwner,
@@ -71,6 +74,44 @@ impl SkeletonNormalAssembly {
         let deck = board
             .try_live_part_transform_typed(backend, 6)
             .map_err(E::Part)?;
+        self.try_publish_physical_local_pose(pose)?;
+        Ok(PoseBeforeBoardVisuals { deck })
+    }
+
+    /// PC physics-mode publication into the existing Skate 2 animation buffers.
+    /// Read the actual attached player Parts after their selected solver. Only
+    /// the 24 physical bones are replaced; the character's other authored
+    /// joints, face and hand animation remain owned by Skate 2.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn try_publish_mode_physics_pose(
+        &self,
+        pose: &mut AnimOutPhysInOwner,
+        backend: &SkateboardSimulationBackend,
+        world_to_animation: &Matrix,
+    ) -> Result<(), PosePublicationError> {
+        use PosePublicationError as E;
+        let data = &self.state.binding.body().data;
+        for part in SkeletonPartIndex::ALL {
+            let index = part.index();
+            let volume = self.session
+                .try_live_part_transform_typed(backend, index)
+                .map_err(E::Part)?;
+            let bone = volume.compose(&Matrix::known(data.volume_to_bone()[index]));
+            let global = world_to_animation.compose(&bone);
+            pose.set_pose_matrix_typed(PoseBuffer::Global, data.bone_ids()[index], &global)
+                .map_err(E::Pose)?;
+        }
+        self.try_publish_physical_local_pose(pose)
+    }
+
+    /// Shared native reverse-order global-to-local publication. The parent
+    /// table belongs to Skate 2's physical rig, including its authored roots.
+    fn try_publish_physical_local_pose(
+        &self,
+        pose: &mut AnimOutPhysInOwner,
+    ) -> Result<(), PosePublicationError> {
+        use PosePublicationError as E;
+        let data = &self.state.binding.body().data;
         for part in SkeletonPartIndex::ALL.into_iter().rev() {
             let index = part.index();
             let bone = data.bone_ids()[index];
@@ -90,6 +131,6 @@ impl SkeletonNormalAssembly {
             pose.set_pose_matrix_typed(PoseBuffer::Local, bone, &local)
                 .map_err(E::Pose)?;
         }
-        Ok(PoseBeforeBoardVisuals { deck })
+        Ok(())
     }
 }

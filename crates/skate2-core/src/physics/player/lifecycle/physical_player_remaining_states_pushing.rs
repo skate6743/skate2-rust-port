@@ -1,24 +1,35 @@
 //! Pushing ctor82d9c980/Reset82d91d70; real PID and conditional delay attributes.
 use super::{
     Arc, AttributeRuntimeVault, DEFAULT_COLLECTION, GrabDescriptor, GrabSpline, IDENTITY,
-    InputCvarReferences, OffBoardPushing, OwnerMember, ScalarPid, StateConstructorError, VectorPid,
+    InputCvarReferences, OffBoardPushing, OwnerMember, PushingCore, ScalarPid, StateConstructorError, VectorPid,
     ZERO, read_floats,
 };
 impl OffBoardPushing {
+    pub(super) fn construct(
+        &mut self,
+        vault: &Arc<AttributeRuntimeVault>,
+        cvars: &InputCvarReferences,
+    ) -> Result<(), StateConstructorError> {
+        self.player_grab_spline = Some(self.base.link(OwnerMember::PlayerGrabSpline));
+        self.off_board_feet_ik = Some(self.base.link(OwnerMember::OffBoardFeetIK));
+        self.skateboard_controller = Some(self.base.link(OwnerMember::SkateboardController));
+        self.core.construct(vault, cvars)
+    }
+}
+
+impl PushingCore {
+    /// The constructor's own fields: the attributes, the grab spline, both PIDs, then Reset.
     #[expect(
         clippy::too_many_lines,
         reason = "ordered constructor and Reset preserve partial attribute ownership"
     )]
-    pub(super) fn construct(
+    pub(crate) fn construct(
         &mut self,
         vault: &Arc<AttributeRuntimeVault>,
         cvars: &InputCvarReferences,
     ) -> Result<(), StateConstructorError> {
         self.attribs = Some(vault.instance(0x3eda_5b14_0604_613d, DEFAULT_COLLECTION));
         self.attribs_off_board = Some(vault.instance(0x4920_26e0_f096_f283, DEFAULT_COLLECTION));
-        self.player_grab_spline = Some(self.base.link(OwnerMember::PlayerGrabSpline));
-        self.off_board_feet_ik = Some(self.base.link(OwnerMember::OffBoardFeetIK));
-        self.skateboard_controller = Some(self.base.link(OwnerMember::SkateboardController));
         self.grab_spline_desc = Some(GrabDescriptor::INVALID);
         self.grab_spline = Some(GrabSpline::in_uninitialized_allocation());
         let control = read_floats::<4>(

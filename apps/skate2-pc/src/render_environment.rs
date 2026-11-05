@@ -62,6 +62,11 @@ const FOG_POWER_KEY: u64 = 0x9807_5c22_d130_b9b1;
 const FOG_START_KEY: u64 = 0xff6a_0d91_f34f_f75a;
 const FOG_STRENGTH_KEY: u64 = 0xf493_615b_931e_d5b5;
 const FOG_END_KEY: u64 = 0x23cf_effd_8097_9581;
+/// TU3's `Tonemap` (0x827f0d00) scales the measured luminance by 2.515 (0x827f0e08) before the
+/// exposure adapts.
+const SKATE3_LUMINANCE_SCALE: f32 = 2.515_000_1;
+/// The auto-exposure's luminance scale in a linked Skate 3 district (Skate 2 worlds use 1).
+const DISTRICT_LUMINANCE_SCALE: f32 = 0.9;
 /// `1/255` as the native `fnmsubs` operand (0x3b808081).
 const INV_255: f32 = f32::from_bits(0x3b80_8081);
 /// `RenderMan::RenderMan` 0x82854268 starts the fog and sky blends on the
@@ -302,6 +307,14 @@ pub(crate) struct EnvironmentLighting {
     /// `use_worldpainter`, the location's layout byte 0: `UpdateWorldPainterAttribs` 0x82848c08
     /// takes the WorldPainter keys only when it is set, else the location's references.
     pub(crate) use_worldpainter: bool,
+    /// `Tonemap`'s luminance scale: 1 in Skate 2, Skate 3's in a linked district.
+    pub(crate) luminance_scale: f32,
+    /// False in a linked Skate 3 district: its painted colour cube, exposure and bloom regions do
+    /// not apply and the PostFX stays the Skate 2 world's (PC port, user request).
+    pub(crate) painted_postfx: bool,
+    /// The Skate 3 sky's sun term scale (`S3_SKY_PS` reads it as `animation_time.z`; 0 leaves the
+    /// sun as authored).
+    pub(crate) sky_sun_scale: f32,
     pub(crate) default_irradiance: [[f32; 4]; 9],
     pub(crate) vehicle_lod_squared: [f32; 3],
     /// Materials whose `m_params` resolve to `material_sky/default`'s storage,
@@ -749,6 +762,9 @@ impl EnvironmentLighting {
                 envattributes,
                 use_world_sh_probes,
                 use_worldpainter,
+                luminance_scale: 1.0,
+                painted_postfx: true,
+                sky_sun_scale: 0.0,
                 default_irradiance,
                 sun_vector,
                 view_light_direction,
@@ -882,6 +898,118 @@ impl EnvironmentLighting {
         Ok(Some(environment))
     }
 
+    /// PC port, a linked Skate 3 district (`skate2_core::skate3`): its `render_locations`
+    /// collection in Skate 3's database (`db`, files in `mounts`), which lights it as Skate 3
+    /// does: the sun vector, default SH probe, probe and shadow flags, `g_envattributes`, and the
+    /// fog, sky, bloom, auto-exposure and colour cube collections and references, Skate 3's values
+    /// over Skate 2's for the keys both share, as are its world materials' `m_params`. Skate 3's
+    /// locations declare no sun-map flag, and the district has no WorldPainter data of its own
+    /// (San Vanelona's would paint it), so the location's references stand. `None` without the
+    /// collection.
+    pub(crate) fn with_skate3_render_location(&self, db: &AttribDb, key: u64) -> RenderResult<Option<Self>> {
+        let class = string_hash64("render_locations");
+        if !db.has_collection(class, key) {
+            return Ok(None);
+        }
+        let mut environment = self.clone();
+        let fog_class = string_hash64("material_fog");
+        for &collection in db.collections(fog_class) {
+            let float = |attribute| db.attribute(fog_class, collection, attribute).and_then(|value| value.f32(0));
+            let colour = db.attribute(fog_class, collection, FOG_COLOUR_KEY).and_then(|value| attribute_floats::<4>(&value, 0));
+            if let (Some(colour), Some(power), Some(start), Some(strength), Some(end)) =
+                (colour, float(FOG_POWER_KEY), float(FOG_START_KEY), float(FOG_STRENGTH_KEY), float(FOG_END_KEY))
+            {
+                environment.fogs.insert(collection, FogAttributes { colour, power, start, strength, end });
+            }
+        }
+        let sky_class = string_hash64("material_sky");
+        let m_params = string_hash64("m_params");
+        for &collection in db.collections(sky_class) {
+            let params = db.attribute(sky_class, collection, m_params);
+            let element = |index| params.as_ref().and_then(|params| attribute_floats::<4>(params, index)).unwrap_or([0.0; 4]);
+            environment.skies.insert(collection, [element(0), element(1)]);
+        }
+        let sky_storage = db.attribute(sky_class, DEFAULT_COLLECTION_KEY, m_params).and_then(|params| params.data(0));
+        for &material_class in &self.m_params_classes {
+            for &collection in db.collections(material_class) {
+                let Some(params) = db.attribute(material_class, collection, m_params) else { continue };
+                let values: Vec<[f32; 4]> = (0..params.len()).filter_map(|index| attribute_floats::<4>(&params, index)).collect();
+                if values.is_empty() {
+                    continue;
+                }
+                if material_class == sky_class && sky_storage.is_some() && params.data(0) == sky_storage {
+                    environment.sky_blended.insert((material_class, collection));
+                }
+                environment.material_params.insert((material_class, collection), values);
+            }
+        }
+        if let Some(attributes) = db.attribute(string_hash64("material_envattributes"), DEFAULT_COLLECTION_KEY, string_hash64("g_envattributes")) {
+            for (index, row) in environment.envattributes.iter_mut().enumerate() {
+                if let Some(value) = attribute_floats::<4>(&attributes, index) {
+                    *row = value;
+                }
+            }
+        }
+        // The character attributes and the view-light terms Skate 3's skaters are lit with
+        // (`material_charattributes/default`, `rendering/default`), as Skate 3 reads them.
+        if let Some(attributes) = db.attribute(string_hash64("material_charattributes"), DEFAULT_COLLECTION_KEY, string_hash64("g_charattributes")) {
+            let values: Vec<[f32; 4]> = (0..attributes.len()).filter_map(|index| attribute_floats::<4>(&attributes, index)).collect();
+            if !values.is_empty() {
+                environment.character_attributes = values;
+            }
+        }
+        let rendering = string_hash64("rendering");
+        let rendering_floats = |attribute: u64| db.attribute(rendering, DEFAULT_COLLECTION_KEY, attribute);
+        if let Some(direction) = rendering_floats(0xd900_aef7_ea4d_75a2).and_then(|value| attribute_floats::<4>(&value, 0)) {
+            environment.view_light_direction = direction;
+        }
+        if let Some(response) = rendering_floats(0x222c_ba2d_46ea_6839).and_then(|value| attribute_floats::<4>(&value, 0)) {
+            environment.view_light_response = response;
+        }
+        if let Some(minimum) = rendering_floats(0x0279_cce0_02b4_6bc4).and_then(|value| value.f32(0)) {
+            environment.view_light_minimum = minimum;
+        }
+        if let Some(backlit) = rendering_floats(0x9cdb_53d1_64e5_da30).and_then(|value| value.f32(0)) {
+            environment.view_light_backlit = backlit;
+        }
+        let value = |attribute: u64| {
+            db.attribute(class, key, attribute)
+                .ok_or_else(|| format!("skate 3 render location {key:016x}: attribute {attribute:016x} absent"))
+        };
+        let flag = |name: &str| db.attribute(class, key, string_hash64(name)).and_then(|value| value.bool(0));
+        environment.sun_vector = attribute_floats::<3>(&value(SUN_VECTOR_KEY)?, 0)
+            .ok_or_else(|| format!("skate 3 render location {key:016x}: sun vector unreadable"))?;
+        environment.sun_direction_map_requested = false;
+        // Skate 3's districts paint their fog and sky by region (`rendering_*` layers), as the
+        // location's flag says. PC port (user request): the PostFX stays the Skate 2 world's
+        // (exposure, bloom, colour cube and tonemap), which lights a district like Skate 2 does
+        // rather than with Skate 3's flatter grade. Under it the scene reads 2.515 times brighter
+        // than TU3's tonemap measures it, so the sky's sun disc is scaled back to Skate 3's
+        // on-screen brightness and does not flood the camera.
+        environment.use_worldpainter = flag("use_worldpainter").unwrap_or(false);
+        environment.painted_postfx = false;
+        environment.sky_sun_scale = 1.0 / SKATE3_LUMINANCE_SCALE;
+        // PC port (user request): the auto-exposure reads a district a little darker than it
+        // is, so the map comes out a touch brighter.
+        environment.luminance_scale = DISTRICT_LUMINANCE_SCALE;
+        environment.use_world_sh_probes = flag("use_world_sh_probes").unwrap_or(false);
+        environment.world_shadow.enabled = flag("use_world_onto_object_shadow").unwrap_or(environment.world_shadow.enabled);
+        let probe = value(DEFAULT_SH_PROBE_KEY)?;
+        if probe.len() == 9 {
+            for (index, row) in environment.default_irradiance.iter_mut().enumerate() {
+                if let Some([r, g, b]) = attribute_floats::<3>(&probe, index) {
+                    *row = [r, g, b, 0.0];
+                }
+            }
+        }
+        let reference = |attribute: u64| {
+            db.attribute(class, key, attribute).and_then(|value| value.ref_spec(0)).map_or(0, |(_, collection)| collection)
+        };
+        environment.location_fog_key = reference(fog_class);
+        environment.location_sky_key = reference(sky_class);
+        Ok(Some(environment))
+    }
+
     /// `m_params[0]` bound by `cMaterialScope::Resolve` for this material key.
     pub(crate) fn material_params(&self, class_id: u64, variant_id: u64) -> Option<[f32; 4]> {
         self.material_params
@@ -915,6 +1043,18 @@ impl EnvironmentLighting {
     ) -> Option<([[f32; 4]; 2], bool)> {
         let params = self.material_params.get(&(class_id, variant_id))?;
         let params = [*params.first()?, *params.get(1)?];
+        Some((params, self.sky_blended.contains(&(class_id, variant_id))))
+    }
+
+    /// PC port: a Skate 3 sky material's `m_params`, of which `sky_defaultPS.fpo` reads element 0
+    /// alone (c4[1]); a second element is passed on unread, else zeroes.
+    pub(crate) fn s3_sky_material_params(
+        &self,
+        class_id: u64,
+        variant_id: u64,
+    ) -> Option<([[f32; 4]; 2], bool)> {
+        let params = self.material_params.get(&(class_id, variant_id))?;
+        let params = [*params.first()?, params.get(1).copied().unwrap_or([0.0; 4])];
         Some((params, self.sky_blended.contains(&(class_id, variant_id))))
     }
 
@@ -1029,6 +1169,9 @@ mod tests {
             }),
             use_world_sh_probes: true,
             use_worldpainter: true,
+            luminance_scale: 1.0,
+            painted_postfx: true,
+            sky_sun_scale: 0.0,
             default_irradiance:[[0.;4];9],
             envattributes,
             sun_vector: [-0.41, 0.4, 0.8],

@@ -526,6 +526,14 @@ impl SkeletonNormalAssembly {
         &self.state
     }
 
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn accept_mode_return_root(&mut self,
+        root: crate::skeleton_root_transforms::SkeletonRootMatrix,
+        board: crate::skeleton_root_transforms::SkeletonRootMatrix,
+    ) {
+        self.root_transforms.accept_mode_return(root, board);
+        self.general_update.clear_add_skateboard_error();
+    }
     pub(crate) fn root_transforms(
         &self,
     ) -> &crate::skeleton_root_transforms::SkeletonRootTransforms {

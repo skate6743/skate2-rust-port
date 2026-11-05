@@ -252,11 +252,10 @@ fn award_sequence_points_immediately(_: &mut Lua<World>, world: &mut World, call
 
 /// `Grind.DidSpecificGrind(id)` (`0x82d464a8`) -> `cChallengeObjective::DidSpecificGrind`
 /// (`0x82d43fe0`): a completed grind's spline ID as a float equals the id.
-#[expect(clippy::cast_precision_loss, reason = "(float)_u64tod")]
 #[expect(clippy::float_cmp, reason = "the native compares exactly")]
 fn did_specific_grind(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let id = get_float(call, 0);
-    boolean(objective(world).is_some_and(|o| o.completed_grinds.iter().any(|&spline| spline as f64 as f32 == id)))
+    boolean(objective(world).is_some_and(|o| o.completed_grinds.iter().any(|&spline| crate::skate3::id_float(spline) == id)))
 }
 
 /// `Grind.GetLastGrindLength()` (`0x82d46538`): `mGrindLength`.

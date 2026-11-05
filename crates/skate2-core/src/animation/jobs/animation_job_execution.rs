@@ -184,19 +184,16 @@ impl AnimationSchedulerBackend {
         jobs: &[AnimationQueuedJob],
         has_blend: bool,
     ) -> Result<(), AnimationExecutionError> {
-        if !has_blend {
-            return self.submit_body_pose(jobs);
-        }
-        self.submit_selected_chain(
-            jobs,
-            &[
-                None,
-                Some(AnimationJobCode::LocalToGlobal),
-                Some(AnimationJobCode::SqtToLocal),
-                Some(AnimationJobCode::SqtBlend),
-                Some(AnimationJobCode::FetchVbr),
-            ],
-        )
+        self.submit_body_tree_with_set(jobs,has_blend,false)
+    }
+
+    pub(crate) fn submit_body_tree_with_set(self:&Arc<Self>,jobs:&[AnimationQueuedJob],has_blend:bool,has_set:bool)
+        ->Result<(),AnimationExecutionError>{
+        let mut expected=vec![None,Some(AnimationJobCode::LocalToGlobal),Some(AnimationJobCode::SqtToLocal)];
+        if has_blend {expected.push(Some(AnimationJobCode::SqtBlend));}
+        expected.push(Some(AnimationJobCode::FetchVbr));
+        if has_set {expected.push(Some(AnimationJobCode::SetData));}
+        self.submit_selected_chain(jobs,&expected)
     }
 
     /// Existing body jobs separated by native bounded-buffer reuse barriers.
@@ -205,11 +202,17 @@ impl AnimationSchedulerBackend {
         jobs: &[AnimationQueuedJob],
         segments: &[(bool, bool, bool)],
     ) -> Result<(), AnimationExecutionError> {
+        let with_set=segments.iter().map(|&(fetch,blend,reuse)|(false,fetch,blend,reuse)).collect::<Vec<_>>();
+        self.submit_body_segments_with_set(jobs,&with_set)
+    }
+    pub(crate) fn submit_body_segments_with_set(self:&Arc<Self>,jobs:&[AnimationQueuedJob],segments:&[(bool,bool,bool,bool)])
+        ->Result<(),AnimationExecutionError>{
         if segments.len() < 2 || segments.len() > 8 {
             return Err(AnimationExecutionError::UnsupportedGraph);
         }
         let mut expected = vec![];
-        for &(fetch, blend, reuse) in segments {
+        for &(set,fetch,blend,reuse) in segments {
+            if set {expected.push(Some(AnimationJobCode::SetData));}
             if fetch {
                 expected.push(Some(AnimationJobCode::FetchVbr));
             }

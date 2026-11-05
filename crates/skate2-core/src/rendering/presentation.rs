@@ -38,6 +38,10 @@ pub struct HullPresentation {
     pub hull: u32,
     pub file_name: String,
     pub collections: Vec<u64>,
+    /// The hull's simulation collections (`<name>_Sim`), which `NotifyCollectionReg`
+    /// (`0x82d5c8c0`) registers with the presentation as well: of them the presentation
+    /// takes the visual indicator data.
+    pub sim_collections: Vec<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -73,6 +77,11 @@ pub struct PresentationArena {
     /// The arena's `tEmitterWayPointData` blocks (`RegArena` asset type 0x1d), in dictionary
     /// order.
     pub emitter_waypoints: Vec<Arc<crate::world_particles::EmitterWaypointData>>,
+    /// The arena's `tVisualIndicatorData` (`RegArena` asset type 0x11, which
+    /// `ProcessVisualIndicatorData` 0x82d5f5a0 adds to the presentation registry from any
+    /// arena): the streamed splines of `VIPresentation::AddStreamedSplineInstance`, in
+    /// dictionary order.
+    pub visual_indicators: Vec<Arc<skate2_formats::pegasus::VisualIndicatorData>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -481,6 +490,7 @@ mod tests {
                     instances: Vec::new(),
                     anti_frustums: Vec::new(),
                     emitter_waypoints: Vec::new(),
+                    visual_indicators: Vec::new(),
                 }],
             }],
         };
@@ -557,6 +567,7 @@ mod tests {
                     instances: Vec::new(),
                     anti_frustums: Vec::new(),
                     emitter_waypoints: Vec::new(),
+                    visual_indicators: Vec::new(),
                 }],
             }],
         };

@@ -20,7 +20,7 @@ use skate2_core::{
     decoded_arena_asset::{DecodedArenaAsset, DecodedArenaAssetBuilder},
     game_stream::{StreamFile, StreamFileState, StreamKind},
     mounted_character_scene::own_presentation_arena,
-    mounted_stream_backend::MountedStreamBackend,
+    mounted_stream_backend::{MountedReadHandle, MountedStreamBackend, MountedStreamBackendError},
     owned_resident_collection::{
         OwnedResidentCollection, OwnedResidentCollectionError, OwnedResidentCollectionStorage,
         ResidentAssetIdentity,
@@ -31,7 +31,7 @@ use skate2_core::{
         MountedResidentCollectionLoadDriver, MountedResidentCollectionLoadSpec,
     },
     world_stream_catalog::{
-        AssetRegistrationSnapshot, CollectionRegistrationSnapshot, WorldStreamCatalog,
+        AssetRegistrationSnapshot, CatalogError, CollectionRegistrationSnapshot, WorldStreamCatalog,
     },
 };
 use skate2_formats::{
@@ -139,11 +139,18 @@ pub(crate) struct ProxyGeometry {
     pub(crate) containers: BTreeMap<u64, Vec<u64>>,
 }
 
+/// A loaded proxy stream file, with what unloads it from the catalog.
+type LoadedStream = (StreamFile<MountedReadHandle, MountedStreamBackendError<CatalogError>>, Arc<MountSet>, WorldStreamCatalog);
+
+/// How many polls the stream's unload gets before it is left registered.
+const UNLOAD_POLLS: usize = 4096;
+
 pub(crate) struct ProxyTextures {
     textures: BTreeMap<u64, Arc<Product>>,
     collections: Vec<OwnedResidentCollection<SharedLoadedArenaAsset<Product>>>,
     registration_ids: Vec<CollectionId>,
     registrations: ArenaRegistrationRefCounter,
+    stream: Option<LoadedStream>,
 }
 impl ProxyTextures {
     /// `order` is `mProxyCollectionID` (`proxy_world_manager`), the order
@@ -153,11 +160,12 @@ impl ProxyTextures {
         catalog: WorldStreamCatalog,
         uploader: GpuTextureUploader,
         order: &[u64],
+        stream_name: &str,
     ) -> RenderResult<(Self, ProxyGeometry)> {
         let mut backend = MountedStreamBackend::new(Arc::clone(&mounts), catalog.clone())?;
         let mut stream = StreamFile::load(
             "data\\content\\world\\stream",
-            "PROXY",
+            stream_name,
             StreamKind::Presentation,
         )?;
         while stream.state() != StreamFileState::LOAD_DONE {
@@ -198,6 +206,7 @@ impl ProxyTextures {
             collections: Vec::new(),
             registration_ids: Vec::new(),
             registrations: ArenaRegistrationRefCounter::default(),
+            stream: None,
         };
         for &spatial in order {
             for request in parents.plan_load(CollectionId(spatial))? {
@@ -353,6 +362,8 @@ impl ProxyTextures {
             result.textures.len(),
             geometry.collections.len()
         );
+        drop(backend);
+        result.stream = Some((stream, mounts, catalog));
         Ok((result, geometry))
     }
     pub(crate) fn entries(&self) -> impl Iterator<Item = (u64, &GpuTexture)> {
@@ -377,5 +388,19 @@ impl Drop for ProxyTextures {
         }
         self.textures.clear();
         self.collections.clear();
+        // `cStreamFile::Unload`: the stream's collections, asset TOC and file leave the catalog,
+        // so another stream naming the same collections (a linked Skate 3 data folder's other
+        // districts' proxies) can register them.
+        if let Some((mut stream, mounts, catalog)) = self.stream.take()
+            && stream.request_unload().is_ok()
+            && let Ok(mut backend) = MountedStreamBackend::new(mounts, catalog)
+        {
+            for _ in 0..UNLOAD_POLLS {
+                if stream.state() == StreamFileState::UNLOAD_DONE || stream.poll(&mut backend).is_err() {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        }
     }
 }

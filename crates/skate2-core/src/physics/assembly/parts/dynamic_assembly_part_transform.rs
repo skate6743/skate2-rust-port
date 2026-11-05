@@ -7,6 +7,10 @@
     expect(dead_code, reason = "live Part relocation awaits player construction")
 )]
 
+#[cfg(feature = "skate3-runtime")]
+#[path = "skate3_part_mirror.rs"]
+mod skate3_part_mirror;
+
 use super::{
     DynamicAssemblyBodyOnlyPartSession, DynamicAssemblyPartAttachmentTransaction,
     DynamicAssemblyPartTransformCache, DynamicAssemblySession, DynamicAssemblySimulationBackend,

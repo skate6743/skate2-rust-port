@@ -391,7 +391,7 @@ impl AudioSystem {
     fn with_crowds<R>(&mut self, f: impl FnOnce(&mut CrowdManager, &[bool; 9], &mut SfxCtx<'_>) -> R) -> Option<R> {
         let in_own_the_spot = self.in_own_the_spot || self.state.in_own_the_spot;
         let cond_score_delta = self.cond_score - self.cond_prev_score;
-        let Self { core, splicer, mixer, master_sub_mix, global_effects, vault, rng, microphones, cvars, world, aems, state, times, crowds, collision_requests, crowd_banks_loaded, .. } = self;
+        let Self { core, splicer, mixer, master_sub_mix, global_effects, vault, skate3_vault, rng, microphones, cvars, world, aems, state, times, crowds, collision_requests, crowd_banks_loaded, .. } = self;
         let crowds = crowds.as_mut()?;
         let map = mixer.map_mut()?;
         let (bail, bail_severity) = world.as_ref().map_or((false, 0.0), |world| (world.bail, world.bail_severity));
@@ -402,6 +402,7 @@ impl AudioSystem {
             splicer,
             map,
             vault,
+            skate3: skate3_vault.as_deref(),
             rng,
             master_sub_mix: *master_sub_mix,
             global_effects,

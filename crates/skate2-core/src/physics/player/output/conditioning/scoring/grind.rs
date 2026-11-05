@@ -17,6 +17,15 @@ pub(super) struct GrindFrame {
     pub fakie: bool,
 }
 impl GrindCollector {
+    /// The timed scorable's travel measure: Skate 3's step length in Skate 3 scoring, else
+    /// Skate 2's.
+    fn arc_measure(&self, f: &GrindFrame) -> super::scoring_timed::ArcMeasure {
+        #[cfg(feature = "skate3-runtime")]
+        if self.base.states.skate3_enabled() {
+            return super::scoring_timed::ArcMeasure::Skate3 { along: None };
+        }
+        super::scoring_timed::ArcMeasure::Skate2 { minimum_distance: f.minimum_distance }
+    }
     fn end_current(&mut self, db: &TrickDatabase) -> Result<(), ScoreError> {
         if let Some(id) = self.scorable.valid_id() {
             let mut holder = self
@@ -105,15 +114,26 @@ impl GrindCollector {
             self.scorable.valid_id().unwrap_or(-1),
             f.deck_position,
             f.dt,
-            f.minimum_distance,
+            self.arc_measure(f),
         )?;
-        self.base
+        super::scoring_module_finish::trace_score(format_args!(
+            "grind frame tick {} id {:?} eligible {eligible} distance {} deck {:?}",
+            f.tick,
+            self.scorable.valid_id(),
+            self.tracker.total_distance,
+            f.deck_position.xyz,
+        ));
+        let mut holder = self
+            .base
             .score_holder
             .as_ref()
             .ok_or(ScoreError::Missing("grind holder"))?
             .lock()
-            .map_err(|_| ScoreError::Poisoned)?
-            .trick_score += self.tracker.score;
+            .map_err(|_| ScoreError::Poisoned)?;
+        // TU3 82DA9FD8: held while ScoreHolder+0x1C5D is set.
+        if !holder.trick_score_held() {
+            holder.trick_score += self.tracker.score;
+        }
         Ok(())
     }
     pub(super) fn exit(
@@ -123,6 +143,13 @@ impl GrindCollector {
         f: &GrindFrame,
         out: &mut Scoring2,
     ) -> Result<(), ScoreError> {
+        super::scoring_module_finish::trace_score(format_args!(
+            "grind exit score={score_in_progress} scorable={:?} length={} pathed={:#x} local={:#x}",
+            self.scorable.valid_id(),
+            self.tracker.total_distance,
+            self.info.spline_pathed_guid,
+            self.info.spline_local_guid
+        ));
         if score_in_progress {
             out.just_finished_grind = true;
             self.info.length = self.tracker.total_distance;
@@ -140,7 +167,7 @@ impl GrindCollector {
                     id,
                     f.deck_position,
                     f.dt,
-                    f.minimum_distance,
+                    self.arc_measure(f),
                 )?;
                 self.base
                     .score_holder

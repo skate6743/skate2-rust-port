@@ -748,6 +748,8 @@ pub(super) struct Scoring2 {
     pub(super) distance_travelled_this_frame: f32,
     pub(super) finished_handplant_duration_in_seconds: f32,
     pub(super) raw_scorable_id: i32,
+    /// Skate 3 physics: the scorable's audio fields from the linked Skate 3 record.
+    pub(super) skate3_scorable_audio: Option<(i32, i32, bool)>,
     pub(super) raw_scorable_started: i32,
     pub(super) raw_scorable_ended: i32,
     pub(super) raw_started_revert: i32,
@@ -767,9 +769,9 @@ pub(super) struct Scoring2 {
     pub(super) tricks_converted_from: Scorables,
     pub(super) tricks_converted_to: Scorables,
     pub(super) active_tricks: Scorables,
-    pub(super) tricks_in_current_sequence: [u8; 269],
+    pub(super) tricks_in_current_sequence: [u8; super::conditioners::SCORABLE_CAPACITY],
     pub(super) trick_types_in_current_sequence: [u8; 14],
-    pub(super) tricks_in_completed_sequence: [u8; 269],
+    pub(super) tricks_in_completed_sequence: [u8; super::conditioners::SCORABLE_CAPACITY],
     pub(super) trick_types_in_completed_sequence: [u8; 14],
     pub(super) finished_sequence_pattern_matches: PatternMatches,
     pub(super) current_sequence_pattern_matches: PatternMatches,
@@ -866,6 +868,7 @@ impl Scoring2 {
             distance_travelled_this_frame: 0.0,
             finished_handplant_duration_in_seconds: 0.0,
             raw_scorable_id: -1,
+            skate3_scorable_audio: None,
             raw_scorable_started: -1,
             raw_scorable_ended: -1,
             raw_started_revert: -1,
@@ -885,9 +888,9 @@ impl Scoring2 {
             tricks_converted_from: Scorables::new(),
             tricks_converted_to: Scorables::new(),
             active_tricks: Scorables::new(),
-            tricks_in_current_sequence: [0; 269],
+            tricks_in_current_sequence: [0; super::conditioners::SCORABLE_CAPACITY],
             trick_types_in_current_sequence: [0; 14],
-            tricks_in_completed_sequence: [0; 269],
+            tricks_in_completed_sequence: [0; super::conditioners::SCORABLE_CAPACITY],
             trick_types_in_completed_sequence: [0; 14],
             finished_sequence_pattern_matches: PatternMatches::new(),
             current_sequence_pattern_matches: PatternMatches::new(),
@@ -983,6 +986,7 @@ impl Scoring2 {
         self.distance_travelled_this_frame = 0.0;
         self.finished_handplant_duration_in_seconds = 0.0;
         self.raw_scorable_id = -1;
+        self.skate3_scorable_audio = None;
         self.raw_scorable_started = -1;
         self.raw_scorable_ended = -1;
         self.raw_started_revert = -1;
@@ -1002,9 +1006,9 @@ impl Scoring2 {
         self.tricks_converted_from.reset();
         self.tricks_converted_to.reset();
         self.active_tricks.reset();
-        self.tricks_in_current_sequence = [0; 269];
+        self.tricks_in_current_sequence = [0; super::conditioners::SCORABLE_CAPACITY];
         self.trick_types_in_current_sequence = [0; 14];
-        self.tricks_in_completed_sequence = [0; 269];
+        self.tricks_in_completed_sequence = [0; super::conditioners::SCORABLE_CAPACITY];
         self.trick_types_in_completed_sequence = [0; 14];
         self.finished_sequence_pattern_matches.reset();
         self.current_sequence_pattern_matches.reset();

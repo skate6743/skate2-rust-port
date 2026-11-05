@@ -259,6 +259,10 @@ impl<K, W> ActorAnimationConstruction<K, W> {
     }
 
     fn physics_flag(&self, mask: u32) -> Result<bool, AnimationPhysicsDataError> {
+        // Keep the same selected movement authority at the SetUpPhysics read.
+        if self.skate3_movement && matches!(mask, 0x0010_0000 | 0x0008_0000) {
+            return Ok(false);
+        }
         use AnimationPhysicsDataError as E;
         let player = self.player.as_ref().ok_or(E::Missing("player fields"))?;
         if player.flags_known_mask & mask != mask {

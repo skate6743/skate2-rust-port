@@ -723,6 +723,8 @@ impl OffBoard {
             if !new[side] {
                 continue;
             }
+            trace_foot_step(format_args!("foot step side {side} off board {} foot planting {} material {}",
+                physics.is_off_board, physics.is_foot_planting, self.feet[side].audio_material));
             self.feet[side].adjust_filter_parameters(ctx.rng);
             if ctx.local {
                 self.feet[side].play_step(speed, volume_material, physics.terrain, &mut cluster, ctx);
@@ -1022,5 +1024,13 @@ mod tests {
             assert!(foot.notch_gain[1] == 0.5 || foot.notch_gain[1] == 1.5);
             assert_eq!(foot.notch_freq[0].fract(), 0.0);
         }
+    }
+}
+
+/// `SKATE2_TRACE_SKATE3_DARKCATCH`: the foot steps, with what raised them.
+fn trace_foot_step(message: std::fmt::Arguments<'_>) {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_SKATE3_DARKCATCH").is_some()) {
+        eprintln!("skate 3 darkcatch audio: {message}");
     }
 }

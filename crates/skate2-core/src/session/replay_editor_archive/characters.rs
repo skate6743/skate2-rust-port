@@ -111,6 +111,10 @@ impl Catalog {
             if !matches!(category.as_str(),"marquee"|"livingworld"|"vehicle"|"createacharacter"|"test") {return Err("replay character namespace".into());}
             let mut recipe=CharacterRecipe::parse(&Vec::<u8>::get(r)?).map_err(|e|e.to_string())?;
             admissible(&recipe)?;
+            if category=="createacharacter" {
+                let male=recipe.customizations.as_ref().is_none_or(|c|c.is_male);
+                crate::edit_skater_character::fill_missing_parts(mounts,&mut recipe,male,&category).map_err(|e|e.to_string())?;
+            }
             recipe.customizations=recipe.customizations.map(shared);
             result.scenes.push(Arc::new(crate::mounted_character_scene::own_character_scene_category(mounts,&recipe,&category).map_err(|e|e.to_string())?));
         }

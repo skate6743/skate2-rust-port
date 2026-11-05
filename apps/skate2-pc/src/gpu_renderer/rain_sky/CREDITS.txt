@@ -1,0 +1,18 @@
+Photographed cloud panoramas from Poly Haven (CC0 1.0).
+License: https://polyhaven.com/license
+https://creativecommons.org/publicdomain/zero/1.0/
+
+approaching_storm
+Greg Zaal
+https://polyhaven.com/a/approaching_storm
+Original JPG SHA-256: 62676cbae67687bdce6c0c34566d3ec1e71b7644a7392a3534dd9e5c1dc449a7
+Embedded cropped JPG SHA-256: 5ce8c801d6ac48dfc25a96d566fc69423b0bc5e7ec32a7b5c914bd9a39cce7ae
+
+quarry_cloudy
+Dimitrios Savva (photography), Jarod Guest (processing)
+https://polyhaven.com/a/quarry_cloudy
+Original JPG SHA-256: 47bb0c81ced9ed32904b596a86e153491a9514bd27b8636b4c84a1ca43d7cdce
+Embedded cropped JPG SHA-256: 86b7f7cf26f1a6ab9f5361498b3fec574359cd7755fa1e646ebd428bfcf8e3e1
+
+Derived assets contain only v=0..0.415 of the full panorama (sky only), resized to4096x1024.
+Storm grading, drifting dome and low scud are local PC-mod additions.

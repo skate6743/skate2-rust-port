@@ -7,14 +7,56 @@
 //! Cap, VSync, Resolution Scale, Frame Rate Counter, Fullscreen), saved in their own chunk, and
 //! an Online Settings page holds Show Lobby Chat, saved in `online-config.json`. Beside them the
 //! PC port calls Video Settings (`ID_GAMESETTINGS_VIDEO_SETTINGS`) Gameplay Settings, for its
-//! camera, HUD and subtitle rows. PC port addition: Control Settings' Stick Settings page leads to
-//! each stick's multiplier, deadzone and anti-deadzone ([`crate::stick_settings`]), saved in
-//! `controller_config.json`.
+//! camera, HUD and subtitle rows, and the PC Field of View last. PC port addition: Control Settings'
+//! Stick Settings page leads to each stick's multiplier, deadzone and anti-deadzone
+//! ([`crate::stick_settings`]), saved in `controller_config.json`.
 use super::{FeSoundRequest, pause_menu::PauseMenuInput};
 use crate::stick_settings::{ControllerSettings, DEADZONES, MULTIPLIERS, StickSettings};
 pub use skate2_formats::skater_profile::{
-    FrameRateCap, PcDisplaySettings, ProfileSettings, RESOLUTION_SCALES, RESOLUTION_SCALE_STEP,
+    FIELD_OF_VIEWS, FrameRateCap, PcDisplaySettings, ProfileSettings, RESOLUTION_SCALES, RESOLUTION_SCALE_STEP,
+    VANILLA_FIELD_OF_VIEW,
 };
+use super::gameplay_modes::{Difficulty, PcGameplayModes, PhysicsMode, RAIN_VOLUME_STEPS, Weather};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+
+/// A PC row value's text.
+pub trait Labelled {
+    fn label(self) -> &'static str;
+}
+
+/// The Field of View row's percent and the Fisheye row off, which the gameplay camera's
+/// projections read on every thread ([`field_of_view_scale`]).
+static FIELD_OF_VIEW: AtomicU8 = AtomicU8::new(VANILLA_FIELD_OF_VIEW);
+static UNWARPED: AtomicBool = AtomicBool::new(false);
+/// [`set_fisheye_edge_scale`]'s factor, as f32 bits (1 until the renderer reads it).
+static EDGE_SCALE: AtomicU32 = AtomicU32::new(0x3f80_0000);
+
+/// PC port addition: the gameplay camera's field of view as a multiple of its shot's, which
+/// `RenderMan::UpdateCamera`'s projection (linear in the angle) takes for the game camera alone:
+/// the Field of View row's, where each percent away from 100 moves the angle by two (90% is
+/// 0.8, 130% is 1.6), times the fisheye's edge factor while Fisheye is off. The fisheye
+/// warp magnifies the image; without it the camera narrows instead, so turning Fisheye off shows
+/// no more of the scene, only undistorted.
+#[must_use]
+pub fn field_of_view_scale() -> f32 {
+    let percent = f32::from(FIELD_OF_VIEW.load(Ordering::Relaxed));
+    let scale = (percent - 100.0).mul_add(0.02, 1.0);
+    if UNWARPED.load(Ordering::Relaxed) { scale * f32::from_bits(EDGE_SCALE.load(Ordering::Relaxed)) } else { scale }
+}
+
+/// The renderer's fisheye warp factor at the middle of each screen edge (`postfx/main`).
+pub fn set_fisheye_edge_scale(scale: f32) {
+    EDGE_SCALE.store(scale.to_bits(), Ordering::Relaxed);
+}
+
+/// The rows the camera follows at once. Unit tests drive many menus at the same time, so the
+/// camera there keeps the original's.
+fn publish(values: &PcDisplaySettings) {
+    if cfg!(not(test)) {
+        FIELD_OF_VIEW.store(values.field_of_view, Ordering::Relaxed);
+        UNWARPED.store(!values.fisheye, Ordering::Relaxed);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Page {
@@ -34,6 +76,10 @@ pub enum Page {
     /// PC port addition: Stick Settings' page of each stick.
     LeftStick,
     RightStick,
+    /// PC port addition: Physics Settings, with Skate 3 data linked.
+    Physics,
+    /// PC port addition: Gameplay Settings' Weather Settings.
+    Weather,
 }
 
 /// The Video Settings screen `OnMenuSelect` (`0x826871a0`) opens: `VideoSettingsMainMenu` in
@@ -99,6 +145,18 @@ pub enum Row {
     StickMultiplier,
     StickDeadzone,
     StickAntiDeadzone,
+    /// PC port addition: Gameplay Settings' field of view, on Edit Skater's morph knob.
+    FieldOfView,
+    /// PC port addition: the Physics Settings page, its physics and Skate 3's difficulty.
+    PhysicsSettings,
+    PhysicsMode,
+    Difficulty,
+    /// PC port addition: Gameplay Settings' Weather Settings page, its weather and rain volume.
+    WeatherSettings,
+    Weather,
+    RainVolume,
+    /// PC port addition: Smokey's puddle physics, off unless picked.
+    PuddlePhysics,
 }
 impl Row {
     /// `gGameOptionsItems` 0x82fdf9a8's type: `option`, `slider` or `selector`; the stick
@@ -107,13 +165,15 @@ impl Row {
     pub const fn kind(self) -> &'static str {
         match self {
             Self::MusicPlayer | Self::AudioSettings | Self::VideoSettings | Self::ControlSettings | Self::DisplaySettings
-            | Self::OnlineSettings | Self::StickSettings | Self::LeftStick | Self::RightStick | Self::ResetSticks => "option",
-            Self::SfxVolume | Self::DialogueVolume | Self::MusicVolume => "slider",
-            Self::StickDeadzone | Self::StickAntiDeadzone => "morph",
+            | Self::OnlineSettings | Self::StickSettings | Self::LeftStick | Self::RightStick | Self::ResetSticks
+            | Self::PhysicsSettings | Self::WeatherSettings => "option",
+            Self::SfxVolume | Self::DialogueVolume | Self::MusicVolume | Self::RainVolume => "slider",
+            Self::StickDeadzone | Self::StickAntiDeadzone | Self::FieldOfView => "morph",
             Self::PostFx | Self::Fisheye | Self::FrameRateCap | Self::VSync | Self::ResolutionScale
             | Self::FpsCounter | Self::Fullscreen | Self::Subtitles | Self::CameraAngle | Self::GrindTransparency
             | Self::MiniMap | Self::Hud | Self::OffboardYAxis | Self::Vibration | Self::ShowLobbyChat
-            | Self::ShowGhostPlayers | Self::StickMultiplier => "selector",
+            | Self::ShowGhostPlayers | Self::StickMultiplier | Self::PhysicsMode | Self::Difficulty | Self::Weather
+            | Self::PuddlePhysics => "selector",
         }
     }
     /// `gGameOptionsItems`' title id; the PC rows carry literal text.
@@ -152,6 +212,14 @@ impl Row {
             Self::StickMultiplier => "Stick Multiplier",
             Self::StickDeadzone => "Stick Deadzone",
             Self::StickAntiDeadzone => "Stick Anti-Deadzone",
+            Self::FieldOfView => "Field of View",
+            Self::PhysicsSettings => "Physics Settings",
+            Self::PhysicsMode => "Physics",
+            Self::Difficulty => "Difficulty",
+            Self::WeatherSettings => "Weather Settings",
+            Self::Weather => "Weather",
+            Self::RainVolume => "Rain Volume",
+            Self::PuddlePhysics => "Puddle Physics",
         }
     }
 }
@@ -168,12 +236,44 @@ const IN_GAME: &[Row] = &[
     Row::DisplaySettings,
     Row::OnlineSettings,
 ];
+/// The same with Skate 3 data linked: Physics Settings after Gameplay Settings.
+const FRONT_END_LINKED: &[Row] = &[
+    Row::AudioSettings,
+    Row::VideoSettings,
+    Row::PhysicsSettings,
+    Row::ControlSettings,
+    Row::DisplaySettings,
+    Row::OnlineSettings,
+];
+const IN_GAME_LINKED: &[Row] = &[
+    Row::MusicPlayer,
+    Row::AudioSettings,
+    Row::VideoSettings,
+    Row::PhysicsSettings,
+    Row::ControlSettings,
+    Row::DisplaySettings,
+    Row::OnlineSettings,
+];
+/// Physics Settings: Skate 3's difficulty only under Skate 3's physics.
+const PHYSICS_SKATE2: &[Row] = &[Row::PhysicsMode];
+const PHYSICS_SKATE3: &[Row] = &[Row::PhysicsMode, Row::Difficulty];
+/// Weather Settings: the rain's volume only where there is rain to hear.
+const WEATHER_DRY: &[Row] = &[Row::Weather];
+const WEATHER_RAIN: &[Row] = &[Row::Weather, Row::RainVolume, Row::PuddlePhysics];
 const AUDIO: &[Row] = &[Row::SfxVolume, Row::DialogueVolume, Row::MusicVolume];
 /// `gGameOptionsScreens` rows 7, 3 and 5 without `eSk8FEGameOption_VideoCalibration`, whose
-/// FE state 0 calibration screen is not ported.
-const VIDEO_MAIN_MENU: &[Row] = &[Row::Subtitles];
-const VIDEO_GAME: &[Row] = &[Row::CameraAngle, Row::GrindTransparency, Row::Subtitles];
-const VIDEO_FREESKATE: &[Row] = &[Row::CameraAngle, Row::GrindTransparency, Row::Subtitles, Row::MiniMap, Row::Hud];
+/// FE state 0 calibration screen is not ported. The PC Field of View row is last, in a game only.
+const VIDEO_MAIN_MENU: &[Row] = &[Row::Subtitles, Row::WeatherSettings];
+const VIDEO_GAME: &[Row] = &[Row::CameraAngle, Row::GrindTransparency, Row::Subtitles, Row::WeatherSettings, Row::FieldOfView];
+const VIDEO_FREESKATE: &[Row] = &[
+    Row::CameraAngle,
+    Row::GrindTransparency,
+    Row::Subtitles,
+    Row::MiniMap,
+    Row::Hud,
+    Row::WeatherSettings,
+    Row::FieldOfView,
+];
 /// `gGameOptionsScreens` row 8, with the PC Stick Settings page last.
 const CONTROL: &[Row] = &[Row::OffboardYAxis, Row::Vibration, Row::StickSettings];
 const STICK_SETTINGS: &[Row] = &[Row::LeftStick, Row::RightStick, Row::ResetSticks];
@@ -225,14 +325,22 @@ pub struct Snapshot {
     /// `FrontEndState_MusicPlayer` (FE state 30) is pushed over Options: `OnMenuSelect`'s
     /// `PushState(30)` left the screen (`OnLeave`) and the pop opens it anew (`OnEnter`).
     pub music_player: bool,
+    /// Physics Settings and Weather Settings as the rows have them (PC port addition).
+    pub modes: PcGameplayModes,
+    /// Skate 3 data is linked, so Physics Settings shows.
+    pub skate3_linked: bool,
 }
 impl Snapshot {
     #[must_use]
     pub const fn rows(&self) -> &'static [Row] {
         match self.page {
             Page::Hidden => &[],
-            Page::Options if self.in_game => IN_GAME,
-            Page::Options => FRONT_END,
+            Page::Options => match (self.in_game, self.skate3_linked) {
+                (true, true) => IN_GAME_LINKED,
+                (true, false) => IN_GAME,
+                (false, true) => FRONT_END_LINKED,
+                (false, false) => FRONT_END,
+            },
             Page::Audio => AUDIO,
             Page::Video => match self.video {
                 VideoScreen::MainMenu => VIDEO_MAIN_MENU,
@@ -244,6 +352,14 @@ impl Snapshot {
             Page::Online => ONLINE,
             Page::StickSettings => STICK_SETTINGS,
             Page::LeftStick | Page::RightStick => STICK,
+            Page::Physics => match self.modes.physics {
+                PhysicsMode::Skate2 => PHYSICS_SKATE2,
+                PhysicsMode::Skate3 => PHYSICS_SKATE3,
+            },
+            Page::Weather => match self.modes.weather {
+                Weather::Drizzle | Weather::Rain | Weather::Storm | Weather::AfterRain => WEATHER_RAIN,
+                Weather::Vanilla => WEATHER_DRY,
+            },
         }
     }
     /// The Stick Settings pages, which show both sticks live and take the D-pad alone.
@@ -272,6 +388,8 @@ impl Snapshot {
             Page::StickSettings => "Stick Settings",
             Page::LeftStick => "Left Stick",
             Page::RightStick => "Right Stick",
+            Page::Physics => "Physics Settings",
+            Page::Weather => "Weather Settings",
             Page::Hidden | Page::Options => "ID_GAMESETTINGS_TITLE",
         }
     }
@@ -311,6 +429,8 @@ pub struct Controller {
     held: Option<(i8, u32)>,
     /// `FE_SOUND_CAS_SLIDER` loops while a deadzone's knob moves.
     slider: bool,
+    /// Physics Settings and Weather Settings as the profile last held them (PC port addition).
+    saved_modes: PcGameplayModes,
     /// The slider sound's loop and stop since the last take.
     sound_requests: Vec<FeSoundRequest>,
 }
@@ -351,6 +471,23 @@ impl Controller {
     pub fn load(&mut self, values: PcDisplaySettings) {
         self.state.values = values;
         self.saved = values;
+        publish(&values);
+    }
+    /// The profile's Physics Settings and Weather Settings, which the game follows at once.
+    pub fn load_modes(&mut self, modes: PcGameplayModes) {
+        self.state.modes = modes;
+        self.saved_modes = modes;
+        super::gameplay_modes::publish(modes);
+    }
+    /// Physics Settings and Weather Settings as the rows have them.
+    #[must_use]
+    pub const fn modes(&self) -> PcGameplayModes {
+        self.state.modes
+    }
+    /// Whether exiting saves Physics Settings and Weather Settings to the profile.
+    #[must_use]
+    pub fn modes_dirty(&self) -> bool {
+        self.state.modes != self.saved_modes
     }
     /// `online-config.json`'s Show Lobby Chat.
     pub fn load_lobby_chat(&mut self, show: bool) {
@@ -442,6 +579,7 @@ impl Controller {
         self.state.music_player = false;
         self.state.in_game = in_game;
         self.state.video = video;
+        self.state.skate3_linked = crate::skate3::is_linked();
         self.state.page = Page::Options;
         self.state.selected = 0;
         self.held = None;
@@ -452,6 +590,7 @@ impl Controller {
         self.saved_lobby_chat = self.state.show_lobby_chat;
         self.saved_ghost_players = self.state.show_ghost_players;
         self.saved_sticks = self.state.sticks;
+        self.saved_modes = self.state.modes;
         self.dirty = false;
         self.state.page = Page::Hidden;
         self.state.music_player = false;
@@ -515,6 +654,14 @@ impl Controller {
                 Page::StickSettings => (Page::Control, CONTROL.iter().position(|&row| row == Row::StickSettings).unwrap_or(0)),
                 Page::LeftStick => (Page::StickSettings, 0),
                 Page::RightStick => (Page::StickSettings, 1),
+                Page::Physics => {
+                    let rows = Snapshot { page: Page::Options, ..self.state }.rows();
+                    (Page::Options, rows.iter().position(|&row| row == Row::PhysicsSettings).unwrap_or(0))
+                }
+                Page::Weather => {
+                    let rows = Snapshot { page: Page::Video, ..self.state }.rows();
+                    (Page::Video, rows.iter().position(|&row| row == Row::WeatherSettings).unwrap_or(0))
+                }
                 _ => (Page::Options, 0),
             };
             self.state.page = page;
@@ -536,7 +683,14 @@ impl Controller {
             self.sounds.push("FE_SOUND_CORE_NAV_DOWN");
             self.state.selected = (self.state.selected + 1) % count;
         }
+        if input.up || input.down {
+            self.stop_slider();
+        }
         let Some(&row) = self.state.rows().get(self.state.selected) else { return Action::None };
+        if row == Row::FieldOfView {
+            self.update_field_of_view(input);
+            return Action::None;
+        }
         if input.select && row.kind() == "option" {
             // OnMenuSelect: core_a_button, then the category's screen.
             self.sounds.push("FE_SOUND_CORE_A_BUTTON");
@@ -547,12 +701,18 @@ impl Controller {
                 Row::StickSettings => self.state.page = Page::StickSettings,
                 Row::DisplaySettings => self.state.page = Page::Display,
                 Row::OnlineSettings => self.state.page = Page::Online,
+                Row::PhysicsSettings => self.state.page = Page::Physics,
+                Row::WeatherSettings => self.state.page = Page::Weather,
                 _ => self.state.page = Page::Video,
             }
             self.state.selected = 0;
             return Action::None;
         }
         if input.left == input.right {
+            return Action::None;
+        }
+        if matches!(row, Row::PhysicsMode | Row::Difficulty | Row::Weather | Row::RainVolume | Row::PuddlePhysics) {
+            self.step_mode(row, input.right);
             return Action::None;
         }
         let step = if input.right { 1.0 } else { -1.0 };
@@ -585,7 +745,10 @@ impl Controller {
                 let values = &mut self.state.values;
                 match row {
                     Row::PostFx => values.postfx = !values.postfx,
-                    Row::Fisheye => values.fisheye = !values.fisheye,
+                    Row::Fisheye => {
+                        values.fisheye = !values.fisheye;
+                        publish(values);
+                    }
                     Row::FpsCounter => values.fps_counter = !values.fps_counter,
                     Row::Fullscreen => values.fullscreen = !values.fullscreen,
                     Row::VSync => values.vsync = !values.vsync,
@@ -643,6 +806,94 @@ impl Controller {
         self.dirty = true;
         self.refresh(settings);
         Action::None
+    }
+    /// PC port addition: a Physics Settings or Weather Settings row's value, one step either way
+    /// (the selectors wrapping, Rain Volume stopping at its ends), which the game follows at once.
+    fn step_mode(&mut self, row: Row, forward: bool) {
+        let modes = &mut self.state.modes;
+        let step = |index: usize, count: usize| if forward { (index + 1) % count } else { (index + count - 1) % count };
+        match row {
+            Row::PhysicsMode => {
+                modes.physics = match modes.physics {
+                    PhysicsMode::Skate2 => PhysicsMode::Skate3,
+                    PhysicsMode::Skate3 => PhysicsMode::Skate2,
+                };
+            }
+            Row::Difficulty => {
+                const ORDER: [Difficulty; 4] = [Difficulty::Easy, Difficulty::Normal, Difficulty::Hardcore, Difficulty::Motorized];
+                let index = ORDER.iter().position(|&value| value == modes.difficulty).unwrap_or(1);
+                modes.difficulty = ORDER[step(index, ORDER.len())];
+            }
+            Row::Weather => {
+                let index = Weather::ALL.iter().position(|&value| value == modes.weather).unwrap_or(0);
+                modes.weather = Weather::ALL[step(index, Weather::ALL.len())];
+            }
+            Row::PuddlePhysics => modes.puddle_physics = !modes.puddle_physics,
+            _ => {
+                let next = if forward { modes.rain_volume.saturating_add(1) } else { modes.rain_volume.saturating_sub(1) };
+                if next > RAIN_VOLUME_STEPS || next == modes.rain_volume {
+                    return;
+                }
+                modes.rain_volume = next;
+                self.sounds.push(if forward { "FE_SOUND_CORE_SFX_VOLUME_RIGHT" } else { "FE_SOUND_CORE_SFX_VOLUME_LEFT" });
+                super::gameplay_modes::publish(*modes);
+                return;
+            }
+        }
+        self.sounds.push(if forward { "FE_SOUND_CORE_NAV_RIGHT" } else { "FE_SOUND_CORE_NAV_LEFT" });
+        super::gameplay_modes::publish(*modes);
+    }
+    /// PC port addition: Gameplay Settings' Field of View. The stick or the D-pad held moves its
+    /// knob a percent at a time at Edit Skater's steady pace, looping `FE_SOUND_CAS_SLIDER` while
+    /// it moves, and X puts it back to the original's; the camera follows at once.
+    fn update_field_of_view(&mut self, input: PauseMenuInput) {
+        if input.misc {
+            self.stop_slider();
+            if self.state.values.field_of_view != VANILLA_FIELD_OF_VIEW {
+                self.sounds.push("FE_SOUND_CORE_A_BUTTON");
+                self.state.values.field_of_view = VANILLA_FIELD_OF_VIEW;
+                publish(&self.state.values);
+            }
+            return;
+        }
+        let axis = |value: f32| -> i8 {
+            if value > 0.5 {
+                1
+            } else if value < -0.5 {
+                -1
+            } else {
+                0
+            }
+        };
+        let direction = match axis(input.morph_axis_secondary) {
+            0 => axis(input.morph_axis),
+            held => held,
+        };
+        if direction == 0 {
+            self.stop_slider();
+            return;
+        }
+        let frames = match self.held {
+            Some((held, frames)) if held == direction => frames + 1,
+            _ => 0,
+        };
+        self.held = Some((direction, frames));
+        if !slide_due(frames) {
+            return;
+        }
+        let value = self.state.values.field_of_view;
+        let next = value.saturating_add_signed(direction).clamp(*FIELD_OF_VIEWS.start(), *FIELD_OF_VIEWS.end());
+        if next == value {
+            self.stop_slider();
+            self.held = Some((direction, frames));
+        } else {
+            self.state.values.field_of_view = next;
+            publish(&self.state.values);
+            if !self.slider {
+                self.slider = true;
+                self.sound_requests.push(FeSoundRequest::Loop(SLIDER_SOUND));
+            }
+        }
     }
     /// PC port addition: a Stick Settings page's input, from the D-pad alone, as the sticks are
     /// what its boxes show. Up and down pick a row, A opens a stick's page or puts both sticks back
@@ -754,7 +1005,7 @@ mod tests {
         assert_eq!(
             menu.snapshot().values,
             PcDisplaySettings { postfx: false, fisheye: false, frame_rate_cap: FrameRateCap::RefreshRate, fps_counter: false, fullscreen: false,
-                resolution_scale: 100, vsync: true }
+                resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW }
         );
         menu.update(press(|i| i.down = true), &mut settings);
         menu.update(press(|i| i.left = true), &mut settings);
@@ -983,6 +1234,36 @@ mod tests {
         // B returns to the main list.
         assert_eq!(menu.update(press(|i| i.cancel = true), &mut settings), Action::None);
         assert_eq!(menu.snapshot().page, Page::Options);
+    }
+    #[test]
+    fn field_of_view_slides_from_vanilla_and_x_resets_it() {
+        let mut settings = ProfileSettings::default();
+        let mut menu = Controller::default();
+        menu.load(PcDisplaySettings::default());
+        menu.open(false, VideoScreen::MainMenu, &settings);
+        menu.acknowledge_intro();
+        menu.update(press(|i| i.down = true), &mut settings);
+        menu.update(press(|i| i.select = true), &mut settings);
+        assert_eq!(menu.snapshot().rows(), VIDEO_MAIN_MENU);
+        menu.update(press(|i| i.down = true), &mut settings);
+        menu.take_sound_requests();
+        // Held right: a step at once, then from 12 frames one every 3.
+        for _ in 0..16 {
+            menu.update(press(|i| i.morph_axis = 1.), &mut settings);
+        }
+        assert_eq!(menu.snapshot().values.field_of_view, 103);
+        assert_eq!(menu.take_sound_requests(), [FeSoundRequest::Loop(SLIDER_SOUND)]);
+        menu.update(PauseMenuInput::default(), &mut settings);
+        assert_eq!(menu.take_sound_requests(), [FeSoundRequest::Stop(SLIDER_SOUND)]);
+        assert!(menu.display_dirty());
+        // The narrow end stops the knob.
+        for _ in 0..400 {
+            menu.update(press(|i| i.morph_axis_secondary = -1.), &mut settings);
+        }
+        assert_eq!(menu.snapshot().values.field_of_view, *FIELD_OF_VIEWS.start());
+        menu.update(press(|i| i.misc = true), &mut settings);
+        assert_eq!(menu.snapshot().values.field_of_view, VANILLA_FIELD_OF_VIEW);
+        assert!(!menu.display_dirty());
     }
     /// The front end's Options, Control Settings, then Stick Settings.
     fn stick_settings(settings: &mut ProfileSettings) -> Controller {

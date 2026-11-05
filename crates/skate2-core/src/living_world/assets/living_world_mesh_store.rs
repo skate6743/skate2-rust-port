@@ -40,6 +40,9 @@ struct NavMeshTile {
 struct MeshStoreFields {
     tile_map: BTreeMap<u64, NavMeshTile>,
     assets: Option<Arc<SelectedSimulationAssetServices>>,
+    /// PC port: removed tiles, alive until LivingWorld's next frame releases them from every
+    /// pedestrian (`take_released`).
+    released: Vec<Arc<NavMeshAsset>>,
     /// Host continuation guard after an unreconstructed native operation. This
     /// is not a native field and never substitutes a failed lookup as a miss.
     pending: Option<MeshStoreError>,
@@ -126,6 +129,7 @@ impl MeshStore {
             fields: Mutex::new(MeshStoreFields {
                 tile_map: BTreeMap::new(),
                 assets: None,
+                released: Vec::new(),
                 pending: None,
             }),
         })
@@ -159,16 +163,28 @@ impl MeshStore {
             return Err(MeshStoreError::DuplicateTile(asset_id));
         }
         let data = Arc::new(NavMeshAsset::new(asset).map_err(MeshStoreError::Nav)?);
-        let ids = data.neighbour_ids().map_err(MeshStoreError::Nav)?;
         let mut neighbours = [Some(asset_id), None, None, None, None];
-        for i in 1..5 {
-            // Native tests only the low 32 bits of the authored asset ID.
-            if ids[i] as u32 == 0 {
-                continue;
-            }
-            if let Some(neighbour) = fields.tile_map.get_mut(&ids[i]) {
-                neighbours[i] = Some(ids[i]);
+        if let Some(tile) = data.nav_power() {
+            // PC port: a Skate 3 tile's neighbours are the loaded tiles beside it on Skate 3's
+            // grid, its border edges linked to theirs (`living_world_nav_power`).
+            for (&id, neighbour) in &mut fields.tile_map {
+                let Some(other) = neighbour.data.nav_power() else { continue };
+                let Some(i) = tile.slot_of(other) else { continue };
+                tile.stitch(i, other);
+                neighbours[i] = Some(id);
                 neighbour.neighbours[opposite(i)] = Some(asset_id);
+            }
+        } else {
+            let ids = data.neighbour_ids().map_err(MeshStoreError::Nav)?;
+            for i in 1..5 {
+                // Native tests only the low 32 bits of the authored asset ID.
+                if ids[i] as u32 == 0 {
+                    continue;
+                }
+                if let Some(neighbour) = fields.tile_map.get_mut(&ids[i]) {
+                    neighbours[i] = Some(ids[i]);
+                    neighbour.neighbours[opposite(i)] = Some(asset_id);
+                }
             }
         }
         fields
@@ -202,9 +218,19 @@ impl MeshStore {
                 neighbour.neighbours[opposite(i)] = None;
             }
         }
-        // Weak query handles invalidate here; no cell retains a departed arena.
-        fields.tile_map.remove(&asset_id);
+        // `MeshMan::RemoveNavMeshData` (`0x82ce6ac0`) has the PedestrianMan release the tile
+        // (`ReleaseNavMeshTile`) before removing it. PC port: a Sim arena's removal (Skate 3's
+        // tiles) cannot reach the pedestrians, so the tile's data stays alive until LivingWorld's
+        // next frame releases it from them, before any pedestrian reads a path.
+        if let Some(tile) = fields.tile_map.remove(&asset_id) {
+            fields.released.push(tile.data);
+        }
         Ok(())
+    }
+    /// The tiles removed since the last call, for the pedestrians to release.
+    pub(crate) fn take_released(&self) -> Result<Vec<Arc<NavMeshAsset>>, MeshStoreError> {
+        let mut fields = self.fields.lock().map_err(|_| MeshStoreError::OwnerLock)?;
+        Ok(std::mem::take(&mut fields.released))
     }
     /// Actual `GetPosTileAssetId82e57ff8` empty iteration returns null ID, then
     /// `GetMeshCell82e580c8` map-find falls through to the null cell/handle pair.
@@ -234,6 +260,11 @@ impl MeshStore {
         // GetPosTileAssetId iterates sorted IDs and returns the first XZ match.
         // Do not search subsequent overlapping tiles if that tile has no cell.
         for tile in fields.tile_map.values() {
+            // PC port: a Skate 3 tile still loaded as its district is left never stands in for
+            // Skate 2's navigation at the same coordinates.
+            if tile.data.nav_power().is_some() && !crate::skate3::district_active() {
+                continue;
+            }
             if !tile
                 .data
                 .contains_xz(position.xyz)

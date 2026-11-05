@@ -126,9 +126,9 @@ impl SelectedHullLoader {
         self.infos.get(&id).is_some_and(|info| !info.request_unload)
     }
 
-    /// The hulls whose presentation collections the presentation holds: from
-    /// `LoadingPresCollections` until `StartStreamCollectionUnload` (`0x82eed290`)
-    /// deregisters them, in hull ID order.
+    /// The hulls whose collections the presentation holds (`NotifyCollectionReg` registers
+    /// the simulation collections with it too): from `LoadingPresCollections` until
+    /// `StartStreamCollectionUnload` (`0x82eed290`) deregisters them, in hull ID order.
     pub(crate) fn presentations(&self) -> Vec<crate::presentation::HullPresentation> {
         self.infos
             .iter()
@@ -142,11 +142,12 @@ impl SelectedHullLoader {
                         | State::UnloadNotStarted
                 )
             })
-            .filter(|(_, info)| !info.streams[1].collections.is_empty())
+            .filter(|(_, info)| !info.streams[1].collections.is_empty() || !info.streams[0].collections.is_empty())
             .map(|(&hull, info)| crate::presentation::HullPresentation {
                 hull,
                 file_name: info.file_name.clone(),
                 collections: info.streams[1].collections.clone(),
+                sim_collections: info.streams[0].collections.clone(),
             })
             .collect()
     }

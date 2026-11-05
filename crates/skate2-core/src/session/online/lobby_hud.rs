@@ -150,7 +150,7 @@ impl LobbyHud {
     }
 
     fn state(&mut self, state: i32) {
-        let view = self.data.clone().map_or(TurnHudView::None, |data| TurnHudView::Leaderboard { data, stance_regular: self.stance_regular, online: true });
+        let view = self.data.clone().map_or(TurnHudView::None, |data| TurnHudView::Leaderboard { data, stance_regular: self.stance_regular, online: true, skate3_letters: false });
         self.screen_states.push((state, view));
     }
 

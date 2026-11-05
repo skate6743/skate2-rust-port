@@ -112,6 +112,8 @@ impl<T, C> SelectedLiveSession<T, C> {
     {
         self.try_ensure_session_ai()?;
         self.try_unload_frontend_additional_world()?;
+        // PC port: the front end's world is San Vanelona's whatever district a game left held.
+        crate::skate3::set_district_active(self.inner.terrain.as_ref().is_some_and(|terrain| terrain.exclusive_world_loaded()));
         let position = [TRAINING_START[12], TRAINING_START[13], TRAINING_START[14]];
         let terrain = self.inner.terrain.as_mut().ok_or_else(|| error(Stage::TerrainResident, "terrain absent"))?;
         terrain.try_advance_asset_release().map_err(|e| error(Stage::TerrainResident, e))?;
@@ -181,6 +183,11 @@ impl<T, C> SelectedLiveSession<T, C> {
             .try_with_selected_queued_frame(|mut frame, ground, queued| {
                 // The front end runs no LivingWorld manager; RecipeMan keeps the GameSim queue.
                 frame.living_world = None;
+                #[cfg(feature = "skate3-runtime")]
+                {
+                    frame.tick.allow_skate3_start(false);
+                    frame.tick.configure_skate3_focus(false);
+                }
                 frame.try_step_queued::<_, _, _, _, _, _, std::convert::Infallible>(
                     SelectedTickRequest {
                         input: queued,

@@ -61,3 +61,6 @@ ip-bans.json.new
 /docs/evidence/*.json
 /docs/evidence/*.patch
 /docs/evidence/*.py
+
+# Audio banks extracted from the games for research.
+/abk_*

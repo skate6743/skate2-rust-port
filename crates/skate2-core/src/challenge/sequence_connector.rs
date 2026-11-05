@@ -166,8 +166,8 @@ fn add_spot_volumes(world: &mut World, activity: usize) -> bool {
 /// enters it again.
 fn reset_trigger_spot_volumes(world: &mut World) {
     for id in world.sequence_connector.spot_volumes.clone() {
-        #[expect(clippy::cast_precision_loss, reason = "ResetTriggerVolumeCollisionState 0x82e22688: (float)_u64tod")]
-        let volume = id as f64 as f32;
+        // ResetTriggerVolumeCollisionState 0x82e22688: (float)_u64tod.
+        let volume = crate::skate3::id_float(id);
         world.output(Output::ResetTriggerVolumeState { volume });
     }
 }

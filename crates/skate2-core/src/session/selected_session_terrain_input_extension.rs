@@ -55,6 +55,8 @@ pub(crate) trait SelectedSessionTerrainSlot {
     fn try_poll_additional_world(&mut self) -> Result<bool, SelectedSessionTerrainError>;
     fn additional_world(&self) -> Option<&str>;
     fn additional_world_loaded(&self) -> bool;
+    /// Whether the held additional world is a loaded Skate 3 district (`crate::skate3`).
+    fn exclusive_world_loaded(&self) -> bool;
     fn request_additional_world_unload(&mut self);
     fn cancel_additional_world_unload(&mut self);
     fn additional_world_leaving(&self) -> bool;
@@ -156,6 +158,9 @@ impl<E: WorldStreamEffects> SelectedSessionTerrainSlot for SelectedSessionTerrai
     }
     fn additional_world_loaded(&self) -> bool {
         SelectedSessionTerrain::additional_world_loaded(self)
+    }
+    fn exclusive_world_loaded(&self) -> bool {
+        SelectedSessionTerrain::exclusive_world_loaded(self)
     }
     fn request_additional_world_unload(&mut self) {
         SelectedSessionTerrain::request_additional_world_unload(self);

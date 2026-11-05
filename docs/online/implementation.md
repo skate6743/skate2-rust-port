@@ -405,6 +405,14 @@ found by its `challenges.Name`:
   `HorusPipelineIslandUsingIndirectJacobians` 0x82ae2858 has no early exit). The port's online
   games keep the `Both` island and take the online count; the online islands' collision culling
   and fixed per-player islands are not ported.
+- Not ported: the original's online spawns build a new skater. A challenge's start
+  (`PlayerUI::ResetPlayer` 0x828ad280) and a contest round's sync point (`cMsgSpawnPlayer` in
+  `StateOnlineGame::OnMessage` 0x8276ba24) both send spawn command 3, and `SkaterManager::OnCommand`
+  (0x82600920) destroys the local skater and spawns a new one at the spawn point. The port keeps
+  its skater and teleports it there (`TeleportPlayerNow`, which zeroes the board's and the
+  skeleton's motion), as it does for every spawn of the first player. Its scoring resets there as
+  a new skater's starts (`SetResetScoring`, `ScoreModule::Reset`), so neither lobby skate's
+  multiplier nor its line carries into the challenge, nor one contest round's into the next.
 
 ## The netcode
 
@@ -535,11 +543,18 @@ letters, "Repeated trick" and the final ranking are therefore consequences of th
 run, not packets: nothing else needs acknowledging. What the script does to a skater (teleports,
 pins) only that skater's console carries out. A player who leaves is reported to the script as
 `cMsgPlayerDisconnected` at the tick the server's leave arrives, and the script ends the round
-the original way, with one correction: S.K.A.T.E.'s `prepare_follower` skips disconnected
-followers and, past the end of `FollowerOrder`, started again at the first one, so a last
-follower who left before their turn sent the others back to the same set trick without end; the
-search now stops at the last follower and the round goes on to `process_round`
-(`challenge/script_fixes.rs`). A Spot Battle's high score works the same way: every console's script scores
+the original way, with two corrections (`challenge/script_fixes.rs`). S.K.A.T.E.'s
+`prepare_follower` skips disconnected followers and, past the end of `FollowerOrder`, started
+again at the first one, so a last follower who left before their turn sent the others back to
+the same set trick without end; the search now stops at the last follower and the round goes on
+to `process_round`. S.K.A.T.E.'s and 1-Up's `check_players` waited, with the pause menu
+disabled since `make_hud` and no one pinned, until every player the challenge started with had
+a skater; a player who left during the start has none (the leave unspawns it), so the others
+skated on with no menu and the round never ended. A disconnected player now counts as there,
+and one whose disconnect came before `setup_skate` built `SkatersList` is marked through the
+script's own `global` `playerdisconnected` handler first; the rounds then leave them out as
+after a later leave. Spot Battle's and Hall of Meat's `wait_for_players` already skips
+disconnected players. A Spot Battle's high score works the same way: every console's script scores
 each player's lines from that player's facts and keeps the spot's top score, so the "score to
 beat" each player sees comes out of the shared run rather than a packet of its own.
 
@@ -739,6 +754,38 @@ to the lobby:
   are disabled; the results board omits the gamercard and player-review bumpers; no invites.
 - **Spot leaderboards**, Create-a-Spot online, Skate.Reel uploads and the freeskate screen's
   activity stats panel are not ported.
+- **1-Up** (PC port addition): the custom match and the host's options list 1-Up (network type 4,
+  challenge type 32), which the original's lists leave out (`unranked_custom_match`'s
+  `m_1upIndex`, `ranked_custom`'s `mOneUpIndex`) though the game ships its online challenges, their
+  state graph and its English text. The game's ten online 1-Ups (`ol_1up_01` to `ol_1up_05` and
+  five `t_*_1up_*`) play under their own script: the leader picks one of the spots
+  (`OneUpObject`) by skating a line through its trigger volumes, the followers start at it to beat
+  the score, the round's best takes a letter, and the first to spell 1-Up (`NumToWin`, 3) wins; the
+  spots come round again once all are played. With a Skate 3 data folder linked, the Map Pool's
+  Skate 3 maps add its ten online 1-Ups at the districts, which run Skate 3's own 1-Up: its state
+  graph (`challenge_stategraph/1up`, imported with each state and handler under a key of its own,
+  since it keeps some of Skate 2's 1-Up handler keys) over all of the game's own data
+  (`crate::skate3`, `Skate3Data::graft_graph_game`), with what each game's local data inherits
+  from Skate 3's shared local data records (`challenge_local_data_framework`: the 1-Ups' 20-second
+  cumulative runs, the panel's title, the highlight). Each round starts at the next of the game's
+  `StartLocationRotation`, the others waiting at its `WaitLocationRotation`; each run counts down
+  3-2-1, then the challenge data's `TimeLimit` runs at once and the run's lines score through its
+  objective (`1up_sequence_anywhere`) until the time is up, when the run ends and lines stop
+  counting. A run that fails to 1-Up the round's best takes a letter and sits out the rest of the
+  round. The letters are Skate 3's own, from its `fedynamic.big`: each letter board row shows
+  the `mUp` letters of Skate 3's `leaderboardhud` in place of its S.K.A.T.E. letters, placed and
+  sized as Skate 3 places them over its own S.K.A.T.E. letters, and each letter plays Skate 3's
+  `hudthrowmes` banner (`apps/skate2-pc` marker UI, `Assets::skate3_hud`); when those movies
+  differ from the ones translated, the game's own show. The runs score without the multiplier:
+  Skate 3's `Physics::IsScoringMultiplierActive` reads the challenge's own setting (key
+  0xCB837EEF50958FBB, off in its 1-Ups' local data) where Skate 2's reads the challenge type.
+  The DPO panel (the run's score over the round's best) shows no icon, as Skate 3's has none, and
+  the central HUD's second line shows the script's modified messages ("<name>'s turn", a bail),
+  held up until cleared when Skate 3's seventh argument asks. Skate 3's natives that
+  Skate 2's binding tables lack are bound after Skate 2's (`challenge/skate3_natives.rs`), and
+  those whose arguments Skate 3 changed take both forms; each console reports its own row of the
+  script's final results. Such a round's facts go whole and every player's objectives are
+  evaluated on every console.
 - **HUD pieces**: the online timer (lock/start/hurry countdowns, the location-change countdown)
   and the "waiting for skaters" chyron.
 - **Joining a game mid-challenge**: the joiner skates in the lobby until the next challenge,

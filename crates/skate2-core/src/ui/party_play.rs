@@ -39,7 +39,18 @@ pub enum Game {
 }
 
 impl Game {
-    const ALL: [Self; 3] = [Self::SpotBattle, Self::Skate, Self::Hom];
+    pub const ALL: [Self; 3] = [Self::SpotBattle, Self::Skate, Self::Hom];
+
+    /// PC port: the `eChallengeTypes` of the game's challenges (Own the Spot, S.K.A.T.E., Hall
+    /// of Meat), whose linked Skate 3 games follow the game's own locations.
+    #[must_use]
+    pub const fn challenge_type(self) -> i32 {
+        match self {
+            Self::SpotBattle => 9,
+            Self::Skate => 4,
+            Self::Hom => 31,
+        }
+    }
 }
 
 /// One location of a game: the challenge activity it runs.

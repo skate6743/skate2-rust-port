@@ -1161,7 +1161,7 @@ impl ServerCore {
         }
         match kind {
             // FrontEndState_OnlineHubMenu::GoToStartChallenge 0x826617a0: two participants (one
-            // for Spot Battle and Hall of Meat, `challenge::min_participants`), the members in the
+            // for Spot Battle, Hall of Meat and Death Race, `challenge::min_participants`), the members in the
             // game's world; one still on its way in stays in lobby skate, apart. No challenge
             // starts while the location changes.
             request::START_GAME => {

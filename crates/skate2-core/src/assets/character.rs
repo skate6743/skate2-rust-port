@@ -394,6 +394,9 @@ impl CharacterScene {
                                 Some(index) => Ok(index),
                                 None => {
                                     fallback_bone_count += 1;
+                                    if crate::skate3::linked().is_some() {
+                                        crate::skate3::note_unmatched_bone(name, &hierarchy.bone_names);
+                                    }
                                     fallback()
                                 }
                             }
@@ -419,9 +422,15 @@ impl CharacterScene {
             let component = &self.components[part.component_index];
             let lod = &component.models[part.model_index].lods[part.lod_index];
             let render_model = lod_render_model(lod)?;
-            for (&hierarchy_index, &matrix) in
-                part.bone_remap.iter().zip(&render_model.inverse_bind_pose)
+            for ((&hierarchy_index, &matrix), name) in
+                part.bone_remap.iter().zip(&render_model.inverse_bind_pose).zip(&render_model.bone_names)
             {
+                // PC port: a bone the hierarchy lacks (a linked Skate 3 data folder's clothing)
+                // stands on the default bone without giving it its bind pose, which every part
+                // shares.
+                if !hierarchy.bone_names[hierarchy_index].eq_ignore_ascii_case(name) {
+                    continue;
+                }
                 hierarchy_inverse_bind_pose[hierarchy_index] = matrix;
             }
         }
@@ -567,6 +576,7 @@ mod tests {
                             instances: Vec::new(),
                             anti_frustums: Vec::new(),
                             emitter_waypoints: Vec::new(),
+                            visual_indicators: Vec::new(),
                         },
                     }],
                 }],
@@ -647,6 +657,7 @@ mod tests {
             }],
             anti_frustums: Vec::new(),
             emitter_waypoints: Vec::new(),
+            visual_indicators: Vec::new(),
         };
         let scene = CharacterScene {
             customizations: None,
@@ -738,6 +749,7 @@ mod tests {
                         }],
                         anti_frustums: Vec::new(),
                         emitter_waypoints: Vec::new(),
+                        visual_indicators: Vec::new(),
                     },
                 }],
             }],

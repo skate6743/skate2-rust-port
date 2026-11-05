@@ -458,6 +458,17 @@ impl GrindDataRuntime {
         }
         Ok(())
     }
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn skate3_sources(&self) -> Result<Vec<GrindSplineSource>,String> {
+        Ok(self.records.as_ref().ok_or("Host GrindData is not initialized")?.iter()
+            .map(|record|record.source.clone()).collect())
+    }
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn matches_skate3_sources(&self, sources: &[GrindSplineSource]) -> Result<bool,String> {
+        let records=self.records.as_ref().ok_or("Host GrindData is not initialized")?;
+        Ok(records.len()==sources.len() && records.iter().zip(sources)
+            .all(|(record,source)|record.source.is_same_source(source)))
+    }
     pub(crate) fn try_box_test<N: GrindDataNumeric, D: DynamicGrindSplineProvider>(
         &self,
         bounds: OctreeBounds,

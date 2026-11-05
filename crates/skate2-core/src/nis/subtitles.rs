@@ -41,7 +41,17 @@ pub fn parse(bytes: &[u8]) -> Vec<SubtitleKey> {
 /// `XBOX2_` file, then `SubTitles_<language>\<name>.sub`, then the English one.
 #[must_use]
 pub fn load(subtitle_big: &[u8], language: &str, name: &str) -> Option<Vec<SubtitleKey>> {
-    let archive = BigArchive::parse(subtitle_big).ok()?;
+    load_from(&[subtitle_big], language, name)
+}
+
+/// `Load` over every subtitle BIG the `SubtitleManager` holds: each of its names in turn,
+/// searched through the BIGs in load order (`GetSubtitleData` walks `mBigFileList`).
+/// `StartDLCSubtitleLoad` (`0x8269fb20`) and `DLCSubtitleLoadUpdate` (`0x826aaf28`) load every
+/// `data\fe\subtitles\*.big` of every device, the game's then the downloadable content's.
+#[must_use]
+pub fn load_from(subtitle_bigs: &[&[u8]], language: &str, name: &str) -> Option<Vec<SubtitleKey>> {
+    let archives: Vec<(BigArchive, &[u8])> =
+        subtitle_bigs.iter().filter_map(|&big| BigArchive::parse(big).ok().map(|archive| (archive, big))).collect();
     let paths = [
         format!("data\\fe\\subtitles\\SubTitles_{language}\\XBOX2_{name}.sub"),
         format!("data\\fe\\subtitles\\SubTitles_English\\XBOX2_{name}.sub"),
@@ -49,11 +59,13 @@ pub fn load(subtitle_big: &[u8], language: &str, name: &str) -> Option<Vec<Subti
         format!("data\\fe\\subtitles\\SubTitles_English\\{name}.sub"),
     ];
     paths.iter().find_map(|path| {
-        let entry = archive.find_name(path)?;
-        if entry.stored_size != entry.unpacked_size {
-            return None;
-        }
-        subtitle_big.get(entry.data_range().ok()?).map(parse)
+        archives.iter().find_map(|(archive, big)| {
+            let entry = archive.find_name(path)?;
+            if entry.stored_size != entry.unpacked_size {
+                return None;
+            }
+            big.get(entry.data_range().ok()?).map(parse)
+        })
     })
 }
 

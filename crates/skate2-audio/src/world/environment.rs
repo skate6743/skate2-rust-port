@@ -71,6 +71,9 @@ const OBJECT_ID: u32 = 0x4002_0000;
 const STREAM_POOL: u32 = 0x416D_6230;
 const STREAM_BUFFER_BYTES: u64 = 0x8_0000;
 const RESIDENT_DATA: &str = "data\\audio/ambienceresident.big";
+/// PC port: a linked Skate 3 district's beds come from Skate 3's own ambience data
+/// (`aud_wp_ambiences` has Skate 2's layout: volume, id, fade out, fade in).
+const SKATE3_FILES: &str = crate::rwac::stream_pool::SKATE3_FILES;
 const STREAMS: &str = "data\\audio/ambience.big|";
 /// `32767.0f`, the fade's Q15 scale.
 const Q15: f32 = f32::from_bits(0x46FF_FE00);
@@ -124,6 +127,10 @@ struct Ambience {
     cross_fade: Option<ClassObject>,
     /// +0x54 `mbWasFE`.
     was_fe: i32,
+    /// PC port: whether `ambience_key` names a linked Skate 3 district's bed, and Skate 3's beds
+    /// (its `ambienceresident.big`), read the first time a district asks for one.
+    skate3: bool,
+    skate3_infos: Option<Vec<AmbienceInfo>>,
 }
 
 impl Ambience {
@@ -131,7 +138,7 @@ impl Ambience {
     /// (`mpAmbienceStreamPool` +0x1C). The object lives until `AudioSystem::Shutdown`, so the
     /// destructor 0x82529b60 that releases the voice and the pool never runs.
     fn new(io: Option<DMixIoId>, ctx: &mut SfxCtx<'_>) -> Self {
-        let infos = load_resident_data(ctx);
+        let infos = load_resident_data(ctx, RESIDENT_DATA);
         ctx.core.stream_pools.create(STREAM_POOL, 1, STREAM_BUFFER_BYTES);
         Self {
             io,
@@ -143,6 +150,8 @@ impl Ambience {
             fade_in_time: 0.0,
             cross_fade: None,
             was_fe: 0,
+            skate3: false,
+            skate3_infos: None,
         }
     }
 
@@ -175,16 +184,19 @@ impl Ambience {
     /// `UpdateParams` 0x8254dd30: follows the key (`UpdateAmbience` while it holds,
     /// `ChangeAmbience` when it moves), then sets mixer input 0 to the fade: the fade-out's
     /// progress, the fade-in's remainder, 0 while playing and 0x7FFF without a bed.
-    fn update_params(&mut self, t: f32, key: u64, ctx: &mut SfxCtx<'_>) {
-        if key == self.ambience_key {
-            self.update_ambience(t, ctx);
+    fn update_params(&mut self, t: f32, key: u64, skate3: Option<&Vault>, ctx: &mut SfxCtx<'_>) {
+        // PC port: a key from a linked Skate 3 district's painter names Skate 3's bed.
+        let key_skate3 = skate3.is_some();
+        if key == self.ambience_key && key_skate3 == self.skate3 {
+            self.update_ambience(t, skate3, ctx);
         } else {
-            self.change_ambience(key, t, ctx);
+            self.change_ambience(key, key_skate3, t, skate3, ctx);
         }
+        let vault = self.vault(skate3, ctx.vault);
         let collection = wp_ambience(self.ambience_key);
         let fade = match self.state {
-            AmbienceState::FadeOut => fctiwz(self.fade_out_time / ctx.vault.layout_f32(collection, FADE_OUT) * Q15),
-            AmbienceState::FadeIn => 0x7FFF_i32.wrapping_sub(fctiwz(self.fade_in_time / ctx.vault.layout_f32(collection, FADE_IN) * Q15)),
+            AmbienceState::FadeOut => fctiwz(self.fade_out_time / vault.layout_f32(collection, FADE_OUT) * Q15),
+            AmbienceState::FadeIn => 0x7FFF_i32.wrapping_sub(fctiwz(self.fade_in_time / vault.layout_f32(collection, FADE_IN) * Q15)),
             AmbienceState::Playing => 0,
             AmbienceState::None => 0x7FFF,
         };
@@ -195,7 +207,8 @@ impl Ambience {
     /// fading out (with the pair's crossfade sound when there is a new key), or without a key of
     /// its own just stops; the fade-out ends after `fadeOut` seconds with `StopAmbience`; with no
     /// bed the new key's bed starts fading in and the key is taken; a fade-in carries on.
-    fn change_ambience(&mut self, key: u64, t: f32, ctx: &mut SfxCtx<'_>) {
+    fn change_ambience(&mut self, key: u64, key_skate3: bool, t: f32, skate3: Option<&Vault>, ctx: &mut SfxCtx<'_>) {
+        let vault = self.vault(skate3, ctx.vault);
         match self.state {
             AmbienceState::Playing => {
                 if self.ambience_key == 0 {
@@ -204,39 +217,44 @@ impl Ambience {
                 }
                 self.state = AmbienceState::FadeOut;
                 self.fade_out_time = 0.0;
-                if key != 0 {
+                // PC port: TU3's ChangeAmbience (0x824d3fe0) takes a Skate 3 bed's crossfade sound
+                // from `aud_wp_ambience_crossfades`, whose ids name Skate 3's crossfade bank, which
+                // is not loaded: a Skate 3 bed hands over by its fades alone.
+                if key != 0 && !self.skate3 && !key_skate3 {
                     let id = cross_fade_id(self.ambience_key, key).clamp(1, 25);
                     self.cross_fade = Some(ctx.aems.create_object(CROSS_FADE_CLASS, vec![0, 0x7FFF, 0, 0, 0x1000, 25000, 0, 0, 0, id]));
                 }
             }
             AmbienceState::FadeOut => {
                 self.fade_out_time += t;
-                if self.fade_out_time > ctx.vault.layout_f32(wp_ambience(self.ambience_key), FADE_OUT) {
+                if self.fade_out_time > vault.layout_f32(wp_ambience(self.ambience_key), FADE_OUT) {
                     self.stop_ambience(ctx);
                     self.state = AmbienceState::None;
                 }
             }
             AmbienceState::None => {
+                self.skate3 = key_skate3;
                 if key != 0 {
                     self.state = AmbienceState::FadeIn;
                     self.fade_in_time = 0.0;
-                    let id = ctx.vault.layout_word(wp_ambience(key), ID) as i32;
+                    let id = self.vault(skate3, ctx.vault).layout_word(wp_ambience(key), ID) as i32;
                     self.play_ambience(id, ctx);
                 }
                 self.ambience_key = key;
             }
-            AmbienceState::FadeIn => self.update_ambience(t, ctx),
+            AmbienceState::FadeIn => self.update_ambience(t, skate3, ctx),
         }
     }
 
     /// `UpdateAmbience` 0x8252a220: a fade-in runs `fadeIn` seconds, then the crossfade sound is
     /// released and the bed plays on; a fade-out turns back into a fade-in from where it stood.
-    fn update_ambience(&mut self, t: f32, ctx: &mut SfxCtx<'_>) {
+    fn update_ambience(&mut self, t: f32, skate3: Option<&Vault>, ctx: &mut SfxCtx<'_>) {
+        let vault = self.vault(skate3, ctx.vault);
         let collection = wp_ambience(self.ambience_key);
         match self.state {
             AmbienceState::FadeIn => {
                 self.fade_in_time += t;
-                if self.fade_in_time > ctx.vault.layout_f32(collection, FADE_IN) {
+                if self.fade_in_time > vault.layout_f32(collection, FADE_IN) {
                     if let Some(cross_fade) = self.cross_fade.take() {
                         ctx.aems.release_object(cross_fade);
                     }
@@ -245,8 +263,8 @@ impl Ambience {
             }
             AmbienceState::FadeOut => {
                 self.state = AmbienceState::FadeIn;
-                let fade_in = ctx.vault.layout_f32(collection, FADE_IN);
-                self.fade_in_time = fnmsub(self.fade_out_time / ctx.vault.layout_f32(collection, FADE_OUT), fade_in, fade_in);
+                let fade_in = vault.layout_f32(collection, FADE_IN);
+                self.fade_in_time = fnmsub(self.fade_out_time / vault.layout_f32(collection, FADE_OUT), fade_in, fade_in);
             }
             AmbienceState::None | AmbienceState::Playing => {}
         }
@@ -255,12 +273,12 @@ impl Ambience {
     /// `ProcessUpdate` 0x8252a310: the bed's gain (`volume` times mixer volume 0), resample
     /// (mixer pitch 2) and low-pass frequency (mixer frequency 3); during a fade the crossfade
     /// sound's members 0 and 8 follow mixer volume 1.
-    fn process_update(&mut self, ctx: &mut SfxCtx<'_>) {
+    fn process_update(&mut self, skate3: Option<&Vault>, ctx: &mut SfxCtx<'_>) {
         if self.state == AmbienceState::None {
             return;
         }
         let level = ctx.output(self.io, 0, PresetType::Volume) as f32 * VOLUME_SCALE;
-        let volume = ctx.vault.layout_f32(wp_ambience(self.ambience_key), VOLUME) * level;
+        let volume = self.vault(skate3, ctx.vault).layout_f32(wp_ambience(self.ambience_key), VOLUME) * level;
         if matches!(self.state, AmbienceState::FadeIn | AmbienceState::FadeOut) {
             if let Some(cross_fade) = &mut self.cross_fade {
                 let level = ctx.output(self.io, 1, PresetType::Volume).clamp(0, 0x7FFF);
@@ -281,8 +299,29 @@ impl Ambience {
     /// `LowPassIir2`, `Send`, each of six channels) playing the bed's stream
     /// (`data\audio\ambience.big|<name>.sns` with its resident header, pool 'Amb0', expelled when
     /// done) into the master sub mix. The id it also keeps (+0x50) is never read.
+    /// The data of the bed `ambience_key` names: Skate 3's while it is a linked district's.
+    fn vault<'v>(&self, skate3: Option<&'v Vault>, skate2: &'v Vault) -> &'v Vault {
+        match skate3 {
+            Some(vault) if self.skate3 => vault,
+            _ => skate2,
+        }
+    }
+
     fn play_ambience(&mut self, id: i32, ctx: &mut SfxCtx<'_>) {
-        let Some(info) = get_ambience_info(&self.infos, id) else { return };
+        if self.skate3 && self.skate3_infos.is_none() {
+            self.skate3_infos = Some(load_resident_data(ctx, &format!("{SKATE3_FILES}{RESIDENT_DATA}")));
+        }
+        let (infos, prefix) = match self.skate3_infos.as_ref().filter(|_| self.skate3) {
+            Some(infos) => (infos, SKATE3_FILES),
+            None => (&self.infos, ""),
+        };
+        let Some(info) = get_ambience_info(infos, id) else { return };
+        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_AMBIENCE").is_some()) {
+            eprintln!("ambience: bed {id} ({}{}) for key {:016x}", prefix, info.filename, self.ambience_key);
+        }
+        let stream = format!("{prefix}{STREAMS}{}", info.filename).replace('/', "\\");
+        let snr = info.snr.clone();
         let six = |kind: PlugInKind| PlugInConfig { kind, output_channels: 6 };
         self.voice = ctx.core.create_voice(
             0,
@@ -303,8 +342,8 @@ impl Ambience {
         // at no volume that was a blast of ambience at boot.
         ctx.core.set_attribute(PluginRef { voice, index: VOICE_GAIN }, 0, 0.0);
         let params = PlayParams {
-            stream_path: Some(format!("{STREAMS}{}", info.filename).replace('/', "\\")),
-            ram_sample: Some(info.snr.clone()),
+            stream_path: Some(stream),
+            ram_sample: Some(snr),
             stream_pool: STREAM_POOL,
             expel_mode: 1.0,
             ..PlayParams::default()
@@ -324,11 +363,11 @@ impl Ambience {
 
 /// `LoadResidentData` 0x8252a530: `SyncLoad("data\\audio/ambienceresident.big")` and an
 /// `AmbienceInfo` per table entry.
-fn load_resident_data(ctx: &SfxCtx<'_>) -> Vec<AmbienceInfo> {
+fn load_resident_data(ctx: &SfxCtx<'_>, path: &str) -> Vec<AmbienceInfo> {
     let Some(files) = ctx.core.stream_pools.files() else { return Vec::new() };
-    let Some(size) = files.size(RESIDENT_DATA) else { return Vec::new() };
+    let Some(size) = files.size(path) else { return Vec::new() };
     let mut bytes = vec![0u8; size as usize];
-    if !files.read_at(RESIDENT_DATA, 0, &mut bytes) {
+    if !files.read_at(path, 0, &mut bytes) {
         return Vec::new();
     }
     let Ok(table) = BigArchive::parse(&bytes) else { return Vec::new() };
@@ -341,7 +380,11 @@ fn load_resident_data(ctx: &SfxCtx<'_>) -> Vec<AmbienceInfo> {
             let mut filename = name.clone();
             filename.pop();
             filename.push('s');
-            let id = atol(name.get(..2).unwrap_or(name));
+            // Skate 3's `EB` table keeps a folder per entry; TU3's name accessor (0x82a82800)
+            // drops a folder that starts with '.', so its beds are named `NN_...` like Skate 2's
+            // and the id is their first two digits. The full name still finds the stream.
+            let bare = if name.starts_with('.') { name.split_once('\\').map_or(name.as_str(), |(_, file)| file) } else { name.as_str() };
+            let id = atol(bare.get(..2).unwrap_or(bare));
             Some(AmbienceInfo { snr: DataRef { bytes: Arc::clone(&bytes), offset: entry.offset as usize }, filename, id })
         })
         .collect()
@@ -383,12 +426,20 @@ pub struct EnvironmentManager {
     /// The presentation's `GlobalData.ambienceKey` (`AudioSystem::GetAmbienceKey` 0x824f1cb8),
     /// which keeps its last value through updates without a world.
     presentation_key: u64,
+    /// PC port: whether that key is a linked Skate 3 district's, and Skate 3's data.
+    presentation_skate3: bool,
+    skate3: Option<Arc<Vault>>,
 }
 
 impl EnvironmentManager {
     #[must_use]
     pub fn new(_vault: &Vault, map: Option<&MixMap>) -> Self {
-        Self { io: map.and_then(|map| map.dmixio(OBJECT_ID)), ambience: None, presentation_key: 0 }
+        Self { io: map.and_then(|map| map.dmixio(OBJECT_ID)), ambience: None, presentation_key: 0, presentation_skate3: false, skate3: None }
+    }
+
+    /// PC port: a linked Skate 3 data folder's attributes (its `aud_wp_ambiences`); none unlinked.
+    pub fn set_skate3(&mut self, vault: Option<Arc<Vault>>) {
+        self.skate3 = vault;
     }
 
     /// `CSTATEMGR_Base::UpdateParams`. The first one enters gameplay (`CreateState`, `Setup(1)`,
@@ -397,6 +448,7 @@ impl EnvironmentManager {
     pub fn update_params(&mut self, t: f32, world: Option<&WorldAudioState>, is_fe: i32, loading: bool, ctx: &mut SfxCtx<'_>) {
         if let Some(world) = world {
             self.presentation_key = world.ambience_key;
+            self.presentation_skate3 = world.skate3_district;
         }
         if self.ambience.is_none() {
             self.ambience = Some(Ambience::new(self.io, ctx));
@@ -406,14 +458,17 @@ impl EnvironmentManager {
         }
         if let Some(ambience) = &mut self.ambience {
             let key = ambience.get_ambience_key(self.presentation_key, is_fe, loading, ctx.vault);
-            ambience.update_params(t, key, ctx);
+            // The front end's bed and a test bed are Skate 2's.
+            let skate3 = self.skate3.as_deref().filter(|_| self.presentation_skate3 && key == self.presentation_key && is_fe <= 0);
+            ambience.update_params(t, key, skate3, ctx);
         }
     }
 
     /// `CSTATEMGR_Base::ProcessUpdate`.
     pub fn process_update(&mut self, ctx: &mut SfxCtx<'_>) {
         if let Some(ambience) = &mut self.ambience {
-            ambience.process_update(ctx);
+            let skate3 = self.skate3.as_deref();
+            ambience.process_update(skate3, ctx);
         }
     }
 }

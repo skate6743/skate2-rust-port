@@ -1,7 +1,7 @@
 //! Source stages 0x82b36ad4..0x82b36eb4 on the existing contact owner.
 //! The enclosing completed-frame traversal calls these once, in source order.
 
-use super::{PhysicalContactInfo, SkateboardContactSurface, SkateboardSurfaceWinner};
+use super::{PhysicalContactInfo, SkateboardContactSurface, SkateboardSurfaceWinner, physics_surface_type};
 use crate::simulation_assembly_backend::constraint_session::physical_island::{
     SimulationIslandBodyHandle, contact_owners::SimulationContactEntityOwner,
 };
@@ -274,10 +274,10 @@ impl SkateboardContactSurface {
             self.collision_state.pattern_type[part] = Some((surface >> 12) & 15);
             self.collision_state
                 .surfaces
-                .set_physics_type(part, (surface >> 7) & 31);
+                .set_physics_type(part, physics_surface_type(surface));
             self.parts[part].winner = Some(SkateboardSurfaceWinner {
                 normal_y: normal.xyz[1],
-                physics_type: (surface >> 7) & 31,
+                physics_type: physics_surface_type(surface),
             });
             self.collision_state.audio_type[part] = Some(surface & 127);
         }

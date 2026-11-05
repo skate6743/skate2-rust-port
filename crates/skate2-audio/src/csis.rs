@@ -164,6 +164,33 @@ impl Csis {
     }
 
     #[must_use]
+    /// PC port: [`Self::subscribe`] with the system behind every other, so a lookup by name keeps
+    /// finding the classes subscribed before it (a second game's interface).
+    pub fn subscribe_last(&mut self, name: &str, file: &[u8]) -> Option<usize> {
+        let index = self.subscribe(name, file)?;
+        self.order.retain(|&system| system != index);
+        self.order.push(index);
+        Some(index)
+    }
+
+    /// PC port: whether a system was subscribed under `name`.
+    #[must_use]
+    pub fn has_system(&self, name: &str) -> bool {
+        self.systems.iter().any(|system| system.name == name)
+    }
+
+    /// PC port: [`Self::find`] within the system subscribed under `system`.
+    #[must_use]
+    pub fn find_in(&self, system: &str, kind: DescKind, name: &str) -> Option<(i16, i16)> {
+        let system = self.systems.iter().find(|candidate| candidate.name == system)?;
+        let range = match kind {
+            DescKind::Function => system.functions.clone(),
+            DescKind::Class => system.classes.clone(),
+            DescKind::Global => system.globals.clone(),
+        };
+        range.into_iter().find(|&index| self.descs[index].name == name).map(|index| (system.crc, self.descs[index].crc))
+    }
+
     pub fn system_name(&self, index: usize) -> Option<&str> {
         self.systems.get(index).map(|s| s.name.as_str())
     }

@@ -241,6 +241,8 @@ impl CameraStartupFields {
         let camera_profile =
             std::env::var_os("SKATE2_PROFILE_REDRAW").map(|_| std::time::Instant::now());
         self.producer_snapshot_ready = false;
+        #[cfg(feature = "skate3-runtime")]
+        self.restore_skate2_field_of_view();
         use CameraSelectedError as E;
         let retained = self
             .construction_state

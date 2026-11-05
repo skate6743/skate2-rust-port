@@ -9,7 +9,8 @@ use super::{
     sequence::GlobalMetrics,
     wipeout_score::{DmoScorer, EntityScorer, WipeoutScorer},
 };
-use crate::attribute_runtime::{AttributeRuntimeInstance, AttributeRuntimeVault};
+use crate::attribute_runtime::{AttributeRuntimeVault};
+use super::scoring_attributes::ScoringAttributes;
 use std::sync::{Arc, Mutex};
 
 #[expect(
@@ -55,13 +56,34 @@ pub(super) struct ScoreModule {
     pub(super) line_timer: Retained<Box<ScoringMeter>>,
     pub(super) momentum: Retained<Box<MomentumMeter>>,
     pub(super) wipeout: Retained<Box<WipeoutScorer>>,
-    pub(super) states: AttributeRuntimeInstance,
-    pub(super) general: AttributeRuntimeInstance,
+    pub(super) states: ScoringAttributes,
+    pub(super) general: ScoringAttributes,
     // PhysicsScoring allocation is not cleared. The original Reset is the first
     // writer of this group, after every nested constructor has returned.
     pub(super) reset_suffix: Option<ResetSuffix>,
 }
 impl ScoreModule {
+    #[cfg(feature = "skate3-runtime")]
+    pub(super) fn select_skate3(&self, enabled: bool) -> Result<(), super::scoring_attributes::ScoreError> {
+        use super::scoring_attributes::ScoreError as E;
+        self.states.select_skate3(enabled);
+        self.general.select_skate3(enabled);
+        let select = |base: &CollectorBase| {
+            base.states.select_skate3(enabled); base.general.select_skate3(enabled);
+        };
+        if let Some(c) = self.air.published_value() { select(&c.base); }
+        if let Some(c) = self.grind.published_value() { select(&c.base); }
+        if let Some(c) = self.ground.published_value() { select(&c.base); }
+        if let Some(c) = self.handplant.published_value() { select(&c.base); }
+        if let Some(c) = self.offboard.published_value() { select(&c.base); }
+        if let Some(c) = self.other.published_value() { select(&*c.lock().map_err(|_| E::Poisoned)?); }
+        if let Some(c) = self.holder.published_value() { c.lock().map_err(|_| E::Poisoned)?.general.select_skate3(enabled); }
+        if let Some(c) = self.line_timer.published_value() { c.general.select_skate3(enabled); }
+        if let Some(c) = self.momentum.published_value() { c.base.general.select_skate3(enabled); }
+        if let Some(c) = self.wipeout.published_value() { c.attributes.select_skate3(enabled); }
+        Ok(())
+    }
+
     pub(super) fn before_children(output: Arc<()>, vault: &Arc<AttributeRuntimeVault>) -> Self {
         Self {
             output,
@@ -77,8 +99,8 @@ impl ScoreModule {
             line_timer: Retained::new(),
             momentum: Retained::new(),
             wipeout: Retained::new(),
-            states: vault.instance(0x546c_36b6_5603_8e04, 0xd7ed_bd36_2d7d_2152),
-            general: vault.instance(0x3492_15e2_e817_703c, 0xd7ed_bd36_2d7d_2152),
+            states: ScoringAttributes::new(vault.instance(0x546c_36b6_5603_8e04, 0xd7ed_bd36_2d7d_2152), 0x546c_36b6_5603_8e04),
+            general: ScoringAttributes::new(vault.instance(0x3492_15e2_e817_703c, 0xd7ed_bd36_2d7d_2152), 0x3492_15e2_e817_703c),
             reset_suffix: None,
         }
     }

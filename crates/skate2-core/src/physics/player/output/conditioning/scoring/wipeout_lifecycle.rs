@@ -24,6 +24,14 @@ pub(super) struct WipeoutFrame<'a> {
     pub heavy_landing_kind: i32,
     pub heavy_landing_speed: f32,
     pub gesture: [f32; 2],
+    /// Skate 3 physics only (TU3 WipeoutScorer): PhysOut_State+68/+69, Skeleton+580,
+    /// Air+452, SystemReckoning+16 velocity and +64 position.
+    pub skate3_countdown: bool,
+    pub skate3_teleport_requested: bool,
+    pub skate3_response_strength: f32,
+    pub skate3_air_locked: bool,
+    pub centre_of_mass_velocity: SkeletonRootVector,
+    pub damped_centre_of_mass: SkeletonRootVector,
 }
 pub(super) struct WipeoutTuning {
     pub damage: DamageTuning,
@@ -40,7 +48,7 @@ impl WipeoutScorer {
         self.just_performed_body_tweak = false;
         self.body_tweak_duration_frames = 0;
     }
-    fn reset_wipeout(&mut self, matrix: SkeletonRootMatrix) -> Result<(), ScoreError> {
+    pub(super) fn reset_wipeout(&mut self, matrix: SkeletonRootMatrix) -> Result<(), ScoreError> {
         self.air_start_position = ZERO;
         self.air_apex_position = ZERO;
         self.bail_start_velocity = ZERO;
@@ -150,6 +158,10 @@ impl WipeoutScorer {
         tuning: &WipeoutTuning,
         out: &mut Scoring2,
     ) -> Result<(), ScoreError> {
+        #[cfg(feature = "skate3-runtime")]
+        if self.attributes.skate3_enabled() {
+            return self.update_wipeout_skate3(vault, input, frame, tuning, out);
+        }
         let was_wiping_out = self.is_wiping_out;
         self.is_wiping_out = frame.filtered == FilteredPhysicsState::Wipeout;
         if was_wiping_out != self.is_wiping_out {

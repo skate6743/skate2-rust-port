@@ -499,6 +499,8 @@ pub(super) struct RemoteSkater {
     hud_through: Option<u32>,
     /// The character a recipe is building on its own thread, and how long it took.
     building: Option<std::thread::JoinHandle<(Result<Character, String>, std::time::Duration)>>,
+    /// PC port: a stand-in look was asked for since the last recipe (see `take_stand_in`).
+    stood_in: bool,
 }
 
 fn header_bytes(words: &[u32; HEADER_WORDS]) -> [u8; HEADER_BYTES] {
@@ -538,6 +540,7 @@ impl RemoteSkater {
             hud: HudFollower::default(),
             hud_through: None,
             building: None,
+            stood_in: false,
         }
     }
 
@@ -547,6 +550,16 @@ impl RemoteSkater {
     ///
     /// # Errors
     /// The thread could not start.
+    /// PC port: whether this skater may take a stand-in look now: once per recipe that failed.
+    pub(super) fn take_stand_in(&mut self) -> bool {
+        !std::mem::replace(&mut self.stood_in, true)
+    }
+
+    /// A recipe arrived: its look builds, and a later failure may stand in again.
+    pub(super) fn received_recipe(&mut self) {
+        self.stood_in = false;
+    }
+
     pub(super) fn build_character(&mut self, data: Vec<u8>, mounts: Arc<MountSet>, vault: Arc<AttributeRuntimeVault>, cvars: InputCvarReferences) -> Result<(), String> {
         let user_id = self.user_id;
         let thread = std::thread::Builder::new()

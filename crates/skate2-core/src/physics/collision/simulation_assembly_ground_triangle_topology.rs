@@ -717,6 +717,47 @@ pub(super) fn build_new_unit_gp_with_numeric<N: AssemblyGroundNumeric, V: Modern
     )
 }
 
+/// Geometry-only projection of the old Assembly unit constructor. These
+/// fields are copied unchanged from topology by `build_gp_record`; the host's
+/// Skate3 scene does not consume native2 face frames, edge directions or GP
+/// dimensions. Preserve the exact old dispatch, transform and edge arithmetic
+/// without constructing those discarded contact-solver fields.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct AssemblyGroundFeatures {
+    pub(super) points: [[f32; 3]; 3],
+    pub(super) edge_data: [f32; 3],
+    pub(super) flags: u32,
+}
+
+pub(super) fn build_old_assembly_unit_features(
+    mesh: &ClusteredMesh,
+    cluster_index: usize,
+    cluster: &MeshCluster,
+    unit: &MeshUnit,
+    transform: [f32; 16],
+) -> Result<Vec<AssemblyGroundFeatures>, UnitTopologyError> {
+    let primitive_count = validate_old_assembly_unit_layout(unit)?;
+    let mut points = [[0.; 3]; 4];
+    for (slot, &index) in unit.vertex_indices.iter().enumerate() {
+        let position = cluster.vertices.get(usize::from(index))
+            .map(|vertex|vertex.position(mesh))
+            .ok_or(UnitTopologyError::VertexOutsideCluster { index })?;
+        points[slot] = transform_point(transform, position);
+    }
+    let mut numeric = HostAssemblyGroundNumeric;
+    let diagonal = if primitive_count == 2 && unit.flags & EXPLICIT_EDGE_FLAG != 0 {
+        Some(compute_edge_cos(points[0], points[1], points[2], points[3], &mut numeric))
+    } else { None };
+    let topology = materialize_supported_unit_topology(
+        cluster_index, mesh.cluster_flags, unit, &points[..unit.vertex_indices.len()],
+        primitive_count, diagonal, 0, UnitGpOverload::OldAssemblyFree,
+    )?;
+    Ok(topology.records[..topology.count].iter().map(|record| {
+        let record = record.as_ref().expect("published topology prefix");
+        AssemblyGroundFeatures { points:record.points,edge_data:record.edge_data,flags:record.flags }
+    }).collect())
+}
+
 /// Assembly's older free overload at `0x827c98f0..0x827ca7b8`.
 ///
 /// Unlike the newer member overload, this path has no model-space AABB and

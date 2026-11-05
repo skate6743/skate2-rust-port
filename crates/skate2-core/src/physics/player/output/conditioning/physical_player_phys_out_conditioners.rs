@@ -51,6 +51,24 @@ mod scoring_meters;
 pub(crate) mod scoring_database;
 #[path = "scoring/catalog.rs"]
 mod scoring_catalog;
+#[cfg(feature = "skate3-runtime")]
+#[path = "scoring/skate3_catalog.rs"]
+mod skate3_catalog;
+#[cfg(feature = "skate3-runtime")]
+pub(super) const SCORABLE_CAPACITY: usize = skate3_catalog::CAPACITY;
+#[cfg(not(feature = "skate3-runtime"))]
+pub(super) const SCORABLE_CAPACITY: usize = scoring_catalog::SCORABLES.len();
+#[cfg(feature = "skate3-runtime")]
+pub(crate) fn skate3_trick_strings() -> Result<Vec<(u32, Vec<u16>)>, String> { skate3_catalog::localized_tricks() }
+/// Cross-game IDs are resolved by the shared authored FastString name.
+/// Skate 3 numeric IDs must never index Skate 2's different catalog.
+#[cfg(feature = "skate3-runtime")]
+pub(crate) fn scorable_from_animation_name(name: crate::play_animation::FastString36) -> i32 {
+    static IDS: std::sync::OnceLock<std::collections::BTreeMap<crate::play_animation::FastString36, i32>> = std::sync::OnceLock::new();
+    IDS.get_or_init(|| scoring_catalog::SCORABLES.into_iter().map(|info|
+        (crate::play_animation::FastString36::encode(info.name).expect("authored scorable name"), info.id)).collect())
+        .get(&name).copied().or_else(||skate3_catalog::animation_id(&name)).unwrap_or(-1)
+}
 /// Shared original GetScorableIDCategory lookup for non-scoring consumers.
 pub(crate) fn scorable_id_category(id: i32) -> Option<i32> {
     scoring_catalog::info(id).map(|entry| entry.category)
@@ -70,6 +88,15 @@ pub(crate) fn scorable_id_base(id: i32) -> Option<i32> {
 /// `Sk8::Score::GetScorableIDString` of a valid scorable.
 pub(crate) fn scorable_id_string(id: i32) -> Option<&'static str> {
     scoring_catalog::info(id).map(|entry| entry.name)
+}
+/// The audio fields of a Skate 3-only scorable (past Skate 2's catalog), which exist only in the
+/// linked Skate 3 data. Records without a retained lookup (replays, remote skaters) use this.
+#[cfg(feature = "skate3-runtime")]
+pub fn skate3_only_scorable_audio(id: i32) -> Option<(i32, i32, bool)> {
+    if id < scoring_catalog::SCORABLES.len() as i32 {
+        return None;
+    }
+    skate3_catalog::audio(id)
 }
 #[path = "scoring/scorable.rs"]
 mod scoring_scorable;
@@ -137,6 +164,9 @@ mod scoring_wipeout_tweaks;
 mod scoring_wipeout_output;
 #[path = "scoring/wipeout_lifecycle.rs"]
 mod scoring_wipeout_lifecycle;
+#[cfg(feature = "skate3-runtime")]
+#[path = "scoring/wipeout_skate3.rs"]
+mod scoring_wipeout_skate3;
 #[path = "scoring/external.rs"]
 pub(crate) mod scoring_external;
 #[path = "scoring/entity_types.rs"]

@@ -19,6 +19,10 @@ pub const MATCH_TYPES: [&str; 2] = ["ID_CUSTOM_UNRANKED_MATCH_JOIN", "ID_CUSTOM_
 pub const FREESKATE_TYPES: [&str; 2] = ["ID_UNRANKEDFREESKATE_TYPE_JOIN", "ID_UNRANKEDFREESKATE_TYPE_CREATE"];
 /// `mDefaultImage`: the location image of "any location".
 pub const ANY_LOCATION_IMAGE: &str = "fe\\source\\images\\locations\\any_location";
+/// PC port: with Skate 3 data linked (`crate::skate3`), the first row picks the maps the screen
+/// lists: Skate 2's or Skate 3's (literal text, `#`).
+pub const MAP_POOL_TITLE: &str = "#Map Pool";
+pub const MAP_POOLS: [&str; 2] = ["#Skate 2", "#Skate 3"];
 
 /// What the screen's A asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,6 +82,16 @@ pub struct CustomMatch {
     host: Option<bool>,
     pub ready: bool,
     sounds: Vec<&'static str>,
+    /// PC port: each Map Pool's types and their challenges, and the one shown.
+    pools: Option<[(Vec<u8>, Vec<Vec<OnlineChallenge>>); 2]>,
+    pool: usize,
+}
+
+/// The selector after or before `current` among `rows` (wrapping).
+fn step_row(rows: &[usize], current: usize, forward: bool) -> usize {
+    let at = rows.iter().position(|&row| row == current).unwrap_or(0);
+    let count = rows.len().max(1);
+    rows.get(if forward { (at + 1) % count } else { (at + count - 1) % count }).copied().unwrap_or(current)
 }
 
 /// `HostActions_IsPrivate`'s subtitle of the host state's first selector.
@@ -91,7 +105,43 @@ impl CustomMatch {
     #[must_use]
     pub fn new(types: Vec<(u8, Vec<OnlineChallenge>)>) -> Self {
         let (types, locations) = types.into_iter().unzip();
-        Self { types, locations, selector: 0, type_index: 0, challenge_index: 0, location_index: 0, matchmaking: false, host: None, ready: false, sounds: Vec::new() }
+        Self { types, locations, selector: 0, type_index: 0, challenge_index: 0, location_index: 0, matchmaking: false, host: None, ready: false, sounds: Vec::new(), pools: None, pool: 0 }
+    }
+
+    /// PC port: the Map Pool row over Skate 2's and Skate 3's types, `skate3` shown first.
+    #[must_use]
+    pub fn with_pools(mut self, skate3_types: Vec<(u8, Vec<OnlineChallenge>)>, skate3: bool) -> Self {
+        let skate2 = (std::mem::take(&mut self.types), std::mem::take(&mut self.locations));
+        let skate3_types: (Vec<u8>, Vec<Vec<OnlineChallenge>>) = skate3_types.into_iter().unzip();
+        self.pools = Some([skate2, skate3_types]);
+        self.selector += 1;
+        self.show_pool(usize::from(skate3));
+        self
+    }
+
+    fn show_pool(&mut self, pool: usize) {
+        let Some(pools) = self.pools.as_ref() else { return };
+        self.pool = pool;
+        (self.types, self.locations) = pools[pool].clone();
+        self.challenge_index = 0;
+        self.location_index = 0;
+    }
+
+    /// The Map Pool row's offset: the type, event and location rows follow it.
+    fn pool_rows(&self) -> usize {
+        usize::from(self.pools.is_some())
+    }
+
+    /// The rows up and down move between: the Map Pool, the type (not in the host state), the
+    /// event and the location.
+    fn selectable(&self) -> Vec<usize> {
+        let pool = self.pool_rows();
+        let mut rows: Vec<usize> = (0..pool).collect();
+        if self.host.is_none() {
+            rows.push(pool);
+        }
+        rows.extend([pool + 1, pool + 2]);
+        rows
     }
 
     /// `SetHostState`: Match Setup over the hub, on the event selector with Create's locations;
@@ -139,7 +189,11 @@ impl CustomMatch {
             }
             self.sounds.push(if step < 0 { "FE_SOUND_CORE_NAV_LEFT" } else { "FE_SOUND_CORE_NAV_RIGHT" });
             let wrap = |value: usize, count: usize| (value.cast_signed() + step).rem_euclid(count.max(1).cast_signed()).cast_unsigned();
-            match self.selector {
+            if self.pools.is_some() && self.selector == 0 {
+                self.show_pool(wrap(self.pool, MAP_POOLS.len()));
+                continue;
+            }
+            match self.selector - self.pool_rows() {
                 0 => {
                     self.type_index = wrap(self.type_index, MATCH_TYPES.len());
                     self.location_index = 0;
@@ -151,14 +205,13 @@ impl CustomMatch {
                 _ => self.location_index = wrap(self.location_index, self.location_count()),
             }
         }
-        let first = usize::from(self.host.is_some());
         if input.up {
             self.sounds.push("FE_SOUND_CORE_NAV_UP");
-            self.selector = if self.selector == first { 2 } else { self.selector - 1 };
+            self.selector = step_row(&self.selectable(), self.selector, false);
         }
         if input.down {
             self.sounds.push("FE_SOUND_CORE_NAV_DOWN");
-            self.selector = if self.selector == 2 { first } else { self.selector + 1 };
+            self.selector = step_row(&self.selectable(), self.selector, true);
         }
         if input.select && !self.types.is_empty() {
             self.sounds.push("FE_SOUND_CORE_A_BUTTON");
@@ -189,21 +242,27 @@ impl CustomMatch {
             "ID_UNRANKEDCUSTOMMATCH_FIRST_EVENT".to_owned()
         };
         let image = match self.location() {
-            Some(location) => format!("fe\\source\\images\\locations\\{}_sm", location.image),
+            Some(location) => format!("fe\\source\\images\\locations\\{}", crate::skate3::small_location_image(&location.image)),
             None => ANY_LOCATION_IMAGE.to_owned(),
         };
-        let selector = |index: usize, title: &str, subtitle: String| Selector { title: title.to_owned(), subtitle, selected: self.selector == index };
+        let pool = self.pool_rows();
+        let selector = |index: usize, title: &str, subtitle: String| Selector { title: title.to_owned(), subtitle, selected: self.selector == index + pool };
         let first = match self.host {
             Some(private) => selector(0, "ID_ONLINE_CURRENT_TYPE", session_access(private).to_owned()),
             None => selector(0, "ID_UNRANKEDCUSTOMMATCH_TYPE", MATCH_TYPES[self.type_index].to_owned()),
         };
+        let mut selectors = Vec::with_capacity(4);
+        if self.pools.is_some() {
+            selectors.push(Selector { title: MAP_POOL_TITLE.to_owned(), subtitle: MAP_POOLS[self.pool].to_owned(), selected: self.selector == 0 });
+        }
+        selectors.extend([
+            first,
+            selector(1, "ID_UNRANKEDCUSTOMMATCH_EVENT", catalog::challenge_title(challenge_type).to_owned()),
+            selector(2, "ID_UNRANKEDCUSTOMMATCH_LOCATION", location),
+        ]);
         Snapshot {
             title: if self.host.is_some() { "ID_ONLINE_HUB_NEW_CHALLENGE" } else { "ID_CUSTOM_MATCH_TITLE" },
-            selectors: vec![
-                first,
-                selector(1, "ID_UNRANKEDCUSTOMMATCH_EVENT", catalog::challenge_title(challenge_type).to_owned()),
-                selector(2, "ID_UNRANKEDCUSTOMMATCH_LOCATION", location),
-            ],
+            selectors,
             image,
             description: Some(catalog::challenge_description(challenge_type)),
             matchmaking: self.matchmaking.then_some(if self.create() { "ID_ONLINE_CREATING_SESSION" } else { "ID_RANKED_MATCHMAKING" }),
@@ -224,12 +283,36 @@ pub struct FreeskateMatch {
     host: Option<bool>,
     pub ready: bool,
     sounds: Vec<&'static str>,
+    /// PC port: each Map Pool's locations, and the one shown.
+    pools: Option<[Vec<OnlineChallenge>; 2]>,
+    pool: usize,
 }
 
 impl FreeskateMatch {
     #[must_use]
     pub fn new(locations: Vec<OnlineChallenge>) -> Self {
-        Self { locations, selector: 0, type_index: 0, location_index: 0, matchmaking: false, host: None, ready: false, sounds: Vec::new() }
+        Self { locations, selector: 0, type_index: 0, location_index: 0, matchmaking: false, host: None, ready: false, sounds: Vec::new(), pools: None, pool: 0 }
+    }
+
+    /// PC port: the Map Pool row over Skate 2's and Skate 3's locations, `skate3` shown first.
+    #[must_use]
+    pub fn with_pools(mut self, skate3_locations: Vec<OnlineChallenge>, skate3: bool) -> Self {
+        self.pools = Some([std::mem::take(&mut self.locations), skate3_locations]);
+        self.selector += 1;
+        self.show_pool(usize::from(skate3));
+        self
+    }
+
+    fn show_pool(&mut self, pool: usize) {
+        let Some(pools) = self.pools.as_ref() else { return };
+        self.pool = pool;
+        self.locations = pools[pool].clone();
+        self.location_index = 0;
+    }
+
+    /// The Map Pool row's offset: the type and location rows follow it.
+    fn pool_rows(&self) -> usize {
+        usize::from(self.pools.is_some())
     }
 
     /// `SetHostState`: Change Location over the hub, on the location selector.
@@ -258,7 +341,10 @@ impl FreeskateMatch {
             }
             self.sounds.push(if step < 0 { "FE_SOUND_CORE_NAV_LEFT" } else { "FE_SOUND_CORE_NAV_RIGHT" });
             let wrap = |value: usize, count: usize| (value.cast_signed() + step).rem_euclid(count.max(1).cast_signed()).cast_unsigned();
-            if self.selector == 0 {
+            let pool = self.pool_rows();
+            if self.pools.is_some() && self.selector == 0 {
+                self.show_pool(wrap(self.pool, MAP_POOLS.len()));
+            } else if self.selector == pool {
                 self.type_index = wrap(self.type_index, FREESKATE_TYPES.len());
             } else {
                 self.location_index = wrap(self.location_index, self.locations.len());
@@ -266,7 +352,8 @@ impl FreeskateMatch {
         }
         if input.up || input.down {
             self.sounds.push(if input.up { "FE_SOUND_CORE_NAV_UP" } else { "FE_SOUND_CORE_NAV_DOWN" });
-            self.selector = 1 - self.selector;
+            let rows: Vec<usize> = (0..self.pool_rows() + 2).collect();
+            self.selector = step_row(&rows, self.selector, input.down);
         }
         if input.select && !self.locations.is_empty() {
             self.sounds.push("FE_SOUND_CORE_A_BUTTON");
@@ -289,18 +376,27 @@ impl FreeskateMatch {
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
         let location = self.locations.get(self.location_index);
-        let selector = |index: usize, title: &str, subtitle: String| Selector { title: title.to_owned(), subtitle, selected: self.selector == index };
+        let pool = self.pool_rows();
+        let selector = |index: usize, title: &str, subtitle: String| Selector { title: title.to_owned(), subtitle, selected: self.selector == index + pool };
         let first = match self.host {
             Some(private) => selector(0, "ID_ONLINE_CURRENT_TYPE", session_access(private).to_owned()),
             None => selector(0, "ID_UNRANKEDFREESKATE_TYPE", FREESKATE_TYPES[self.type_index].to_owned()),
         };
+        let mut selectors = Vec::with_capacity(3);
+        if self.pools.is_some() {
+            selectors.push(Selector { title: MAP_POOL_TITLE.to_owned(), subtitle: MAP_POOLS[self.pool].to_owned(), selected: self.selector == 0 });
+        }
+        selectors.extend([
+            first,
+            selector(1, "ID_UNRANKEDFREESKATE_LOCATION", location.map_or_else(|| "ID_COMMON_UNKNOWN".to_owned(), |location| location.title.clone())),
+        ]);
         Snapshot {
             title: if self.host.is_some() { "ID_ONLINE_HUB_CHANGE_LOCATION" } else { "ID_CUSTOM_FREESKATE_TITLE" },
-            selectors: vec![
-                first,
-                selector(1, "ID_UNRANKEDFREESKATE_LOCATION", location.map_or_else(|| "ID_COMMON_UNKNOWN".to_owned(), |location| location.title.clone())),
-            ],
-            image: location.map_or_else(|| ANY_LOCATION_IMAGE.to_owned(), |location| format!("fe\\source\\images\\locations\\{}_sm", location.image)),
+            selectors,
+            image: location.map_or_else(
+                || ANY_LOCATION_IMAGE.to_owned(),
+                |location| format!("fe\\source\\images\\locations\\{}", crate::skate3::small_location_image(&location.image)),
+            ),
             description: None,
             matchmaking: self.matchmaking.then_some(if self.type_index == 1 { "ID_ONLINE_CREATING_SESSION" } else { "ID_RANKED_MATCHMAKING" }),
             freeskate: true,

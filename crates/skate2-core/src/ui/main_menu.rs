@@ -96,6 +96,10 @@ pub enum Selection {
     OpenDlc,
     /// PC: its Link DLCs; the owner opens the file picker.
     LinkDlc,
+    /// PC: its Link Skate 3 Data; the owner opens the file picker for Skate 3's `default.xex`.
+    LinkSkate3,
+    /// PC: X on a linked pack; the owner unlinks the pack at this row.
+    UnlinkDlc(usize),
     /// PC: row 7, Exit to Desktop.
     ExitToDesktop,
     /// PC: Yes to the update offered (`update_prompt`).
@@ -550,6 +554,8 @@ impl Controller {
             return match dlc.update(input, focused) {
                 super::dlc_menu::Action::None => Selection::None,
                 super::dlc_menu::Action::Link => Selection::LinkDlc,
+                super::dlc_menu::Action::LinkSkate3 => Selection::LinkSkate3,
+                super::dlc_menu::Action::Unlink(row) => Selection::UnlinkDlc(row),
                 // OnUpdate 0x8265b990's SetState(22): the main menu again, its picker at row 0.
                 super::dlc_menu::Action::Back => {
                     self.sounds.extend(dlc.take_sounds());

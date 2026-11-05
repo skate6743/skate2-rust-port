@@ -1,6 +1,6 @@
 //! CalculateSkeletonPosition82d93690, decoded against the raw VMX128 registers.
 //! Retains the native crouch/hand curves, fixed timestep and ordered writes.
-use super::{InputCvarReferences, OffBoardPushing, read_floats};
+use super::{InputCvarReferences, PushingCore, read_floats};
 use crate::{
     input_cvar_runtime::pushing::{PushingBool as B, PushingFloat as F},
     physical_player_grab_spline::geometry::transform_point,
@@ -21,7 +21,7 @@ pub(super) fn graph(values: [f32; 20], input: f32) -> f32 {
     .evaluate(input)
 }
 
-impl OffBoardPushing {
+impl PushingCore {
     /// CalculateCollisionResponse82d87ca8. The two blend references are
     /// independent: old*CollisionBlendOut + HookToHips*CollisionBlendIn.
     /// Hex-Rays omits the first reference, which raw82d87cb0..cf0 resolves.

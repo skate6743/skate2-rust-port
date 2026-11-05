@@ -23,6 +23,8 @@ use skate2_formats::collision::AssemblyPartMaterial;
 use std::sync::Arc;
 #[path = "pedestrian_collision_contacts.rs"]
 pub(crate) mod contacts;
+#[path = "pedestrian_collision_shove.rs"]
+pub(crate) mod shove;
 #[path = "pedestrian_collision_transforms.rs"]
 mod transforms;
 

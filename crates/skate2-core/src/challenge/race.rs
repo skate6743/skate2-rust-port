@@ -193,8 +193,7 @@ fn add_gates(world: &mut World, leg: &mut LegInfo, start: V4, collection: u64) -
             .and_then(|attribute| attribute.data(index))
             .and_then(|at| db.bytes(at.offset_by(8), 8))
             .map_or(0, |b| u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]));
-        #[expect(clippy::cast_precision_loss, reason = "(float)_u64tod")]
-        let volume = volume as f64 as f32;
+        let volume = crate::skate3::id_float(volume);
         let centre = world.host.trigger_volume_center(volume).unwrap_or([0.0; 3]);
         leg.gates.push(vmx::v3(centre));
     }

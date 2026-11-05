@@ -89,6 +89,9 @@ pub(crate) struct Frame {
     /// `PostFX::m_bFEOnlineMenu`, set by `FrontEndState_MainMenuOnlineOptions::OnEnter`
     /// (`0x8264b6b0`) and cleared by its `OnLeave` (`0x8264b724`).
     pub fe_online_menu: bool,
+    /// What `Tonemap` multiplies the measured luminance by: 1 in Skate 2, 2.515 in a linked
+    /// Skate 3 district (TU3 0x827f0e08).
+    pub luminance_scale: f32,
 }
 
 /// `SetParameters`' ICE branch inputs and the camera planes it turns into
@@ -226,6 +229,45 @@ impl Assets {
             }
         }
         Ok(())
+    }
+
+    /// PC port, a linked Skate 3 district: Skate 3's colour cube, bloom and auto-exposure
+    /// collections over these (its database's own values for the keys both games share), with
+    /// Skate 3's file-less `colour_cube/default` the neutral cube, and `location` its
+    /// `render_locations` collection's references.
+    #[allow(dead_code, reason = "a district keeps the Skate 2 world's PostFX (user request)")]
+    pub(crate) fn with_skate3_collections(&self, mounts: &MountSet, db: &AttribDb, location: [u64; 3]) -> RenderResult<Self> {
+        let mut assets = self.clone();
+        let cube = string_hash64("colour_cube");
+        let mut files = BTreeMap::new();
+        for &key in db.collections(cube) {
+            let name = db.attribute(cube, key, CUBE_FILE_KEY).and_then(|value| value.text(0)).filter(|name| !name.is_empty());
+            match name {
+                Some(name) => {
+                    if let Some(rgba) = cube_rgba(mounts, name.to_owned(), &mut files)? {
+                        assets.cubes.insert(key, rgba);
+                    }
+                }
+                None => {
+                    assets.cubes.insert(key, crate::render_postfx_math::neutral_cube().into());
+                }
+            }
+        }
+        let float = |class: u64, key: u64, attribute: u64| db.attribute(class, key, attribute).and_then(|value| value.f32(0));
+        let post = string_hash64("post_fx");
+        for &key in db.collections(post) {
+            if let [Some(a), Some(b), Some(c), Some(d), Some(e)] = BLOOM_KEYS.map(|attribute| float(post, key, attribute)) {
+                assets.blooms.insert(key, [a, b, c, d, e]);
+            }
+        }
+        let rendering = string_hash64("rendering");
+        for &key in db.collections(rendering) {
+            if let [Some(a), Some(b), Some(c), Some(d)] = EXPOSURE_KEYS.map(|attribute| float(rendering, key, attribute)) {
+                assets.exposures.insert(key, [a, b, c, d]);
+            }
+        }
+        assets.location = location;
+        Ok(assets)
     }
 
     pub(crate) fn read(

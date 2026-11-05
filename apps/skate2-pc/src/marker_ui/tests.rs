@@ -1442,7 +1442,7 @@ fn original_dpo_values_format_as_the_native() {
     let mut data=DpoHud::default();
     data.set_params(27971.,28212.);
     data.title="ID_COMMON_SCORE".into();
-    let view=TurnHudView::Dpo(DpoView {data,leaderboard_players:3,challenge_icon:"nochallenge".into()});
+    let view=TurnHudView::Dpo(DpoView {data,leaderboard_players:3,challenge_icon:"nochallenge".into(),skate3:false});
     dpo.set_state(&assets,1,&view).unwrap();
     dpo.set_state(&assets,3,&view).unwrap();
     assert!(dpo.root.visible);
@@ -1450,6 +1450,48 @@ fn original_dpo_values_format_as_the_native() {
     assert_eq!(text(&["mDPO","mPosHolder","mParams","numerator","labeltext"]),"27,971");
     assert_eq!(text(&["mDPO","mPosHolder","mParams","denominator","labeltext"]),"28,212");
     assert_eq!(text(&["mDPO","mPosHolder","mTitle","title_txt"]),"Score");
+    assert!(dpo.root.named(&["mDPO","mPosHolder","icon_mc"]).unwrap().visible);
+    // A Skate 3 game's panel has no icon, as Skate 3's has none.
+    let mut data=DpoHud::default();
+    data.set_params(0.,0.);
+    let view=TurnHudView::Dpo(DpoView {data,leaderboard_players:2,challenge_icon:"challenge_1up".into(),skate3:true});
+    dpo.set_state(&assets,3,&view).unwrap();
+    assert!(!dpo.root.named(&["mDPO","mPosHolder","icon_mc"]).unwrap().visible);
+    assert!(dpo.icon_request.is_none());
+}
+
+#[test]
+#[ignore = "requires external SKATE2_GAME_ROOT"]
+fn original_modified_central_line_shows_times_out_and_holds() {
+    let game=std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
+    let mut mounts=MountSet::new();
+    for spec in SKATE2_ARCHIVES.iter() {
+        mounts.push(MountedBig::open(spec.path_under(&game),spec.use_external_header).unwrap());
+    }
+    let assets=Assets::load(&mounts).unwrap();
+    let mut central=central_movie::CentralMovie::new(&assets).unwrap();
+    central.tick(&assets).unwrap();
+    let run=|central:&mut central_movie::CentralMovie,updates:usize| {
+        for _ in 0..updates {
+            central.update(&assets).unwrap();
+            central.tick(&assets).unwrap();
+        }
+    };
+    central.show_modified(&assets,"ID_COMMON_SCORE",&[],2,false,true).unwrap();
+    run(&mut central,30);
+    let line=central.root.named(&["mcModifiedMessage"]).unwrap();
+    assert!(line.visible,"the line's intro shows it");
+    let label=line.named(&["mcText2","mcTextStringWhite","labelText"]).unwrap();
+    assert_eq!(String::from_utf16(label.text.as_ref().unwrap()).unwrap(),"Score");
+    assert_eq!(label.properties.get("text_colour").map(String::as_str),Some("4286758425"),"green");
+    run(&mut central,160);
+    assert!(!central.root.named(&["mcModifiedMessage"]).unwrap().visible,"180 updates on, its outro hides it");
+    central.show_modified(&assets,"ID_COMMON_SCORE",&[],0,true,true).unwrap();
+    run(&mut central,240);
+    assert!(central.root.named(&["mcModifiedMessage"]).unwrap().visible,"a held line stays up");
+    central.clear_modified(&assets).unwrap();
+    run(&mut central,30);
+    assert!(!central.root.named(&["mcModifiedMessage"]).unwrap().visible,"cleared, its outro hides it");
 }
 
 #[test]
@@ -1577,4 +1619,51 @@ fn original_receipt_lists_the_cart_and_scrolls_its_window() {
     screen.update(&assets,None).unwrap();
     for _ in 0..20 {screen.tick(&assets).unwrap();}
     assert!(screen.root.is_none(),"the outro unloads the screen");
+}
+
+/// With `SKATE3_DATA`, a Skate 3 1-Up's letters are Skate 3's own: its letter banner plays its
+/// `1up` letters, and the letter board's rows show its `mUp` letters over the hidden S.K.A.T.E.
+/// rows, which a later game of the game's own shows again.
+#[test]
+#[ignore = "requires external SKATE2_GAME_ROOT and SKATE3_DATA"]
+fn skate3_one_ups_show_skate3s_own_letters() {
+    let (_mounts,mut assets)=boot_assets();
+    let root=std::path::PathBuf::from(std::env::var_os("SKATE3_DATA").unwrap());
+    let skate3=skate2_core::skate3::Skate3Data::open(&root).unwrap();
+    let hud=assets.load_skate3_hud(&skate3.mounts).unwrap();
+    assets.skate3_hud=Some(hud);
+    let skate3_textures=|batches:&[Batch],owner:&str| batches.iter()
+        .filter(|b|b.texture.as_deref().is_some_and(|t|t.to_ascii_lowercase().starts_with(owner))).count();
+    let mut banner=hud_throwmes_movie::ThrowDownMessageMovie::skate3(&assets,hud.throwdown_message).unwrap();
+    banner.set_state(&assets,7).unwrap();
+    let mut drawn=0;
+    for _ in 0..300 {
+        banner.tick(&assets).unwrap();
+        let mut batches=Vec::new();
+        flatten(&assets,&banner.root,IDENTITY,Colour::default(),(1280,720),&mut batches).unwrap();
+        drawn=drawn.max(skate3_textures(&batches,"skate3_hudthrowmes_textures"));
+    }
+    assert!(drawn>0,"the 1up banner drew none of its letters");
+    let mut data=skate2_core::challenge::leaderboard_hud::LeaderboardHud::default();
+    data.menu_type=1;
+    data.set_num_players(2);
+    data.players[0].int_var=2;
+    let title=skate2_core::challenge::system::MissionTitle::Lobby;
+    let mut board=hud_leaderboard_movie::LeaderboardMovie::new(&assets).unwrap();
+    let view=|data:&skate2_core::challenge::leaderboard_hud::LeaderboardHud,skate3_letters:bool| skate2_core::challenge::turn_hud::TurnHudView::Leaderboard {
+        data:data.clone(),stance_regular:true,online:true,skate3_letters};
+    board.set_state(&assets,1,&view(&data,true),&title).unwrap();
+    board.set_state(&assets,3,&view(&data,true),&title).unwrap();
+    for _ in 0..30 {board.tick(&assets).unwrap();}
+    for row in 0..2 {
+        assert!(!board.root.named(&["mcThrowdownHUD",&format!("mcSkate{row}")]).unwrap().visible);
+        assert!(board.root.named(&["mcThrowdownHUD",&format!("mcUp{row}")]).unwrap().visible);
+    }
+    let mut batches=Vec::new();
+    flatten(&assets,&board.root,IDENTITY,Colour::default(),(1280,720),&mut batches).unwrap();
+    assert!(skate3_textures(&batches,"skate3_leaderboardhud_textures")>=2,"the rows drew none of Skate 3's letters");
+    data.menu_type=7;
+    board.set_state(&assets,3,&view(&data,false),&title).unwrap();
+    assert!(board.root.named(&["mcThrowdownHUD","mcUp0"]).is_err());
+    assert!(board.root.named(&["mcThrowdownHUD","mcSkate0"]).unwrap().visible);
 }

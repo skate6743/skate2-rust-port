@@ -2,6 +2,9 @@
 //!
 //! The controlled first-test path remains distinct from native command-3
 //! spawn, registration peer/status, PROXY activation and restored camera output.
+#[cfg(feature = "skate3-runtime")]
+#[path = "skate3_input_focus.rs"]
+mod skate3_input_focus;
 use super::{ControlledPlayerPolicy, SelectedSession};
 use crate::{
     actor_construction::selected_tick::{
@@ -274,6 +277,10 @@ pub struct SelectedVisualSnapshot<'a> {
     /// `GetSkaterPresEntityFromIndex(GetLocalIndex())`, and `RenderMan::UpdateRenderParams`
     /// samples the sun map at its hips.
     pub local_skater_shadow: ([f32; 3], [[f32; 3]; 2]),
+    /// PC weather: the local board's deck (physics part 6) and the local skater's feet after the
+    /// last step, where rain splashes and wakes start; none for Vanilla.
+    pub local_board_deck: Option<[f32; 16]>,
+    pub local_skater_feet: Option<[[f32; 3]; 2]>,
     pub provisional_clip_from_world: [f32; 16],
     /// Translation lanes of the same `CameraMan` matrix the clip was built
     /// from; `UpdateRenderParams` 0x82852780 publishes it as `g_vViewPos`.
@@ -497,6 +504,8 @@ pub struct SelectedLiveSession<T, C> {
     pending_boot: Option<PendingBoot<T>>,
     ready: bool,
     last_step_completed: bool,
+    /// PC weather: `local_board_deck` and `local_skater_feet` as the last step left them.
+    weather_contacts: (Option<[f32; 16]>, Option<[[f32; 3]; 2]>),
     pause_menu: crate::ui::pause_menu::PauseMenuController,
     options_menu: crate::ui::options::Controller,
     /// `FrontEndState_SkateProfile` (FE state 45), which the `StartHub` pushes.
@@ -513,6 +522,10 @@ pub struct SelectedLiveSession<T, C> {
     /// yet taken by the host.
     linked_dlc: Vec<crate::ui::dlc_menu::Pack>,
     dlc_link_request: bool,
+    /// The screen's Link Skate 3 Data, not yet taken by the host.
+    skate3_link_request: bool,
+    /// X on the Downloadable Content screen: the row of the pack the host unlinks.
+    dlc_unlink_request: Option<usize>,
     /// What the pending travel does with the worlds, and the additional world the
     /// presentation's streams hold collections of.
     map_travel_world: world_travel::TravelWorld,
@@ -536,6 +549,8 @@ pub struct SelectedLiveSession<T, C> {
     map_travel_gate: &'static str,
     completed_frames: u32,
     out_of_boundary_amount: Option<f32>,
+    /// Ticks before a linked Skate 3 district's water resets the skater again.
+    district_water_cooldown: u32,
     failed_stage: Option<SelectedLiveStage>,
     career: Option<career::CareerSession>,
     /// Host GetLocalTime provider, retained across game loads for statistics
@@ -656,6 +671,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             pending_boot: None,
             ready: false,
             last_step_completed: false,
+            weather_contacts: (None, None),
             pause_menu: crate::ui::pause_menu::PauseMenuController::default(),
             options_menu: Default::default(),
             skate_profile: Default::default(),
@@ -667,6 +683,8 @@ impl<T, C> SelectedLiveSession<T, C> {
             update_request: None,
             linked_dlc: Vec::new(),
             dlc_link_request: false,
+            skate3_link_request: false,
+            dlc_unlink_request: None,
             map_travel_world: world_travel::TravelWorld::Keep,
             presentation_additional_world: None,
             additional_location: None,
@@ -685,6 +703,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             map_travel_gate: "",
             completed_frames: 0,
             out_of_boundary_amount: None,
+            district_water_cooldown: 0,
             failed_stage: None,
             career: None,
             host_calendar: None,
@@ -1357,6 +1376,8 @@ impl<T, C> SelectedLiveSession<T, C> {
         let profile = crate::edit_skater_profile::EditSkaterProfileStore::open(path)
             .map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?;
         self.options_menu.load(profile.load_display_settings()
+            .map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?);
+        self.options_menu.load_modes(profile.load_gameplay_modes()
             .map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?);
         let online = crate::ui::online_config::OnlineConfig::load();
         self.options_menu.load_lobby_chat(online.show_lobby_chat);
@@ -2254,6 +2275,8 @@ impl<T, C> SelectedLiveSession<T, C> {
                     crate::ui::main_menu::Selection::OpenExtras => self.open_extras()?,
                     crate::ui::main_menu::Selection::OpenDlc => self.open_dlc(),
                     crate::ui::main_menu::Selection::LinkDlc => self.dlc_link_request = true,
+                    crate::ui::main_menu::Selection::LinkSkate3 => self.skate3_link_request = true,
+                    crate::ui::main_menu::Selection::UnlinkDlc(row) => self.dlc_unlink_request = Some(row),
                     // PC: the fade covers, then the host closes the window (`exit_to_desktop_ready`).
                     crate::ui::main_menu::Selection::ExitToDesktop => {
                         menu.leaving=true;
@@ -2431,6 +2454,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             }
             return Ok(SelectedQueuedFrameOutcome::Frontend);
         }
+        // PC port: a loaded Skate 3 district stands where San Vanelona does; while it is held its
+        // regions are unpainted and its living world takes the default census
+        // (`crate::skate3::district_active`).
+        crate::skate3::set_district_active(self.inner.terrain.as_ref().is_some_and(|terrain| terrain.exclusive_world_loaded()));
         let round_syncing = self.online_round_syncing();
         let online_loading_screen = self.online_loading_screen();
         let nis_on_round_ticks = self.online_round_ticking();
@@ -2448,7 +2475,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     switch_list: frontend_input.misc,
                 });
                 let action = career.update_challenge_map(map_input);
-                if matches!(action, MapAction::TeleportChallenge(_) | MapAction::RetryChallenge(_) | MapAction::TeleportLocation(_)) {
+                if matches!(action, MapAction::TeleportChallenge(_) | MapAction::RetryChallenge(_) | MapAction::TeleportLocation(_) | MapAction::TeleportSkate3(_)) {
                     // DismissAndTeleportCallback826750f0 sends the service's
                     // unspawn before fading/moving stream focus. The map is
                     // paused, so do not defer its physical cull to a SIM tick
@@ -2456,6 +2483,24 @@ impl<T, C> SelectedLiveSession<T, C> {
                     self.apply_career_living_world()?;
                 }
                 let career = self.career.as_mut().expect("career map owner");
+                // PC port: a linked Skate 3 district's teleport travels into the district (an
+                // additional world standing in San Vanelona's place) at the spot's global locator;
+                // its world location is the district's `render_locations` key in Skate 3's
+                // database, which the presentation lights the district with.
+                if let MapAction::TeleportSkate3(key) = action {
+                    let target = crate::skate3::linked()
+                        .and_then(|data| data.spot(key).map(|(district, spot)| (district.spec.stream, district.render_location, spot.transform)));
+                    if let Some((stream, location, transform)) = target {
+                        eprintln!("travel: skate 3 teleport into {stream}");
+                        let world = self.world_operation(location, Some(stream)).unwrap_or_default();
+                        self.start_world_travel(world, transform, false);
+                    } else {
+                        career.close_challenge_map();
+                        self.map_menu.close();
+                        self.pause_menu.reenter();
+                    }
+                    return Ok(SelectedQueuedFrameOutcome::Frontend);
+                }
                 // TeleportToChallenge and TeleportToFELocation (0x82565350) teleport into the world
                 // of the challenge's or the location's world location.
                 let world_location = match action {
@@ -2463,11 +2508,11 @@ impl<T, C> SelectedLiveSession<T, C> {
                         crate::challenge::stuff_menu::challenge_world_location(career.system.world(), key)
                     }
                     MapAction::TeleportLocation(key) => Some(key),
-                    MapAction::None | MapAction::Close => None,
+                    MapAction::None | MapAction::Close | MapAction::TeleportSkate3(_) => None,
                 };
                 let world_file = world_location.and_then(|location| crate::challenge::stuff_menu::location_world_file(career.system.world(), location));
                 let destination = match action {
-                    MapAction::None => return Ok(SelectedQueuedFrameOutcome::Frontend),
+                    MapAction::None | MapAction::TeleportSkate3(_) => return Ok(SelectedQueuedFrameOutcome::Frontend),
                     MapAction::Close => {
                         career.close_challenge_map();
                         self.map_menu.close();
@@ -2948,7 +2993,12 @@ impl<T, C> SelectedLiveSession<T, C> {
                 .and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok())
         {
             let mut spawn = self.inner.spawn.ok_or_else(|| SelectedLiveError::failed(Stage::ControlledPlayer, "spawn absent"))?;
-            spawn[12] += 1.5;
+            // SKATE2_DIAGNOSTIC_SPAWN_SKATER_AT=dx,dz: the spawned skater's offset from the spawn.
+            let offset = std::env::var("SKATE2_DIAGNOSTIC_SPAWN_SKATER_AT").ok()
+                .and_then(|text| text.split_once(',').and_then(|(x, z)| Some((x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?))))
+                .unwrap_or((1.5, 0.0));
+            spawn[12] += offset.0;
+            spawn[14] += offset.1;
             {
                 let services = &self.inner.player.as_ref().expect("ready player").selected.owners.services;
                 services
@@ -3010,7 +3060,17 @@ impl<T, C> SelectedLiveSession<T, C> {
             )
         };
         let online_boundaries = self.online_held_boundaries();
+        // SKATE2_TRACE_BOUNDARY: what PlayerUI's boundary test sees in an online game.
+        let trace_boundary = std::env::var_os("SKATE2_TRACE_BOUNDARY").is_some();
+        if trace_boundary {
+            self.trace_boundary_not_held(online_boundaries.is_some());
+        }
         let offboard_stick = self.offboard_stick_frames();
+        #[cfg(feature = "skate3-runtime")]
+        let frontend_takes_input = self.pause_menu.snapshot().visible || self.options_menu.visible()
+            || self.map_menu.snapshot().visible || self.skate_profile.visible()
+            || hub_open || online_popup || career_overlay_open
+            || self.main_menu.is_some() || self.main_menu_pending || self.editor_enter_pending;
         let mut boundary_teleport = false;
         let spectating = self.online_spectating();
         let input = self.inner.bound_input.as_mut().expect("ready input");
@@ -3119,6 +3179,19 @@ impl<T, C> SelectedLiveSession<T, C> {
                     )
                     .map_err(|e| SelectedLiveError::failed(Stage::SessionMarker, e))?;
                     boundary_teleport = !boundaries.is_position_ok(respawn.columns()[3].xyz, 0.0);
+                    if trace_boundary && let Some(actor) = selected.actor.as_deref() {
+                        let base = local_skater_base_position(Some(&world.world), actor)?;
+                        let amount = boundaries.warning_amount(base);
+                        if boundary_teleport || amount.is_some() || boundaries.outside_distance_squared(base).is_some() {
+                            eprintln!(
+                                "boundary frame {}: {} respawn {:?} base {:?} amount {amount:?} outside {boundary_teleport}",
+                                self.completed_frames,
+                                boundary_trace_state(Some(&world.world), actor)?,
+                                respawn.columns()[3].xyz,
+                                base,
+                            );
+                        }
+                    }
                 }
                 marker.hud = crate::ui::phonelist::MarkerHudSnapshot {
                     visible: policy.has_focus,
@@ -3142,6 +3215,14 @@ impl<T, C> SelectedLiveSession<T, C> {
         drop(profile_marker);
         self.apply_prop_actions()?;
         if boundary_teleport && let Some(crumb) = self.local_suggested_breadcrumb()? {
+            if trace_boundary {
+                eprintln!(
+                    "boundary frame {}: teleport to breadcrumb {:?} on board {}",
+                    self.completed_frames,
+                    crumb.transform.columns()[3].xyz,
+                    !crumb.offboard,
+                );
+            }
             self.inner
                 .session_marker
                 .as_mut()
@@ -3149,6 +3230,23 @@ impl<T, C> SelectedLiveSession<T, C> {
                 .teleport
                 .send_breadcrumb_teleport(crumb.transform, crate::session_marker::FootForward::from(!crumb.foot_forward_right), !crumb.offboard);
         }
+        #[cfg(feature = "skate3-runtime")]
+        let mod_settings = crate::ui::gameplay_modes::skate3_settings();
+        #[cfg(feature = "skate3-runtime")]
+        let (raw_controller, skate3_has_focus) = {
+            // The source controller must obey the same focus owner as PlayerUI.
+            // Online simulation continues under menus, but its local pad is neutral.
+            let input = self.inner.bound_input.as_ref().expect("ready input");
+            // Native menu eligibility is separate from gameplay input: online
+            // resume can keep simulation/input active under a non-menu pause state.
+            let focused = skate3_input_focus::available(has_sim_input, policy.has_focus,
+                frontend_takes_input, map_challenge_loading,
+                self.career.as_ref().is_some_and(career::CareerSession::popup_open));
+            (if focused { input.raw_controller() } else { Some(crate::input_pad::XboxPadSample { buttons: 0, left_trigger: 0, right_trigger: 0, left_x: 0, left_y: 0, right_x: 0, right_y: 0 }) }, focused)
+        };
+        #[cfg(feature = "skate3-runtime")]
+        let allow_skate3_start = self.main_menu.is_none() && !self.main_menu_pending
+            && self.replay_editor.is_none();
         let input = self.inner.bound_input.as_mut().expect("ready input");
         // SimController::Update1 Dispatch828a739c: eEQGameSim reaches
         // PlayerUI before this frame's queued commands.
@@ -3185,6 +3283,8 @@ impl<T, C> SelectedLiveSession<T, C> {
             })
             .filter(|enabled| *enabled)
             .map(|_| RefCell::new(Vec::<String>::new()));
+        #[cfg(feature = "skate3-runtime")]
+        let mod_camera = (self.audio.settings.camera_angle, [self.audio.settings.invert_x, self.audio.settings.invert_y]);
         let profile_queued = crate::diagnostics::frame_profile::span(
             crate::diagnostics::frame_profile::TICK_QUEUED_FRAME,
         );
@@ -3199,6 +3299,14 @@ impl<T, C> SelectedLiveSession<T, C> {
             .try_with_selected_queued_frame_challenge(
                 self.career.as_mut().map(|career| career.system.world_mut()),
                 |mut frame, ground, queued| {
+                #[cfg(feature = "skate3-runtime")]
+                frame.tick.configure_skate3(mod_settings, raw_controller);
+                #[cfg(feature = "skate3-runtime")]
+                frame.tick.allow_skate3_start(allow_skate3_start);
+                #[cfg(feature = "skate3-runtime")]
+                frame.tick.configure_skate3_focus(skate3_has_focus);
+                #[cfg(feature = "skate3-runtime")]
+                frame.tick.configure_skate3_camera(mod_camera.0, mod_camera.1);
                 let board = frame.board;
                 let skeleton = frame.skeleton;
                 let presentation = frame.presentation;
@@ -3276,7 +3384,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                             })
                         })
                     });
-                    let board_velocity = if trace_frame <= 2 {
+                    let board_velocity = if trace_frame <= 2 || std::env::var_os("SKATE2_TRACE_ADJUSTED_POSE_VELOCITY").is_some() {
                         world.board(board).ok().and_then(|part| {
                             crate::dynamic_assembly_session::skater_pool::board_entry::try_current_board_deck_velocity(
                                 part,
@@ -3499,6 +3607,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     .map_err(|e| SelectedLiveError::failed(Stage::Visual, e))?;
                 self.last_step_completed = true;
                 self.complete_character_registration()?;
+                self.refresh_weather_contacts();
                 self.inner
                     .try_complete_party_registration()
                     .map_err(|e| SelectedLiveError::failed(Stage::Visual, e))?;
@@ -3507,6 +3616,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     .map_err(|e| SelectedLiveError::failed(Stage::ControlledPlayer, e))?;
                 self.try_update_rumble_events()?;
                 self.completed_frames = self.completed_frames.saturating_add(1);
+                crate::ui::gameplay_modes::diagnostic_tick(self.completed_frames);
                 if std::mem::take(&mut self.career_start_pending) {
                     self.start_career(true)?;
                 }
@@ -3527,6 +3637,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     self.online_tick()?;
                     self.update_online_dmos()?;
                     self.try_nis_breadcrumb_teleport()?;
+                    self.try_district_water_reset()?;
                 }
                 if let Some(location) = self.career.as_mut().and_then(career::CareerSession::take_party_switch) {
                     self.switch_party_play(location)?;
@@ -3779,6 +3890,11 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
     /// The quit to the main menu: its presentation loaded, the front end covered, then the
     /// game unloads.
+    /// Diagnostics (`SKATE2_DIAGNOSTIC_MAIN_MENU_TICK`): back to the main menu as a lost online
+    /// game goes, whatever the game is doing (a travel under way included).
+    pub fn diagnostic_request_main_menu(&mut self) -> bool {
+        !self.main_menu_pending && self.main_menu.is_none() && self.request_main_menu().is_ok()
+    }
     fn request_main_menu(&mut self) -> Result<(), SelectedLiveError> {
         if self.main_menu_assets.is_none() {
             self.main_menu_assets = Some(
@@ -3829,7 +3945,18 @@ impl<T, C> SelectedLiveSession<T, C> {
             .as_ref()
             .and_then(career::CareerSession::challenge_map_view)
             .map(Arc::new);
+        snapshot.map = self.additional_location_map();
         snapshot
+    }
+    /// `FrontEndState_ChallengeMap::LoadMap` (`0x8264ccf8`): with an additional world location,
+    /// its `fe_locations` map, from the game's database with the downloadable content's vaults.
+    fn additional_location_map(&self) -> Option<crate::ui::map_menu::MapImage> {
+        let location = self.additional_location?;
+        let db = match self.career.as_ref() {
+            Some(career) => Arc::clone(&career.system.world().db),
+            None => Arc::clone(&self.freeskate.data.as_ref()?.0),
+        };
+        crate::challenge::stuff_menu::location_map(&db, location)
     }
     #[must_use]
     pub fn map_locations(&self) -> &[crate::ui::map_menu::MapLocation] {
@@ -3924,8 +4051,46 @@ impl<T, C> SelectedLiveSession<T, C> {
         ))
     }
 
+    /// Actual source focus, controller axes and root heading for opt-in diagnostics.
+    #[must_use]
+    pub fn diagnostic_skate3_controls(&self) -> Option<(bool, [f32; 4], f32)> {
+        #[cfg(feature = "skate3-runtime")]
+        {
+            let actor = self.inner.player.as_ref()?.selected.actor.as_ref()?;
+            let physical = actor.cached_physical_allocation().ok()?;
+            let mode = physical.owner().skate3.lock().ok()?;
+            mode.as_ref().map(|player| player.diagnostic_controls())
+        }
+        #[cfg(not(feature = "skate3-runtime"))]
+        { None }
+    }
+    /// Marker placement/Actor-reset facts for the bounded local controller probe.
+    #[must_use]
+    pub fn diagnostic_marker_status(&self) -> Option<(u64,u32,bool)> {
+        #[cfg(feature = "skate3-runtime")]
+        {
+            let marker = self.inner.session_marker.as_ref()?;
+            let actor = self.inner.player.as_ref()?.selected.actor.as_ref()?;
+            let (generation, _, on_board, _) = actor.try_skate3_teleport_publication().ok()?;
+            Some((marker.player_ui.successful_sets, generation, on_board))
+        }
+        #[cfg(not(feature = "skate3-runtime"))]
+        { None }
+    }
+    /// On-demand observation for the bounded local boarding/scoring probe.
+    #[must_use]
+    pub fn diagnostic_skate3_transition(&self) -> Option<String> {
+        #[cfg(feature = "skate3-runtime")]
+        {
+            let actor = self.inner.player.as_ref()?.selected.actor.as_ref()?;
+            let physical = actor.cached_physical_allocation().ok()?;
+            let mode = physical.owner().skate3.lock().ok()?;
+            mode.as_ref().map(|player| player.diagnostic_transition())
+        }
+        #[cfg(not(feature = "skate3-runtime"))]
+        { None }
+    }
     /// Published manual flag used by the camera subject (excluding kickturns).
-    /// Diagnostic only, with no state mutation or inferred input state.
     #[must_use]
     pub fn diagnostic_manual_flags(&self) -> Option<(bool, bool)> {
         if !self.last_step_completed {
@@ -4068,6 +4233,15 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// into (x, z), or at (0, 0) without a local skater. Reads only; `None` without a world.
     #[must_use]
     pub fn audio_reverb_key(&self) -> Option<u64> {
+        // PC port: a linked Skate 3 district paints its own `aud_reverb` by key; TU3
+        // `SFXObj_Reverb::UpdateParams` 0x824de548 takes 0xA2782D75A971CC8C where none is painted.
+        if crate::skate3::district_active() {
+            let world = self.inner.world.as_ref()?;
+            let terrain = self.inner.terrain.as_ref()?.terrain_for(&world.world).ok()?;
+            let layers = terrain.layers.lock().ok()?;
+            let key = layers.try_skate3_key(10, self.audio_layer_point()).ok()?;
+            return Some(if key == 0 { 0xA278_2D75_A971_CC8C } else { key });
+        }
         self.audio_layer_key(10, self.audio_layer_point())
     }
 
@@ -4076,7 +4250,22 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// hash to the `aud_wp_ambiences` collections. Reads only; `None` without a world.
     #[must_use]
     pub fn audio_ambience_key(&self) -> Option<u64> {
+        // PC port: a linked Skate 3 district paints its own `aud_wp_ambiences` by key (TU3
+        // 0x82c0eac0).
+        if crate::skate3::district_active() {
+            let world = self.inner.world.as_ref()?;
+            let terrain = self.inner.terrain.as_ref()?.terrain_for(&world.world).ok()?;
+            let layers = terrain.layers.lock().ok()?;
+            return layers.try_skate3_key(7, self.audio_layer_point()).ok();
+        }
         self.audio_layer_key(7, self.audio_layer_point())
+    }
+
+    /// PC port: whether the local skater stands in a linked Skate 3 district, whose
+    /// [`Self::audio_ambience_key`] names one of Skate 3's beds.
+    #[must_use]
+    pub fn audio_skate3_district(&self) -> bool {
+        crate::skate3::district_active()
     }
 
     /// `AudioPresentation::DoSimSubmit` 0x827fb2f8's `GlobalData.emitterKey`: `LayerMan::GetAttribData`
@@ -4121,6 +4310,38 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
 
     /// The SkaterManager's Actor whose player ID is `GetLocalSimIndex`.
+    /// PC weather: once a frame after the simulation, the local board's deck and the skater's
+    /// feet; nothing is read for Vanilla.
+    fn refresh_weather_contacts(&mut self) {
+        if crate::ui::gameplay_modes::weather() == crate::ui::gameplay_modes::Weather::Vanilla {
+            self.weather_contacts = (None, None);
+            return;
+        }
+        let deck = self
+            .inner
+            .try_with_selected_queued_frame(|frame, _, _| {
+                frame
+                    .world
+                    .board(frame.board)
+                    .ok()
+                    .and_then(|board| board.try_live_part_transform_host(frame.world.backend(), 6).ok())
+            })
+            .ok()
+            .flatten()
+            .filter(|deck| deck.iter().all(|v| v.is_finite()));
+        let feet = self
+            .audio_local_actor()
+            .or_else(|| self.inner.player.as_ref()?.selected.actor.clone())
+            .and_then(|actor| {
+                let physical = actor.cached_physical_allocation().ok()?;
+                let output = physical.owner().phys_out().lock().ok()?;
+                let skeleton = output.try_skeleton_output().ok()?;
+                let feet = [skeleton.skeleton_foot_left_pos.xyz, skeleton.skeleton_foot_right_pos.xyz];
+                feet.iter().flatten().all(|v| v.is_finite()).then_some(feet)
+            });
+        self.weather_contacts = (deck, feet);
+    }
+
     fn audio_local_actor(&self) -> Option<std::sync::Arc<crate::actor_construction::ActorConstruction>> {
         let local = self.inner.world.as_ref()?.world.lock().ok()?.local_skater_identity.clone()?;
         let index = local.try_local_sim_index().ok()?;
@@ -4589,6 +4810,8 @@ impl<T, C> SelectedLiveSession<T, C> {
             skater_hips_position,
             skater_world_bounds,
             local_skater_shadow,
+            local_board_deck: self.weather_contacts.0,
+            local_skater_feet: self.weather_contacts.1,
             provisional_clip_from_world: camera.clip_from_world,
             camera_world_position: camera.camera_matrix.columns()[3].xyz,
             camera_planes: [camera.near_plane, camera.far_plane],
@@ -4704,10 +4927,16 @@ impl<T, C> SelectedLiveSession<T, C> {
             .lock()
             .map_err(|_| "WorldPainter LayerMan lock poisoned")?;
         let position = [camera[0], camera[2]];
+        // PC port: inside a linked Skate 3 district its own painted layers name Skate 3's
+        // collections by key (TU3 0x82c0eac0).
+        let district = crate::skate3::district_active();
         let key = |layer: usize| {
-            layers
-                .try_attrib_key(layer, position)
-                .map_err(|error| error.to_string())
+            if district {
+                layers.try_skate3_key(layer, position)
+            } else {
+                layers.try_attrib_key(layer, position)
+            }
+            .map_err(|error| error.to_string())
         };
         Ok(WorldPainterKeys {
             fog: key(15)?,
@@ -4820,6 +5049,36 @@ fn actor_position(actor: &crate::actor_construction::ActorConstruction) -> Resul
     Ok(skeleton.skeleton_root_matrix.columns()[3].xyz)
 }
 
+/// `SKATE2_TRACE_BOUNDARY`: the skater's physics state and category, `mIsOffboard`, and the roots
+/// `Actor::CalcRespawnTransform` (`0x825f09a8`) picks between: the effective skeleton root off the
+/// board, else the board's effective transform.
+fn boundary_trace_state(
+    world: Option<&Arc<std::sync::Mutex<crate::physical_player_assembly::PhysicalAssemblyWorld>>>,
+    selected: &crate::actor_construction::ActorConstruction,
+) -> Result<String, SelectedLiveError> {
+    with_local_skater(world, selected, |actor| {
+        use SelectedLiveStage as Stage;
+        let physical = actor.cached_physical_allocation().map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
+        let output = physical
+            .owner()
+            .phys_out()
+            .lock()
+            .map_err(|_| SelectedLiveError::failed(Stage::TerrainResident, "PhysOut lock poisoned"))?;
+        let state = output.try_state_output().map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
+        let skeleton = output.try_skeleton_output().map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
+        let board = output.try_camera_board_output().map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
+        Ok(format!(
+            "state {} category {} offboard {} root {:?} skeleton effective {:?} board effective {:?}",
+            state.physics_state,
+            state.physics_state_category,
+            state.is_offboard,
+            skeleton.skeleton_root_matrix.columns()[3].xyz,
+            skeleton.effective_skeleton_root_matrix.columns()[3].xyz,
+            board.effective_transform.columns()[3].xyz,
+        ))
+    })
+}
+
 fn actor_base_position(actor: &crate::actor_construction::ActorConstruction) -> Result<[f32; 3], SelectedLiveError> {
     use SelectedLiveStage as Stage;
     let physical = actor.cached_physical_allocation().map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
@@ -4885,6 +5144,9 @@ mod extras_session;
 mod dlc_session;
 #[path = "selected_session_world_travel.rs"]
 mod world_travel;
+
+#[path = "selected_session_district_water.rs"]
+mod district_water;
 
 #[path = "selected_session_vibration.rs"]
 mod vibration_session;

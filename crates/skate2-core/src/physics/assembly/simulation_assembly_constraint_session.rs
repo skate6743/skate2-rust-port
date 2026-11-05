@@ -15,6 +15,9 @@
     )
 )]
 
+#[cfg(feature = "skate3-runtime")]
+#[path = "skate3_world.rs"]
+pub(crate) mod skate3_world;
 #[path = "../player/ground/physical_player_ground_pre_solve.rs"]
 pub(crate) mod ground_pre_solve;
 #[path = "../player/conditioning/physical_player_post_solve_conditioning.rs"]

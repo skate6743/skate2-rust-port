@@ -58,7 +58,31 @@ use std::{
     time::Instant,
 };
 
+#[cfg(feature = "skate3-runtime")]
+#[path = "selected_player_skate3.rs"]
+mod skate3;
 pub(crate) struct SelectedPlayerTick {
+    #[cfg(feature = "skate3-runtime")]
+    mode_owner: Option<Arc<crate::physical_player_assembly::PhysicalPlayerAssemblyOwner>>,
+    #[cfg(feature = "skate3-runtime")]
+    mod_settings: crate::ui::gameplay::GameplaySettings,
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) gesture_preferences: Option<skate2_formats::skater_profile::PcGestureSettings>,
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) style_preferences: Option<skate2_formats::skater_profile::PcSkate3Style>,
+    #[cfg(feature = "skate3-runtime")]
+    raw_controller: Option<crate::input_pad::XboxPadSample>,
+    #[cfg(feature = "skate3-runtime")]
+    allow_skate3_start: bool,
+    #[cfg(feature = "skate3-runtime")]
+    skate3_has_focus: bool,
+    #[cfg(feature = "skate3-runtime")]
+    active_difficulty: Option<crate::ui::gameplay::Difficulty>,
+    #[cfg(feature = "skate3-runtime")]
+    camera_type: i32,
+    #[cfg(feature = "skate3-runtime")]
+    camera_invert_look: [bool; 2],
+    #[cfg(feature = "skate3-runtime")]
     hand_tokens: BlendPoseTokenPool,
     // Simulation.mTick/mVisualTick, advanced at SimUpdate1, not rendering.
     tick: u32,
@@ -222,11 +246,11 @@ pub(crate) struct SelectedTickOwners<'a> {
 }
 pub(crate) struct SelectedTickComplete {
     pub(crate) input: SelectedTickInputDelivery,
-    pub(crate) hands: HandsFaceSessionOutputs,
-    pub(crate) before: GroundPreSolveComplete,
+    pub(crate) hands: Option<HandsFaceSessionOutputs>,
+    pub(crate) before: Option<GroundPreSolveComplete>,
     pub(crate) counts: SimulationAssemblyConstraintFrameCounts,
     pub(crate) report: SimulationStaticGroundJobReport,
-    pub(crate) after: SelectedGroundAnimationComplete,
+    pub(crate) after: Option<SelectedGroundAnimationComplete>,
 }
 #[derive(Debug)]
 pub(crate) enum SelectedHandsError<C> {
@@ -306,6 +330,8 @@ pub(crate) enum SelectedTickError<S, R, F, C> {
     ScoringHud(crate::physical_player_assembly::selected_animation_conditioning::SelectedAnimationFinishError),
     HudStats(String),
     Ai(String),
+    #[cfg(feature = "skate3-runtime")]
+    Skate3(String),
 }
 impl<S: std::fmt::Debug, R: std::fmt::Debug, F: std::fmt::Debug, C: std::fmt::Debug>
     std::fmt::Display for SelectedTickError<S, R, F, C>
@@ -352,6 +378,8 @@ impl<S: std::fmt::Debug, R: std::fmt::Debug, F: std::fmt::Debug, C: std::fmt::De
             Self::ScoringHud(e) => e.fmt(f),
             Self::HudStats(e) => write!(f, "selected tick HUD statistics: {e}"),
             Self::Ai(e) => write!(f, "selected tick AI: {e}"),
+            #[cfg(feature = "skate3-runtime")]
+            Self::Skate3(e) => write!(f, "Skate 3 player: {e}"),
         }
     }
 }
@@ -366,6 +394,27 @@ impl SelectedPlayerTick {
 
     pub(crate) fn new() -> Self {
         Self {
+            #[cfg(feature = "skate3-runtime")]
+            mode_owner: None,
+            #[cfg(feature = "skate3-runtime")]
+            mod_settings: Default::default(),
+            #[cfg(feature = "skate3-runtime")]
+            gesture_preferences: None,
+            #[cfg(feature = "skate3-runtime")]
+            style_preferences: None,
+            #[cfg(feature = "skate3-runtime")]
+            raw_controller: None,
+            #[cfg(feature = "skate3-runtime")]
+            allow_skate3_start: true,
+            #[cfg(feature = "skate3-runtime")]
+            skate3_has_focus: true,
+            #[cfg(feature = "skate3-runtime")]
+            active_difficulty: None,
+            #[cfg(feature = "skate3-runtime")]
+            camera_type: 1,
+            #[cfg(feature = "skate3-runtime")]
+            camera_invert_look: [false; 2],
+            #[cfg(feature = "skate3-runtime")]
             hand_tokens: BlendPoseTokenPool::new(),
             tick: 0,
             visual_tick: 0,
@@ -611,6 +660,13 @@ impl SelectedPlayerTick {
                 }
             }
         };
+        #[cfg(feature = "skate3-runtime")]
+        self.try_reconcile_skate3(world, ground, &skaters, local_skater, settings).map_err(E::Skate3)?;
+        #[cfg(feature = "skate3-runtime")]
+        let external_player = self.skate3_output().is_some();
+        #[cfg(not(feature = "skate3-runtime"))]
+        let external_player = false;
+        let native_skater = |index: usize| !external_player || index != local_skater;
         // SimUpdate1 8289f558: AISkaterManager.Update follows GameInputManager.Update.
         if let Some(ai) = ai.as_deref_mut() {
             let _profile = crate::diagnostics::frame_profile::span(crate::diagnostics::frame_profile::AI_MANAGER);
@@ -641,6 +697,14 @@ impl SelectedPlayerTick {
             cvars,
             settings,
         };
+        #[cfg(feature = "skate3-runtime")]
+        if let Some(owner)=self.mode_owner.as_ref() {
+            if let Some(player)=owner.skate3.lock().map_err(|_|E::Skate3("native Actor input lock".into()))?.as_mut() {
+                // Capture before GenerateActionGraphIntents consumes pending
+                // requests and SetUpPhysics/Actor.Update clear one-shot bits.
+                player.capture_actor_input(skaters[local_skater].actor).map_err(E::Skate3)?;
+            }
+        }
         // SkaterManager::UpdateAnimation1 825ffc70: Phase1 over the skater list. An AI
         // Actor's GenerateActionGraphIntents takes its controller's map, filled first.
         for index in 0..skaters.len() {
@@ -669,6 +733,54 @@ impl SelectedPlayerTick {
                 .try_selected_actor_phase2::<HostReckoningNumeric, LocalSelection<'_, C>>(actor_request)
                 .map_err(|error| E::Actor(Box::new(error)))?;
         }
+        #[cfg(feature = "skate3-runtime")]
+        {
+            let mut graph_gesture=None;
+            if let Some(owner)=self.mode_owner.as_ref() {
+                let mut mode=owner.skate3.lock().map_err(|_|E::Skate3("Actor movement preparation lock".into()))?;
+                if let Some(player)=mode.as_mut() {
+                    let selections=local_actor.try_skate3_gesture_selections().map_err(E::Skate3)?;
+                    player.set_graph_gestures(selections);
+                    if player.prepare_animation_tick(world,ground,request.dt,self.raw_controller).map_err(E::Skate3)? {
+                        if let Some((names,parents,pose))=player.prepared_movement() {
+                            local_actor.try_set_mode_body_pose(names,parents,pose).map_err(E::Skate3)?;
+                        }
+                        if let Some((commands,foot_forward_right))=player.take_prepared_body_commands() {
+                            local_actor.try_set_mode_body_commands(commands,foot_forward_right).map_err(E::Skate3)?;
+                        }
+                    }
+                    graph_gesture=selections.map(|_|player.graph_gesture_fact());
+                    if let Some((gesture,gesturing))=graph_gesture {
+                        static PLAYING:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+                        if PLAYING.swap(gesturing,std::sync::atomic::Ordering::Relaxed)!=gesturing || gesture!=35 {
+                            crate::diagnostics::test_log::event("graph_gesture",format_args!("gesture {gesture} playing {gesturing}"));
+                        }
+                    }
+                }
+            }
+            // Skate 3 physics plays Skate 3 gestures in its own channel stack, where a later RB
+            // reach lies above a held gesture as in TU3; Skate 2 physics plays them through the
+            // overlay when the Edit Skater Gesture Set chose them.
+            let overlay = if let Some((gesture,gesturing))=graph_gesture {
+                local_actor.try_end_pc_gesture().map_err(E::Skate3)?;
+                local_actor.try_publish_gesture_fact(gesture,gesturing).map_err(E::Skate3)?;
+                false
+            } else {
+                self.mode_owner.is_some() || self.try_skate2_physics_skate3_gestures(local_actor).map_err(E::Skate3)?
+            };
+            if overlay {
+                local_actor.try_prepare_pc_gestures(self.raw_controller,None).map_err(E::Skate3)?;
+            }
+            if overlay || graph_gesture.is_some() {
+                // Party Play changes the controlled Actor. Release a former
+                // local Actor's held gesture through its ordinary exit clock.
+                for skater in &skaters {
+                    if !std::ptr::eq(skater.actor,local_actor) {
+                        skater.actor.try_prepare_pc_gestures(None,None).map_err(E::Skate3)?;
+                    }
+                }
+            }
+        }
         for skater in &mut skaters {
             with_actor_services(skater, world, ground, &mut self.hand_tokens, &local, clamp, &mut numeric.actor,
                 |actor, services| actor.try_selected_actor_phase3(actor_request, services))
@@ -676,23 +788,45 @@ impl SelectedPlayerTick {
         }
         let mut hands = Vec::with_capacity(skaters.len());
         for skater in &mut skaters {
-            hands.push(
+            hands.push(Some(
                 with_actor_services(skater, world, ground, &mut self.hand_tokens, &local, clamp, &mut numeric.actor,
                     |actor, services| actor.try_selected_actor_hands(actor_request, services))
-                    .map_err(|error| E::Actor(Box::new(error)))?,
-            );
+                    .map_err(|error| E::Actor(Box::new(error)))?
+            ));
+        }
+        // PC Skate 3 physics: every skater's ACS sync first, before the source solver's player
+        // reads any SetUpPhysics; the Skate 2 character's authored animation and gestures stay live.
+        if external_player {
+            for skater in &mut skaters {
+                with_actor_services(skater, world, ground, &mut self.hand_tokens, &local, clamp, &mut numeric.actor,
+                    |actor, services| actor.try_selected_actor_physics_sync(services))
+                    .map_err(|error| E::Actor(Box::new(error)))?;
+            }
         }
         // UpdatePhysics 825ffd98: each skater's ACS sync, SetUpPhysics and Actor::Update.
-        for skater in &mut skaters {
+        for (index, skater) in skaters.iter_mut().enumerate() {
             with_actor_services(skater, world, ground, &mut self.hand_tokens, &local, clamp, &mut numeric.actor,
                 |actor, services| {
-                    actor.try_selected_actor_physics_sync(services)?;
+                    if !external_player {
+                        actor.try_selected_actor_physics_sync(services)?;
+                    }
                     actor.try_selected_actor_set_up_physics(actor_request, services)
                 })
                 .map_err(|error| E::Actor(Box::new(error)))?;
-            // Actor::Update825f10f0 starts with its AIController::Update.
-            if let Some(ai) = ai.as_deref_mut() {
-                ai.try_update_controller(skater).map_err(E::Ai)?;
+            #[cfg(feature = "skate3-runtime")]
+            if !native_skater(index) {
+                if let Some(owner)=self.mode_owner.as_ref() {
+                    if let Some(player)=owner.skate3.lock().map_err(|_|E::Skate3("native Actor physics policy lock".into()))?.as_mut() {
+                        player.capture_actor_physics(skater.actor).map_err(E::Skate3)?;
+                    }
+                }
+            }
+            // Actor::Update825f10f0 starts with its AIController::Update (a Skate 3 physics
+            // player's own controller drives it instead).
+            if native_skater(index) {
+                if let Some(ai) = ai.as_deref_mut() {
+                    ai.try_update_controller(skater).map_err(E::Ai)?;
+                }
             }
             let owner=std::sync::Arc::clone(world.grind_services.living_world());
             let mut living=owner.lock().map_err(|_|E::LivingWorld(Box::new(
@@ -711,7 +845,7 @@ impl SelectedPlayerTick {
             ai.as_deref_mut().ok_or_else(|| "Actor AI respawn owner absent".to_owned())?
                 .try_appropriate_respawn(actor, &skaters)
         };
-        for skater in &skaters {
+        for (_index, skater) in skaters.iter().enumerate().filter(|(index, _)| native_skater(*index)) {
             world
                 .try_prepare_ground_pre_solve_update0(
                     world_owner,
@@ -725,12 +859,14 @@ impl SelectedPlayerTick {
                 .map_err(|error| E::Before(Box::new(error)))?;
         }
         let mut befores = Vec::with_capacity(skaters.len());
-        for skater in &skaters {
+        for (index, skater) in skaters.iter().enumerate() {
+            if !native_skater(index) { befores.push(None); continue; }
             #[cfg(test)]
             let mut unrequested = None;
             #[cfg(test)]
-            let requested = if befores.is_empty() { &mut self.requested_transition } else { &mut unrequested };
-            befores.push(
+            // The first skater's (the roster's first native skater, as `befores` was empty).
+            let requested = if !external_player && index == 0 { &mut self.requested_transition } else { &mut unrequested };
+            befores.push(Some(
                 world
                     .try_prepare_ground_pre_solve_pair(
                         world_owner,
@@ -744,8 +880,8 @@ impl SelectedPlayerTick {
                         #[cfg(test)]
                         requested,
                     )
-                    .map_err(|error| E::Before(Box::new(error)))?,
-            );
+                    .map_err(|error| E::Before(Box::new(error)))?
+            ));
         }
         // World::Update1 827ae138: deferred grab messages follow all Update3
         // jobs and precede Island::Step_Update1. No force-clear occurs between
@@ -759,6 +895,23 @@ impl SelectedPlayerTick {
             living_world.try_update_animation(world,local_actor,&local,cvars,
                 living_world_recipes.as_mut(),&mut self.hand_tokens)
                 .map_err(|error| E::LivingWorld(Box::new(error)))?;
+        }
+        // PC port (Skate 3 physics): TU3's game response to a shove strike (0x8275f0d8) reaches
+        // the pedestrian's bodies before the next step; ProcessOutput published it this tick.
+        #[cfg(feature = "skate3-runtime")]
+        if let Some(owner) = self.mode_owner.as_ref() {
+            let mut mode = owner.skate3.lock().map_err(|_| E::Skate3("Skate 3 shove lock".into()))?;
+            if let Some(hit) = mode.as_mut().and_then(|player| player.take_shove_hit()) {
+                if hit.skater {
+                    // A struck skater runs Skate 2 physics: its native LivingWorld wipeout
+                    // (ForceWipeOut 825edad0) throws it along the shove.
+                    if let Some(target) = skaters.get(hit.id as usize).filter(|skater| !std::ptr::eq(skater.actor, local_actor)) {
+                        target.actor.try_shove_wipe_out(hit.velocity).map_err(E::Skate3)?;
+                    }
+                } else {
+                    crate::pedestrian_collision::shove::apply(world, hit).map_err(E::Skate3)?;
+                }
+            }
         }
         observe(&mut observer, SelectedTickStage::BeforeSolver, world);
         let pre_solve_time = profile_start.map(|start| start.elapsed());
@@ -783,23 +936,93 @@ impl SelectedPlayerTick {
                 skater_skater,
                 // SkaterManager::UpdateLocomotion 825f53b0 over the skater list.
                 |world| {
-                    for skater in &skaters {
+                    for (_index, skater) in skaters.iter().enumerate().filter(|(index, _)| native_skater(*index)) {
                         skater.actor.try_mid_physics_locomotion(3, cvars, world, ground)?;
                     }
                     Ok(())
                 },
             )
             .map_err(E::Solve)?;
+        #[cfg(feature = "skate3-runtime")]
+        if let Some(mode_owner) = self.mode_owner.as_ref() {
+            let mut mode = mode_owner.skate3.lock().map_err(|_| E::Skate3("native physical mode lock".into()))?;
+            if let Some(player) = mode.as_mut() {
+            player.sync_world_bodies(world, skater_skater == SkaterSkaterPairs::All).map_err(E::Skate3)?;
+            player.capture_composed_actor_pose(local_actor).map_err(E::Skate3)?;
+            // TU3's shove: the probe's pedestrian query before the source tick (0x82db3ce8).
+            if let Some(point) = player.shove_query_point() {
+                let pedestrians = crate::pedestrian_collision::shove::pedestrians(world, point).map_err(E::Skate3)?;
+                player.set_shove_pedestrians(pedestrians);
+                let targets = skaters.iter().enumerate()
+                    .filter(|(_, skater)| !std::ptr::eq(skater.actor, local_actor))
+                    .filter_map(|(index, skater)| {
+                        let physical = skater.actor.cached_physical_allocation().ok()?;
+                        let output = physical.owner().phys_out().lock().ok()?.try_audio_phys_out().ok()?;
+                        Some(crate::skate3_native::physics::shove_probe::ShoveSkater {
+                            id: u32::try_from(index).ok()?,
+                            position: output.centre_of_mass,
+                            velocity: output.centre_of_mass_velocity,
+                        })
+                    })
+                    .collect();
+                player.set_shove_skaters(targets);
+            }
+            player.advance(world, ground, request.dt, self.raw_controller).map_err(E::Skate3)?;
+            // The Actor's side of the source tick (its reset reply, then PostUpdate's breadcrumb
+            // Update) with this world's network and living-world services; the Actor's manager
+            // then shows that history to the rest of the game.
+            if let Some(breadcrumbs) = local_actor.retained_breadcrumbs()
+                .map_err(|error| E::Skate3(format!("Skate 3 breadcrumbs: {error:?}")))?
+            {
+                let mut crumbs = breadcrumbs.lock().map_err(|_| E::Skate3("Skate 3 breadcrumb lock".into()))?;
+                {
+                    let mut source = crate::actor_construction::breadcrumbs::LiveBreadCrumbSelectionSource::new(
+                        &crumbs, local_actor, world_owner, world, ground, cvars, &mut numeric.line);
+                    player.post_update_breadcrumbs(&mut source).map_err(E::Skate3)?;
+                }
+                player.mirror_breadcrumbs(&mut crumbs);
+            }
+            if player.advanced_this_tick() {
+            // TU3's island records the skater's contacts on each pedestrian Body too; the
+            // pedestrians' OnEntityCollision reads them in this tick's ResolveContactSpyList.
+            let contacts: Vec<_> = player.take_host_contacts().into_iter()
+                .map(|(body, board, normal)| crate::pedestrian_collision::contacts::Skate3PedestrianContact {
+                    body, normal,
+                    other: crate::simulation_assembly_backend::constraint_session::physical_island::SimulationIslandBodyHandle::Skater(
+                        if board { skaters[local_skater].board.clone() } else { skaters[local_skater].skeleton.clone() }),
+                })
+                .collect();
+            world.grind_services.living_world().lock()
+                .map_err(|_| E::Skate3("living world contacts lock".into()))?.skate3_contacts = contacts;
+            world.try_refresh_skate3_sources().map_err(E::Skate3)?;
+            let pose = local_actor.published_animation_physics_input()
+                .map_err(|error| E::Skate3(format!("Skate 2 animation publication: {error}")))?;
+            let root = crate::skeleton_root_transforms::SkeletonRootMatrix::known(
+                crate::skate3_bridge::player::flatten(player.output().root_transform));
+            world.skeleton(skaters[local_skater].skeleton).map_err(|error| E::Skate3(error.to_string()))?
+                .try_publish_mode_movement_pose(
+                    &mut *pose.lock().map_err(|_| E::Skate3("Skate 2 pose lock".into()))?,
+                    &player.output().bone_names,
+                    &player.output().world_bones.iter().copied()
+                        .map(crate::skate3_bridge::player::flatten).collect::<Vec<_>>(),
+                    &root)
+                .map_err(|error| E::Skate3(error.to_string()))?;
+            player.acknowledge_teleport(local_actor).map_err(E::Skate3)?;
+            }
+            }
+        }
         observe(&mut observer, SelectedTickStage::AfterSolver, world);
         let solver_time = profile_start.map(|start| start.elapsed());
         // World::Update3 827af8f0: every physical's Update4/Update5 jobs, then
         // UpdateConditioners, whose Scoring input reads the other skaters' output.
         let mut physics = Vec::with_capacity(skaters.len());
-        for (skater, before) in skaters.iter().zip(&befores) {
+        for (index, (skater, before)) in skaters.iter().zip(&befores).enumerate() {
+            if !native_skater(index) { physics.push(None); continue; }
+            let before = before.as_ref().expect("native pre-solve completed");
             let owner = Arc::clone(
                 skater.actor.cached_physical_allocation().map_err(E::Physical)?.owner(),
             );
-            physics.push(
+            physics.push(Some(
                 world
                     .try_post_solve_selected_physics(
                         PostSolveRequest {
@@ -820,12 +1043,30 @@ impl SelectedPlayerTick {
                             collision: &mut numeric.collision,
                         },
                     )
-                    .map_err(|error| E::After(Box::new(error)))?,
-            );
+                    .map_err(|error| E::After(Box::new(error)))?
+            ));
+        }
+        // World.UpdateConditioners observes every player's completed Update5.
+        // A source player must not query a native player's still-open output
+        // write guard (Party Play and nearby-skater scoring use the same roster).
+        #[cfg(feature = "skate3-runtime")]
+        if let Some(mode_owner) = self.mode_owner.as_ref() {
+            let mode = mode_owner.skate3.lock().map_err(|_| E::Skate3("native gameplay mode lock".into()))?;
+            if let Some(player) = mode.as_ref() {
+            let physical = local_actor.cached_physical_allocation().map_err(E::Physical)?;
+            if player.advanced_this_tick() {
+                world.try_finish_skate3_gameplay(physical.owner(), player.output(), request.dt, player.completed_teleport(),
+                    crate::physical_player_assembly::scoring_input::ScoringFrameSchedule {
+                        tick: self.tick, visual_tick: self.visual_tick, settings, challenge: challenge_scoring.as_ref(),
+                    }, &mut numeric.vector).map_err(E::Skate3)?;
+            }
+            }
         }
         let mut afters = Vec::with_capacity(skaters.len());
-        for (skater, physics) in skaters.iter().zip(physics) {
-            afters.push(
+        for (index, (skater, physics)) in skaters.iter().zip(physics).enumerate() {
+            if !native_skater(index) { afters.push(None); continue; }
+            let physics = physics.expect("native post-solve completed");
+            afters.push(Some(
                 world
                     .try_finish_selected_animation(
                         skater.board,
@@ -836,8 +1077,8 @@ impl SelectedPlayerTick {
                             challenge: challenge_scoring.as_ref(),
                         }),
                     )
-                    .map_err(|error| E::After(Box::new(PostSolveError::FinishAnimation(Box::new(error)))))?,
-            );
+                    .map_err(|error| E::After(Box::new(PostSolveError::FinishAnimation(Box::new(error)))))?
+            ));
         }
         let post_solve_time = profile_start.map(|start| start.elapsed());
         // One tick's choice: a step no online game sets up shows the local skater.
@@ -918,7 +1159,14 @@ impl SelectedPlayerTick {
         if let Some(submit_mask) = self.camera_subsequence {
             // The admitted profile above and queued-mask check establish mask3.
             // Native camera gate8289fc5c is updateMask & submitMask, not bit1.
-            if 3 & submit_mask != 0 {
+            #[cfg(feature = "skate3-runtime")]
+            if external_player && 3 & submit_mask != 0 {
+                let output = self.skate3_output().ok_or_else(|| E::Skate3("native mode publication absent".into()))?;
+                let physical = local_actor.cached_physical_allocation().map_err(E::Physical)?;
+                local.try_publish_skate3_camera(&output, physical.owner(), request.dt)
+                    .map_err(E::Camera)?;
+            }
+            if 3 & submit_mask != 0 && !external_player {
                 let authority = world.physical_manager_authority();
                 let mut camera_services = world.camera_line_services(ground, &mut numeric.line);
                 local
@@ -944,7 +1192,7 @@ impl SelectedPlayerTick {
             // PhysOut_Skeleton hips copy precedes the reset/distance gates;
             // reached Ground100/104 then refreshes orientation before later
             // breadcrumb-drop constraints.
-            for skater in &skaters {
+            for (_index, skater) in skaters.iter().enumerate().filter(|(index, _)| native_skater(*index)) {
                 skater
                     .actor
                     .try_post_update_breadcrumb_hips(

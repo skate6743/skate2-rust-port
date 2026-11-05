@@ -20,13 +20,20 @@ pub struct PcDisplaySettings {
     pub resolution_scale: u8,
     /// Each frame waits for the display's refresh, so none tears; off, frames show at once.
     pub vsync: bool,
+    /// The Field of View row's percent, from `FIELD_OF_VIEWS`: each percent away from
+    /// `VANILLA_FIELD_OF_VIEW` (the original's) moves the camera's angle by two percent.
+    pub field_of_view: u8,
 }
 impl Default for PcDisplaySettings {
     fn default() -> Self {
         Self { postfx: true, fisheye: true, frame_rate_cap: FrameRateCap::RefreshRate, fps_counter: false, fullscreen: false,
-            resolution_scale: 100, vsync: true }
+            resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW }
     }
 }
+/// The fields of view Gameplay Settings offers, in percent of the shot's: a little narrower than
+/// the original's, mostly wider.
+pub const FIELD_OF_VIEWS: std::ops::RangeInclusive<u8> = 90..=130;
+pub const VANILLA_FIELD_OF_VIEW: u8 = 100;
 /// The resolution scales Display Settings offers, in percent.
 pub const RESOLUTION_SCALES: std::ops::RangeInclusive<u8> = 50..=200;
 pub const RESOLUTION_SCALE_STEP: u8 = 10;
@@ -40,6 +47,63 @@ pub enum FrameRateCap {
     Fps60 = 1,
     Fps120 = 2,
     RefreshRate = 3,
+}
+
+/// PC port addition: the physics the local skater plays with. Skate 3's exists only with a
+/// linked Skate 3 data folder; without one the game plays Skate 2's whatever is saved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PhysicsMode {
+    #[default]
+    Skate2 = 0,
+    Skate3 = 1,
+}
+/// PC port addition: Skate 3's difficulty, its `physics_skater` tuning collections.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Difficulty {
+    Easy = 0,
+    #[default]
+    Normal = 1,
+    Hardcore = 2,
+    Motorized = 3,
+}
+/// PC port addition: the sky over the city. Vanilla is the original's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Weather {
+    #[default]
+    Vanilla = 0,
+    Drizzle = 1,
+    Rain = 2,
+    Storm = 3,
+    AfterRain = 4,
+}
+impl Weather {
+    pub const ALL: [Self; 5] = [Self::Vanilla, Self::Drizzle, Self::Rain, Self::Storm, Self::AfterRain];
+    /// The removed Flurries (5) and Snow (6) read as Vanilla.
+    fn from_byte(value: u8) -> Option<Self> {
+        match value {
+            5 | 6 => Some(Self::Vanilla),
+            _ => Self::ALL.get(usize::from(value)).copied(),
+        }
+    }
+}
+/// The loudest Rain Volume, in tenths of the sound effects' volume.
+pub const RAIN_VOLUME_STEPS: u8 = 10;
+/// PC port addition: Physics Settings and Weather Settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PcGameplayModes {
+    pub physics: PhysicsMode,
+    pub difficulty: Difficulty,
+    pub weather: Weather,
+    /// The rain's loudness, `0..=RAIN_VOLUME_STEPS`.
+    pub rain_volume: u8,
+    /// Puddle Physics: with Skate 3 physics in the rain, wet wheels lose grip, deep water drags,
+    /// and riding fast through it bails.
+    pub puddle_physics: bool,
+}
+impl Default for PcGameplayModes {
+    fn default() -> Self {
+        Self { physics: PhysicsMode::Skate2, difficulty: Difficulty::Normal, weather: Weather::Vanilla, rain_volume: RAIN_VOLUME_STEPS, puddle_physics: false }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -622,10 +686,10 @@ impl SkaterProfile {
                 // Version 1 predates VSync and reads as Refresh Rate. Version 2's VSync Off,
                 // Half and On read as Unlimited, 60 and Refresh Rate. Versions before 4 have no
                 // frame rate counter, which reads as off, before 5 no fullscreen: windowed, before
-                // 6 no resolution scale: 100%, and before 7 no VSync, which the Refresh Rate cap
-                // alone meant.
+                // 6 no resolution scale: 100%, before 7 no VSync, which the Refresh Rate cap
+                // alone meant, and before 8 no field of view: the original's.
                 let version = read32(&leaf, 4)?;
-                if !matches!(version, 1..=7) { return Err(ProfileError("unsupported PC display settings version")); }
+                if !matches!(version, 1..=8) { return Err(ProfileError("unsupported PC display settings version")); }
                 let mut r = Reader { bytes: &leaf[16..], pos: 0 };
                 let mut boolean = || match r.tuple()? {
                     [0] => Ok(false), [1] => Ok(true),
@@ -636,8 +700,8 @@ impl SkaterProfile {
                     match (version, r.tuple()?) {
                         (_, [0]) => FrameRateCap::Unlimited,
                         (_, [1]) => FrameRateCap::Fps60,
-                        (3..=7, [2]) => FrameRateCap::Fps120,
-                        (2, [2]) | (3..=7, [3]) => FrameRateCap::RefreshRate,
+                        (3..=8, [2]) => FrameRateCap::Fps120,
+                        (2, [2]) | (3..=8, [3]) => FrameRateCap::RefreshRate,
                         _ => return Err(ProfileError("invalid PC frame rate cap")),
                     }
                 };
@@ -661,22 +725,76 @@ impl SkaterProfile {
                         _ => return Err(ProfileError("invalid PC display setting boolean")),
                     }
                 } else { frame_rate_cap == FrameRateCap::RefreshRate };
-                return Ok(PcDisplaySettings { postfx, fisheye, frame_rate_cap, fps_counter, fullscreen, resolution_scale, vsync });
+                let field_of_view = if version >= 8 {
+                    match r.tuple()? {
+                        [percent] if FIELD_OF_VIEWS.contains(percent) => *percent,
+                        _ => return Err(ProfileError("invalid PC field of view")),
+                    }
+                } else { VANILLA_FIELD_OF_VIEW };
+                return Ok(PcDisplaySettings { postfx, fisheye, frame_rate_cap, fps_counter, fullscreen, resolution_scale, vsync, field_of_view });
             }
         }
         Ok(PcDisplaySettings::default())
     }
     pub fn set_display_settings(&mut self, settings: PcDisplaySettings) -> Result<()> {
         let id = name_hash("SK82_PC::DisplaySettings");
-        let leaf = leaf_chunk(id, 7, &[vec![u8::from(settings.postfx)], vec![u8::from(settings.fisheye)],
+        let leaf = leaf_chunk(id, 8, &[vec![u8::from(settings.postfx)], vec![u8::from(settings.fisheye)],
             vec![settings.frame_rate_cap as u8], vec![u8::from(settings.fps_counter)], vec![u8::from(settings.fullscreen)],
-            vec![settings.resolution_scale], vec![u8::from(settings.vsync)]]);
+            vec![settings.resolution_scale], vec![u8::from(settings.vsync)], vec![settings.field_of_view]]);
         for chunk in self.chunks.iter_mut().skip(1) {
             if read32(chunk, 0)? != name_hash("SK82_PC") { continue; }
             let mut children = split_chunks(&chunk[16..])?;
             if let Some(old) = children.iter_mut().find(|c| read32(c, 0).ok() == Some(id)) {
                 // Validate the version before modifying an existing extension.
-                if !matches!(read32(old, 4)?, 1..=7) { return Err(ProfileError("unsupported PC display settings version")); }
+                if !matches!(read32(old, 4)?, 1..=8) { return Err(ProfileError("unsupported PC display settings version")); }
+                *old = leaf;
+            } else { children.push(leaf); }
+            *chunk = nested_chunk(name_hash("SK82_PC"), &children.concat());
+            return Ok(());
+        }
+        self.chunks.push(nested_chunk(name_hash("SK82_PC"), &leaf));
+        Ok(())
+    }
+    /// PC port addition: Physics Settings and Weather Settings, `SK82_PC::GameplayModes`.
+    pub fn gameplay_modes(&self) -> Result<PcGameplayModes> {
+        for chunk in self.chunks.iter().skip(1) {
+            if read32(chunk, 0)? != name_hash("SK82_PC") { continue; }
+            for leaf in split_chunks(&chunk[16..])? {
+                if read32(&leaf, 0)? != name_hash("SK82_PC::GameplayModes") { continue; }
+                if read32(&leaf, 4)? != 1 { return Err(ProfileError("unsupported PC gameplay modes version")); }
+                let mut r = Reader { bytes: &leaf[16..], pos: 0 };
+                let physics = match r.tuple()? {
+                    [0] => PhysicsMode::Skate2, [1] => PhysicsMode::Skate3,
+                    _ => return Err(ProfileError("invalid PC physics mode")),
+                };
+                let difficulty = match r.tuple()? {
+                    [0] => Difficulty::Easy, [1] => Difficulty::Normal, [2] => Difficulty::Hardcore, [3] => Difficulty::Motorized,
+                    _ => return Err(ProfileError("invalid PC difficulty")),
+                };
+                let weather = match r.tuple()? {
+                    [value] => Weather::from_byte(*value).ok_or(ProfileError("invalid PC weather"))?,
+                    _ => return Err(ProfileError("invalid PC weather")),
+                };
+                let rain_volume = match r.tuple()? {
+                    [value] if *value <= RAIN_VOLUME_STEPS => *value,
+                    _ => return Err(ProfileError("invalid PC rain volume")),
+                };
+                // Puddle Physics came later, and a leaf ends in padding: only a set flag is on.
+                let puddle_physics = matches!(r.tuple(), Ok([1]));
+                return Ok(PcGameplayModes { physics, difficulty, weather, rain_volume, puddle_physics });
+            }
+        }
+        Ok(PcGameplayModes::default())
+    }
+    pub fn set_gameplay_modes(&mut self, modes: PcGameplayModes) -> Result<()> {
+        let id = name_hash("SK82_PC::GameplayModes");
+        let leaf = leaf_chunk(id, 1, &[vec![modes.physics as u8], vec![modes.difficulty as u8], vec![modes.weather as u8],
+            vec![modes.rain_volume.min(RAIN_VOLUME_STEPS)], vec![u8::from(modes.puddle_physics)]]);
+        for chunk in self.chunks.iter_mut().skip(1) {
+            if read32(chunk, 0)? != name_hash("SK82_PC") { continue; }
+            let mut children = split_chunks(&chunk[16..])?;
+            if let Some(old) = children.iter_mut().find(|c| read32(c, 0).ok() == Some(id)) {
+                if read32(old, 4)? != 1 { return Err(ProfileError("unsupported PC gameplay modes version")); }
                 *old = leaf;
             } else { children.push(leaf); }
             *chunk = nested_chunk(name_hash("SK82_PC"), &children.concat());
@@ -1060,7 +1178,7 @@ mod display_tests {
         profile.chunks.push(unknown.clone());
         for (postfx, frame_rate_cap) in [(false, FrameRateCap::Unlimited), (true, FrameRateCap::Fps60), (false, FrameRateCap::Fps120)] { for fisheye in [true, false] {
             let expected = PcDisplaySettings { postfx, fisheye, frame_rate_cap, fps_counter: fisheye, fullscreen: postfx,
-                resolution_scale: if fisheye { 200 } else { 50 }, vsync: !postfx };
+                resolution_scale: if fisheye { 200 } else { 50 }, vsync: !postfx, field_of_view: if fisheye { 130 } else { 90 } };
             profile.set_display_settings(expected).unwrap();
             profile.set_cac_record(&record).unwrap();
             profile = SkaterProfile::parse(&profile.encode().unwrap()).unwrap();
@@ -1072,6 +1190,22 @@ mod display_tests {
         }}
     }
     #[test]
+    fn gameplay_modes_keep_puddle_physics_and_read_earlier_saves() {
+        let mut earlier = SkaterProfile::new_empty();
+        earlier.chunks.push(nested_chunk(name_hash("SK82_PC"),
+            &leaf_chunk(name_hash("SK82_PC::GameplayModes"), 1, &[vec![1], vec![2], vec![3], vec![4]])));
+        let modes = earlier.gameplay_modes().unwrap();
+        assert!(!modes.puddle_physics);
+        assert_eq!(modes.rain_volume, 4);
+        for puddle_physics in [true, false] {
+            let modes = PcGameplayModes { puddle_physics, ..PcGameplayModes::default() };
+            let mut profile = SkaterProfile::new_empty();
+            profile.set_gameplay_modes(modes).unwrap();
+            let profile = SkaterProfile::parse(&profile.encode().unwrap()).unwrap();
+            assert_eq!(profile.gameplay_modes().unwrap(), modes);
+        }
+    }
+    #[test]
     fn earlier_display_settings_read_as_frame_rate_caps() {
         let saved = |version, tuples: &[Vec<u8>]| {
             let mut profile = SkaterProfile::new_empty();
@@ -1081,17 +1215,17 @@ mod display_tests {
         };
         assert_eq!(saved(1, &[vec![0], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { postfx: false, fisheye: true, frame_rate_cap: FrameRateCap::RefreshRate, fps_counter: false, fullscreen: false,
-                resolution_scale: 100, vsync: true });
+                resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW });
         for (vsync, frame_rate_cap) in [(0, FrameRateCap::Unlimited), (1, FrameRateCap::Fps60), (2, FrameRateCap::RefreshRate)] {
             assert_eq!(saved(2, &[vec![1], vec![1], vec![vsync]]).display_settings().unwrap().frame_rate_cap, frame_rate_cap);
         }
         assert!(saved(2, &[vec![1], vec![1], vec![3]]).display_settings().is_err());
         assert_eq!(saved(3, &[vec![1], vec![0], vec![2]]).display_settings().unwrap(),
             PcDisplaySettings { postfx: true, fisheye: false, frame_rate_cap: FrameRateCap::Fps120, fps_counter: false, fullscreen: false,
-                resolution_scale: 100, vsync: false });
+                resolution_scale: 100, vsync: false, field_of_view: VANILLA_FIELD_OF_VIEW });
         assert_eq!(saved(4, &[vec![1], vec![0], vec![2], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { postfx: true, fisheye: false, frame_rate_cap: FrameRateCap::Fps120, fps_counter: true, fullscreen: false,
-                resolution_scale: 100, vsync: false });
+                resolution_scale: 100, vsync: false, field_of_view: VANILLA_FIELD_OF_VIEW });
         assert_eq!(saved(5, &[vec![1], vec![1], vec![3], vec![0], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { fullscreen: true, ..PcDisplaySettings::default() });
         assert_eq!(saved(6, &[vec![1], vec![1], vec![3], vec![0], vec![1], vec![140]]).display_settings().unwrap(),
@@ -1103,6 +1237,12 @@ mod display_tests {
         assert!(!saved(6, &[vec![1], vec![1], vec![1], vec![0], vec![0], vec![100]]).display_settings().unwrap().vsync);
         assert_eq!(saved(7, &[vec![1], vec![1], vec![3], vec![0], vec![0], vec![100], vec![0]]).display_settings().unwrap(),
             PcDisplaySettings { vsync: false, ..PcDisplaySettings::default() });
+        // From version 8 the field of view is its own, within FIELD_OF_VIEWS.
+        assert_eq!(saved(8, &[vec![1], vec![1], vec![3], vec![0], vec![0], vec![100], vec![1], vec![118]]).display_settings().unwrap(),
+            PcDisplaySettings { field_of_view: 118, ..PcDisplaySettings::default() });
+        for percent in [0, 89, 131, 255] {
+            assert!(saved(8, &[vec![1], vec![1], vec![3], vec![0], vec![0], vec![100], vec![1], vec![percent]]).display_settings().is_err());
+        }
         assert_eq!(saved(7, &[vec![1], vec![1], vec![2], vec![0], vec![0], vec![100], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { frame_rate_cap: FrameRateCap::Fps120, ..PcDisplaySettings::default() });
         assert!(saved(7, &[vec![1], vec![1], vec![3], vec![0], vec![0], vec![100], vec![2]]).display_settings().is_err());
@@ -1145,3 +1285,9 @@ mod display_tests {
         assert_eq!(ids, PROFILE_LEAVES.map(name_hash));
     }
 }
+#[path = "skater_profile_gestures.rs"]
+mod gestures;
+pub use gestures::{GestureSet, PcGestureSettings};
+#[path = "skater_profile_skate3_style.rs"]
+mod skate3_style;
+pub use skate3_style::PcSkate3Style;

@@ -259,6 +259,16 @@ impl crate::physical_player_physics_state::PhysicalStateActorQuery for ActorCons
 const GESTURE_INTENTS: [&[u8]; 4] = [b"GestureDown", b"GestureLeft", b"GestureRight", b"GestureUp"];
 
 impl ActorConstruction {
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn try_skate3_actor_input(&self)
+        -> Result<crate::skate3_native::physics::player::actor_input::HostActorInput, ActorConstructionError>
+    {
+        let state=self.prefix()?;
+        let flags=state.input_generation_flags.ok_or(ActorConstructionError::GraphPrefixIncomplete)?;
+        Ok(crate::skate3_native::physics::player::actor_input::HostActorInput::from_skate2(
+            flags, state.pinned_gestures))
+    }
+
     /// Whether a pinned skater keeps its gestures (online play).
     pub(crate) fn try_set_pinned_gestures(&self, on: bool) -> Result<(), ActorConstructionError> {
         self.state.lock().map_err(|_| ActorConstructionError::Poisoned)?.pinned_gestures = on;

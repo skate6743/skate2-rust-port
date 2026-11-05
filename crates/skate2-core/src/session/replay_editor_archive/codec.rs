@@ -67,5 +67,10 @@ tuple!(A:0,B:1);tuple!(A:0,B:1,C:2);tuple!(A:0,B:1,C:2,D:3);
 macro_rules! record {($t:ty {$($field:ident),* $(,)?})=>{impl Store for $t {
     fn put(&self,w:&mut Writer){$(self.$field.put(w);)*}
     fn get(r:&mut Reader<'_>)->Result<Self>{Ok(Self{$($field:Store::get(r)?,)*})}
+}};
+// Fields left out of the archive decode as their defaults.
+($t:ty {$($field:ident),* $(,)?} ..default)=>{impl Store for $t {
+    fn put(&self,w:&mut Writer){$(self.$field.put(w);)*}
+    fn get(r:&mut Reader<'_>)->Result<Self>{Ok(Self{$($field:Store::get(r)?,)* ..Default::default()})}
 }};}
 pub(super) use record;

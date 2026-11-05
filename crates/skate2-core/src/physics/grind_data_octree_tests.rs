@@ -171,7 +171,7 @@ fn constructor_fsel_uses_subtraction_unordered_selection_and_full_w() {
             .collect::<Vec<_>>(),
         [-3.0_f32, -3.0, 6.0].map(f32::to_bits)
     );
-    assert_eq!(query(&tree, bounds(-1.0, 1.0)), []);
+    assert!(query(&tree, bounds(-1.0, 1.0)).is_empty());
 }
 
 #[test]

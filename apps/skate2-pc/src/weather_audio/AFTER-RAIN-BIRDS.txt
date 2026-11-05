@@ -1,0 +1,13 @@
+After Rain bird ambience
+
+MorningBirds.wav by iwanPlays, April11,2020.
+https://freesound.org/people/iwanPlays/sounds/512769/
+License: Creative Commons Zero1.0 (CC0), public-domain dedication.
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Prepared from the publicly accessible high-quality MP3 preview:
+https://cdn.freesound.org/previews/512/512769_7108319-hq.mp3
+Four two-second excerpts, mono24kHz signed16-bit little-endian PCM.
+High-pass900Hz/low-pass7kHz, edge fades, common peak preparation.
+The runtime schedules quiet calls with long gaps; no rain bed is added.
+Source SHA256: 7e3b88fec567710ce756ce433b68a0deea3d54ec626631215dfd0f3c59efaebc

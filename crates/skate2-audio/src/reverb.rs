@@ -56,6 +56,9 @@ struct RvrbParms {
     /// `current` is the volume distance).
     current: f32,
     length: f32,
+    /// PC port: `reverb` is a linked Skate 3 district's `aud_reverb` collection, read from Skate
+    /// 3's attributes (TU3 `VerbInit` 0x824de140 reads the same offsets).
+    skate3: bool,
 }
 
 pub struct Reverb {
@@ -72,6 +75,8 @@ pub struct Reverb {
     /// +0x1A8, +0x1AC: `mSphereIndex` and `mpevs`, the reverb volumes a transition follows.
     sphere_index: usize,
     pevs: [Option<VolumeStatusId>; 2],
+    /// PC port: a linked Skate 3 data folder's attributes; none unlinked.
+    skate3_vault: Option<std::sync::Arc<Vault>>,
 }
 
 impl Reverb {
@@ -87,6 +92,20 @@ impl Reverb {
             tpp: EnvRvrbPresetParms::default(),
             sphere_index: 0,
             pevs: [None; 2],
+            skate3_vault: None,
+        }
+    }
+
+    /// PC port: the linked Skate 3 attributes whose `aud_reverb` collections a district's keys name.
+    pub fn set_skate3(&mut self, vault: Option<std::sync::Arc<Vault>>) {
+        self.skate3_vault = vault;
+    }
+
+    /// The attributes holding slot `n`'s collection.
+    fn slot_vault<'v>(&self, n: usize, skate3: &'v Option<std::sync::Arc<Vault>>, vault: &'v Vault) -> &'v Vault {
+        match skate3.as_deref() {
+            Some(skate3) if self.slots[n].skate3 => skate3,
+            _ => vault,
         }
     }
 
@@ -135,6 +154,8 @@ impl Reverb {
     /// degrees, radius 1, LFE 0.5) and its runtime pans and delays, then
     /// `GlobalEffects::SetupReverb`.
     fn verb_init(&mut self, n: usize, fxlevel: f32, core: &mut AudioCore, vault: &Vault, effects: &mut GlobalEffects) {
+        let skate3 = self.skate3_vault.clone();
+        let vault = self.slot_vault(n, &skate3, vault);
         let collection = Collection::new(AUD_REVERB, self.slots[n].reverb);
         let layout = |offset: u32| vault.layout_f32(collection, offset / 4);
         let filter = |lpf: u32, hpf: u32, gain: u32, panazimuth: f32| FilterParms {
@@ -197,6 +218,7 @@ impl Reverb {
     /// its collection (the pans stay the caller's), then `GlobalEffects::UpdateReverb`.
     fn verb_update(&self, parms: &mut EnvRvrbRuntimeParms, core: &mut AudioCore, vault: &Vault, effects: &GlobalEffects) {
         let slot = &self.slots[parms.inst];
+        let vault = self.slot_vault(parms.inst, &self.skate3_vault, vault);
         let layout = |offset: u32| vault.layout_f32(Collection::new(AUD_REVERB, slot.reverb), offset / 4);
         parms.fxlevel = slot.errp.fxlevel;
         parms.left_gain = layout(0x2C);
@@ -211,11 +233,12 @@ impl Reverb {
 
     /// `SetupWPVerb` 0x82531988: the other slot takes the collection at level 0 and a one-second
     /// transition of `kind`.
-    fn setup_wp_verb(&mut self, key: u64, kind: u32, core: &mut AudioCore, vault: &Vault, effects: &mut GlobalEffects) {
+    fn setup_wp_verb(&mut self, key: u64, skate3: bool, kind: u32, core: &mut AudioCore, vault: &Vault, effects: &mut GlobalEffects) {
         self.target_key = key;
         self.target_index = self.active_index.wrapping_sub(1) & 1;
         let target = self.target_index;
         self.slots[target].reverb = key;
+        self.slots[target].skate3 = skate3;
         self.slots[target].kind = kind;
         self.verb_init(target, 0.0, core, vault, effects);
         let slot = &mut self.slots[target];
@@ -252,6 +275,7 @@ impl Reverb {
     /// 22 are category 1; 9, 13-15, 17 and 18 category 2; 10 category 3; 21 category 4; the
     /// rest 0.
     fn reverb_category(&self, vault: &Vault) -> i32 {
+        let vault = self.slot_vault(self.active_index, &self.skate3_vault, vault);
         let kind = vault.layout_word(Collection::new(AUD_REVERB, self.slots[self.active_index].reverb), 12) as i32;
         match kind {
             6..=8 | 22 => 1,
@@ -286,6 +310,7 @@ impl Reverb {
         t: f32,
         presentation: bool,
         reverb_key: u64,
+        skate3_key: bool,
         local_board: Option<(Vec3, Vec3)>,
         volumes: &Sk8EmitterSystem,
         core: &mut AudioCore,
@@ -310,13 +335,13 @@ impl Reverb {
         let Some(first) = volumes.current_reverb_volume(None, vault) else {
             self.pevs = [None; 2];
             if reverb_key != 0 && self.active_key != reverb_key {
-                self.setup_wp_verb(reverb_key, TRANS_TIME, core, vault, effects);
+                self.setup_wp_verb(reverb_key, skate3_key, TRANS_TIME, core, vault, effects);
             }
             return;
         };
         let Some(held) = self.pevs[0] else {
             self.pevs[0] = Some(first);
-            self.setup_wp_verb(reverb_type(key_of(first), vault), TRANS_DIST, core, vault, effects);
+            self.setup_wp_verb(reverb_type(key_of(first), vault), false, TRANS_DIST, core, vault, effects);
             self.sphere_index = self.target_index;
             return;
         };
@@ -329,18 +354,18 @@ impl Reverb {
                     return;
                 }
             } else if self.active_key == first_key {
-                self.setup_wp_verb(second_key, TRANS_SPHERE, core, vault, effects);
+                self.setup_wp_verb(second_key, false, TRANS_SPHERE, core, vault, effects);
                 self.pevs[1] = Some(second);
                 return;
             }
-            self.setup_wp_verb(first_key, TRANS_SPHERE, core, vault, effects);
+            self.setup_wp_verb(first_key, false, TRANS_SPHERE, core, vault, effects);
             self.pevs[1] = Some(first);
             return;
         }
         // `mpevs[0]` may be a status the emitter system has freed; its last values are read.
         let distance = volumes.volume_status(held).map_or(0.0, |status| status.distance);
         if distance > 0.0 && self.sphere_index == self.active_index && reverb_key != 0 {
-            self.setup_wp_verb(reverb_key, TRANS_DIST, core, vault, effects);
+            self.setup_wp_verb(reverb_key, skate3_key, TRANS_DIST, core, vault, effects);
             self.sphere_index = self.active_index;
         }
     }
@@ -606,7 +631,7 @@ mod tests {
         fn step(&mut self, camera: [f32; 3]) {
             self.world.update(camera, 0);
             let board = Some(([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0, 0.0]));
-            self.reverb.update_params(1.0 / 30.0, true, 0, board, &self.world.system, &mut self.core, &mut self.map, &self.world.vault, &mut self.effects);
+            self.reverb.update_params(1.0 / 30.0, true, 0, false, board, &self.world.system, &mut self.core, &mut self.map, &self.world.vault, &mut self.effects);
         }
     }
 

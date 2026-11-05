@@ -257,6 +257,24 @@ impl SceneDirectory {
 
     /// PC port: a later directory's scenes (downloadable content's `scene_NNN.bin`) that this one
     /// lacks, with their characters. The game's own scenes stay this directory's.
+    /// PC port: [`Self::add_new_scenes`] of the scenes without characters (camera flights), with
+    /// their names: a Skate 3 game's own scenes, whose characters' animations are not mounted.
+    pub fn add_new_camera_scenes(&mut self, other: &Self) -> Vec<String> {
+        let mut added = Vec::new();
+        for scene in &other.scenes {
+            if scene.character_count != 0 || self.by_hash.contains_key(&scene.name_hash) {
+                continue;
+            }
+            let Ok(start) = u16::try_from(self.characters.len()) else { break };
+            let mut copy = scene.clone();
+            copy.character_start = start;
+            self.by_hash.insert(copy.name_hash, self.scenes.len());
+            added.push(copy.name.clone());
+            self.scenes.push(copy);
+        }
+        added
+    }
+
     pub fn add_new_scenes(&mut self, other: &Self) {
         for scene in &other.scenes {
             if self.by_hash.contains_key(&scene.name_hash) {

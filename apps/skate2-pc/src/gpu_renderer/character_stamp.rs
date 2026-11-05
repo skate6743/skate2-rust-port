@@ -18,11 +18,23 @@ impl Inputs {
     }
     fn bytes_custom(&self, custom: [[f32; 4]; 5]) -> [u8; 30 * 16] {
         let camera = [self.camera[0], self.camera[1], self.camera[2], self.material_lod];
-        let lanes = self.material
+        // PC weather: overcast keeps the ambient SH and takes the direct key and rim sunlight.
+        let mut material = self.material;
+        let mut light = self.light;
+        let cloud = crate::weather::cloud_cover();
+        if cloud > 0. {
+            for index in [1, 2, 3, 6] {
+                for value in &mut material[index][..3] {
+                    *value *= 1. - cloud;
+                }
+            }
+            light[3] = cloud;
+        }
+        let lanes = material
             .iter()
             .chain(&self.irradiance)
             .chain(&self.attributes)
-            .chain(std::iter::once(&self.light))
+            .chain(std::iter::once(&light))
             .chain(&self.csm)
             .chain(std::iter::once(&camera))
             .chain(custom.iter())

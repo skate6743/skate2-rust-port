@@ -40,6 +40,14 @@ pub struct MapLocation {
     pub icon: String,
 }
 
+/// `FEMapManager::LoadMap`'s map: an image of `data\fe\source\images\map` and the six words of
+/// its `fe_locations` record after the name (`MapInfo`'s extents, then the image's size).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MapImage {
+    pub name: String,
+    pub words: [i32; 6],
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MapMenuSnapshot {
     pub visible: bool,
@@ -49,6 +57,9 @@ pub struct MapMenuSnapshot {
     /// In the career, `FrontEndState_ChallengeMap`'s Stuff region and map icons, which the
     /// screen shows in place of the FELocation browser.
     pub career: Option<std::sync::Arc<crate::challenge::stuff_menu::ChallengeMapView>>,
+    /// `LoadMap` (`0x8264ccf8`) with an additional world location: that location's map; none
+    /// for the default location's, which the front end holds.
+    pub map: Option<MapImage>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

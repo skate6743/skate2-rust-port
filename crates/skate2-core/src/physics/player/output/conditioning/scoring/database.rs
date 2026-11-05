@@ -10,6 +10,8 @@ pub(crate) const TRICK_CLASS: u64 = 0x6918_4699_84a8_c596;
 
 pub(super) struct TrickDatabase {
     vault: Arc<AttributeRuntimeVault>,
+    #[cfg(feature = "skate3-runtime")]
+    pub(super) use_skate3: bool,
     indices: BTreeMap<u64, u32>,
     animation_ids: BTreeMap<crate::play_animation::FastString36, i32>,
 }
@@ -29,6 +31,8 @@ impl TrickDatabase {
         }
         Ok(Self {
             vault: vault.clone(),
+            #[cfg(feature = "skate3-runtime")]
+            use_skate3: false,
             indices: keys
                 .into_iter()
                 .enumerate()
@@ -38,7 +42,10 @@ impl TrickDatabase {
         })
     }
     pub(super) fn animation_id(&self, name: &crate::play_animation::FastString36) -> i32 {
-        self.animation_ids.get(name).copied().unwrap_or(-1)
+        if let Some(&id) = self.animation_ids.get(name) { return id; }
+        #[cfg(feature = "skate3-runtime")]
+        if self.use_skate3 { return super::skate3_catalog::animation_id(name).unwrap_or(-1); }
+        -1
     }
     /// IsGrindGrab82defc10 reads the original trick layout byte148.
     pub(super) fn is_grind_grab(&self, id: i32) -> Result<bool, ScoreError> {
@@ -68,6 +75,12 @@ impl TrickDatabase {
     ) -> Result<(), ScoreError> {
         settings.is_valid = false;
         let Some((&key, &index)) = self.indices.iter().find(|(_, i)| **i as i32 == index) else {
+            #[cfg(feature = "skate3-runtime")]
+            if let Some(source) = usize::try_from(index).ok().filter(|_| self.use_skate3).and_then(|index| index.checked_sub(self.indices.len()))
+                .and_then(|index| super::skate3_catalog::entries().get(index))
+                .filter(|entry| entry.id >= SCORABLES.len() as i32) {
+                super::skate3_catalog::lookup(source.name, index as u32, settings).map_err(ScoreError::NativeCatalog)?;
+            }
             return Ok(());
         };
         self.lookup_key(key, index, settings)
@@ -92,6 +105,12 @@ impl TrickDatabase {
         let key = skate2_formats::attrib::string_hash64(&name.to_ascii_lowercase());
         settings.is_valid = false;
         let Some(&index) = self.indices.get(&key) else {
+            #[cfg(feature = "skate3-runtime")]
+            if let Some((source_index, entry)) = self.use_skate3.then(super::skate3_catalog::entries).into_iter().flatten().enumerate()
+                .find(|(_, entry)| entry.id >= SCORABLES.len() as i32 && entry.name.eq_ignore_ascii_case(name)) {
+                super::skate3_catalog::lookup(entry.name, (self.indices.len() + source_index) as u32, settings)
+                    .map_err(ScoreError::NativeCatalog)?;
+            }
             return Ok(());
         };
         self.lookup_key(key, index, settings)
@@ -154,6 +173,18 @@ impl TrickDatabase {
                 input.gesture = i32::from_be_bytes(b[0..4].try_into().unwrap());
                 input.button = i32::from_be_bytes(b[4..8].try_into().unwrap());
                 // Source does NOT copy connector or SwitchVariant in Set.
+            }
+        }
+        #[cfg(feature = "skate3-runtime")]
+        if self.use_skate3 {
+            if let Some(entry) = super::skate3_catalog::entries().iter()
+                .find(|entry| skate2_formats::attrib::string_hash64(entry.name) == key) {
+                let mut source = TrickSettings::new();
+                if super::skate3_catalog::lookup(entry.name, index, &mut source).map_err(ScoreError::NativeCatalog)? {
+                    settings.base_score = source.base_score;
+                    settings.min_trick_time = source.min_trick_time;
+                    settings.fakie_variant_id = source.fakie_variant_id;
+                }
             }
         }
         Ok(())

@@ -288,12 +288,14 @@ fn leaderboard<'a>(world: &'a mut World, group: &str) -> Option<&'a mut Leaderbo
 }
 
 /// `HUD2.LeaderboardHUDInit(group, menuType, numPlayers, highlighted = local player)`
-/// (`0x82898a10`): only the highlighted row stays highlighted.
+/// (`0x82898a10`): only the highlighted row stays highlighted. Skate 3's (`0x82851018`) takes
+/// whether teams play as its fourth argument instead and highlights the local player's row; the
+/// port has no teams.
 fn leaderboard_init(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let group = get_string(call, 0).unwrap_or_default();
     let menu_type = get_int(call, 1);
     let count = get_int(call, 2);
-    let highlighted = get_int_or(call, 3, world.local_player);
+    let highlighted = if matches!(call.arg(3), Value::Boolean(_)) { world.local_player } else { get_int_or(call, 3, world.local_player) };
     if let Some(data) = leaderboard(world, &group) {
         data.menu_type = menu_type;
         data.dirty = true;
@@ -308,14 +310,25 @@ fn leaderboard_init(_: &mut Lua<World>, world: &mut World, call: &NativeCall) ->
     none()
 }
 
-/// `HUD2.LeaderboardSetTurn(group, player)` (`0x82898d98`).
+/// `HUD2.LeaderboardSetTurn(group, player)` (`0x82898d98`). Skate 3's (`0x828513c8`) adds
+/// `(isTurn = true, exclusive = true)`: exclusive, every row's turn is the player's and
+/// `isTurn`, as Skate 2's; otherwise only the player's row takes `isTurn` (a team's turn).
 fn leaderboard_set_turn(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let group = get_string(call, 0).unwrap_or_default();
     let turn = get_int(call, 1);
+    let is_turn = get_bool_or(call, 2, true);
+    let exclusive = get_bool_or(call, 3, true);
     if let Some(data) = leaderboard(world, &group) {
+        if !exclusive {
+            if let Some(player) = data.player_mut(turn) {
+                player.is_turn = is_turn;
+            }
+            data.non_order_data_dirty = true;
+            return none();
+        }
         for i in 0..data.num_players {
             if let Some(player) = data.player_mut(i) {
-                player.is_turn = i == turn;
+                player.is_turn = i == turn && is_turn;
             }
             data.non_order_data_dirty = true;
         }
@@ -440,7 +453,8 @@ fn show_skate_message(_: &mut Lua<World>, world: &mut World, call: &NativeCall) 
 
 /// `HUD2.ShowModifiedCentralMessage(halId, colour, s1..s4)` (`0x828964c0`):
 /// `CentralHUD::ShowModifiedCentralMessage` (`0x826bc050`), the line under the central
-/// message.
+/// message. Skate 3's (TU3 `0x82850770`) takes a seventh, `stayUp = false`, which Skate 2's
+/// scripts never pass.
 fn show_modified_central_message(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let message = CentralMessage {
         hal_id: get_string(call, 0).unwrap_or_default(),
@@ -448,7 +462,8 @@ fn show_modified_central_message(_: &mut Lua<World>, world: &mut World, call: &N
         args: [get_string_or(call, 2, ""), get_string_or(call, 3, ""), get_string_or(call, 4, ""), get_string_or(call, 5, "")],
         audio_hook: 0,
     };
-    world.output(Output::ModifiedCentralMessage(message));
+    let stay_up = get_bool_or(call, 6, false);
+    world.output(Output::ModifiedCentralMessage(super::hud::ModifiedCentral::Show { message, stay_up }));
     none()
 }
 

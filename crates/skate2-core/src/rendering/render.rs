@@ -231,7 +231,34 @@ fn prepare_mesh_submission(
             material: effect.serialized_name.clone(),
         })?;
     let Some(manifest) = manifests.get(&binding.manifest_name) else {
-        if binding.manifest_name != "default" {
+        // PC port: a linked Skate 3 district's world effects ship no FX manifest: they are compiled
+        // classes (`<name>_effect`, `InitializePrograms`) whose `default` technique draws one pass,
+        // which the presentation's Skate 3 programs draw.
+        if crate::skate3::linked().is_some() && SKATE3_COMPILED_WORLD_EFFECTS.contains(&binding.manifest_name.as_str()) {
+            let class = effect.attribute_class_id.ok_or_else(|| RenderQueueError::UnboundEffect { material: effect.serialized_name.clone() })?;
+            let variant = effect.material_variant_id.ok_or_else(|| RenderQueueError::UnboundEffect { material: effect.serialized_name.clone() })?;
+            let sort_order = u8::try_from(binding.draw_order).map_err(|_| RenderQueueError::InvalidDrawOrder(binding.draw_order))?;
+            let scope_name = format!("{}_default", binding.manifest_name);
+            let sort_key = RenderSortKey {
+                sort_order,
+                effect_scope: scopes.effect_scope(&scope_name),
+                pass_count: 1,
+                material_scope: scopes.material_scope(&scope_name, class, variant),
+            };
+            return Ok(PreparedRenderSubmission::Native(NativeRenderSubmission {
+                sort_key,
+                scene,
+                manifest_name: binding.manifest_name.clone(),
+                technique_name: "default".to_owned(),
+                scope_name,
+                transform: instance.transform,
+                island_count: mesh.geometry.draws.len(),
+            }));
+        }
+        // Any other effect Skate 2 does not ship defers, as the manifest-less `default` effect
+        // does, instead of failing the queue.
+        let skate3_effect = crate::skate3::linked().is_some() && crate::skate3::note_missing_effect(&binding.manifest_name);
+        if binding.manifest_name != "default" && !skate3_effect {
             return Err(RenderQueueError::MissingManifest {
                 manifest: binding.manifest_name.clone(),
                 material: effect.serialized_name.clone(),
@@ -280,6 +307,23 @@ fn prepare_mesh_submission(
         island_count: mesh.geometry.draws.len(),
     }))
 }
+
+/// PC port: Skate 3's world effects with no FX manifest whose compiled class draws one `default`
+/// pass, which the presentation ports (`environment_shading`'s Skate 3 programs and stand-ins).
+const SKATE3_COMPILED_WORLD_EFFECTS: [&str; 12] = [
+    "environmentdiffuse",
+    "decalenvironment_simple",
+    "decalenvironment_simple_tileable",
+    "decalenvironment_tileable",
+    "baseenvironmentreflective",
+    "baseenvironmentreflective_simple",
+    "transparentenvironmentreflective",
+    "decal2environment",
+    "oceanreflection",
+    "wateralpha",
+    "flowingwateralpha",
+    "treeanimate",
+];
 
 fn default_technique(manifest: &ShaderManifest) -> Option<&ShaderTechnique> {
     manifest
@@ -470,6 +514,7 @@ mod tests {
                     }],
                     anti_frustums: Vec::new(),
                     emitter_waypoints: Vec::new(),
+                    visual_indicators: Vec::new(),
                 }],
             }],
         }

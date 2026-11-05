@@ -42,6 +42,8 @@ pub(crate) enum Update1PrefixError<N> {
             crate::input_cvar_runtime::InputCvarError,
         >,
     ),
+    #[cfg(feature = "skate3-runtime")]
+    NativeModeExit(String),
     TeleportNotPublished,
     TeleportPlayerNowPending(crate::skeleton_root_transforms::SkeletonRootMatrix),
     TeleportNowPrefix(TeleportNowPrefixError),
@@ -61,6 +63,8 @@ impl<N: std::fmt::Debug> std::fmt::Display for Update1PrefixError<N> {
             Self::ForeignInput => f.write_str("physical Update1 input differs from the bound Actor input"),
             Self::ForeignManager => f.write_str("physical Update1 offboard manager belongs to another owner"),
             Self::Jumping(error) => f.write_str("physical Update1 OffboardJumpingTest.CalculateResults failed for its retained line batch").and_then(|()| write!(f, ": {error:?}")),
+            #[cfg(feature = "skate3-runtime")]
+            Self::NativeModeExit(error) => write!(f, "native physical ownership return: {error}"),
             Self::TeleportNotPublished => f.write_str("CheckForTeleport assertion: finished teleport lacks Motion.did_teleport"),
             Self::TeleportPlayerNowPending(transform) => write!(f, "CheckForTeleport requires TeleportPlayerNow with the captured transform {transform:?}"),
             Self::TeleportNowPrefix(error) => write!(f, "TeleportPlayerNow prefix: {error:?}"),
@@ -267,6 +271,9 @@ impl PhysicalAssemblyWorld {
                     .map_err(E::TeleportNowPrefix)?;
                 self.try_reset_teleport_conditioners(&owner)
                     .map_err(E::TeleportNowPrefix)?;
+                #[cfg(feature = "skate3-runtime")]
+                crate::skate3_native::physics::player::exit::apply(self, &owner, actor)
+                    .map_err(E::NativeModeExit)?;
                 self.try_transition_pair_ground(
                     board,
                     skeleton,

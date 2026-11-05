@@ -3,6 +3,11 @@
 //! Modules are added only when their behavior has an evidence record. This crate
 //! intentionally contains no emulated CPU or console kernel.
 
+// First: its quiet `eprintln!`/`println!` reach only the modules declared after it.
+#[macro_use]
+#[path = "diagnostics/diagnostics.rs"]
+pub mod diagnostics;
+
 pub mod ui;
 #[path = "online/online.rs"]
 pub mod online;
@@ -10,6 +15,8 @@ pub(crate) mod ai;
 pub mod challenge;
 #[path = "dlc/dlc.rs"]
 pub mod dlc;
+#[path = "skate3/skate3.rs"]
+pub mod skate3;
 pub mod nis;
 #[path = "session/edit_skater_profile.rs"]
 pub mod edit_skater_profile;
@@ -27,10 +34,6 @@ mod edit_skater_session;
 mod character_morph;
 #[path = "living_world/entities/living_world_execution_sort.rs"]
 pub(crate) mod native_execution_sort;
-
-#[macro_use]
-#[path = "diagnostics/diagnostics.rs"]
-pub mod diagnostics;
 
 pub mod host_thread;
 
@@ -652,6 +655,8 @@ mod selected_resident_startup;
 #[path = "session/startup/selected_session_boot_owner.rs"]
 mod selected_session_boot_owner;
 pub use physical_player_phys_out::construct::audio::{SkaterAudioCollision, SkaterAudioPhysOut};
+#[cfg(feature = "skate3-runtime")]
+pub use physical_player_phys_out::conditioners::skate3_only_scorable_audio;
 pub use selected_session_boot_owner::public_facade::AudioVehicle;
 pub use selected_session_boot_owner::public_facade::AudioDynamicObject;
 pub use selected_session_boot_owner::public_facade::{AudioFrame, AudioFrontEnd, AudioSkater, BailVisual, SecurityPresentation};
@@ -761,6 +766,8 @@ pub mod state_graph_controller_route;
 pub mod state_graph_runtime;
 #[path = "physics/collision/static_ground_pool.rs"]
 pub mod static_ground_pool;
+#[path = "physics/skate3_bridge.rs"]
+pub mod skate3_bridge;
 #[path = "streaming/streaming.rs"]
 pub mod streaming;
 #[path = "rendering/proxy_shader_texture_table_draft.rs"]
@@ -868,3 +875,10 @@ mod walking_step_selection;
 mod walking_step_tuning;
 #[path = "rendering/skater/skater_ropa_runtime.rs"]
 mod skater_ropa_runtime;
+
+#[cfg(feature = "skate3-source")]
+#[path = "physics/modes/skate3/mod.rs"]
+mod skate3_native;
+#[cfg(feature = "skate3-runtime")]
+#[path = "animation/runtime/skate3_gesture_playback.rs"]
+pub(crate) mod skate3_gesture_playback;

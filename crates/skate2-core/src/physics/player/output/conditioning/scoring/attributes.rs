@@ -1,4 +1,7 @@
 //! Scoring's original generated attribute access paths. Tuning remains in Vault.
+#[cfg(feature = "skate3-runtime")]
+#[path = "skate3_hom.rs"]
+pub(super) mod skate3_hom;
 use crate::{
     attribute_runtime::{AttributeRuntimeError, AttributeRuntimeInstance},
     physics::PointGraph,
@@ -14,6 +17,8 @@ pub(crate) enum ScoreError {
     Invalid(&'static str),
     Missing(&'static str),
     Poisoned,
+    #[cfg(feature = "skate3-runtime")]
+    NativeCatalog(String),
 }
 impl From<AttributeRuntimeError> for ScoreError {
     fn from(value: AttributeRuntimeError) -> Self {
@@ -27,7 +32,11 @@ impl std::fmt::Display for ScoreError {
 }
 impl std::error::Error for ScoreError {}
 
-pub(super) fn word(instance: &AttributeRuntimeInstance, key: u64) -> Result<u32, ScoreError> {
+pub(super) fn word(instance: &ScoringAttributes, key: u64) -> Result<u32, ScoreError> {
+    #[cfg(feature = "skate3-runtime")]
+    if instance.skate3_enabled() {
+        return instance.source_word(key);
+    }
     let Some(data) = instance.try_get_data(key, 0)? else {
         return Ok(0);
     };
@@ -40,9 +49,14 @@ pub(super) fn word(instance: &AttributeRuntimeInstance, key: u64) -> Result<u32,
     ))
 }
 pub(super) fn layout_word(
-    instance: &AttributeRuntimeInstance,
+    instance: &ScoringAttributes,
     offset: usize,
 ) -> Result<u32, ScoreError> {
+    #[cfg(feature = "skate3-runtime")]
+    if instance.skate3_enabled() && instance.class == skate3_hom::CLASS {
+        return skate3_hom::data().map_err(ScoreError::NativeCatalog)?.bone_word(offset)
+            .ok_or(ScoreError::Invalid("Skate 3 HoM bone layout offset"));
+    }
     let Some(data) = instance.try_cached_layout_field(offset, 4)? else {
         return Ok(0);
     };
@@ -54,7 +68,9 @@ pub(super) fn layout_word(
 }
 
 /// Generated GetAttributePointer(key,0), followed by DefaultDataArea(4).
-pub(super) fn scalar(instance: &AttributeRuntimeInstance, key: u64) -> Result<f32, ScoreError> {
+pub(super) fn scalar(instance: &ScoringAttributes, key: u64) -> Result<f32, ScoreError> {
+    #[cfg(feature = "skate3-runtime")]
+    if instance.skate3_enabled() { return word(instance, key).map(f32::from_bits); }
     let Some(data) = instance.try_get_data(key, 0)? else {
         return Ok(0.0);
     };
@@ -68,10 +84,30 @@ pub(super) fn scalar(instance: &AttributeRuntimeInstance, key: u64) -> Result<f3
 /// PointNegGraphData8 has sixteen metadata bytes, then eight X and eight Y.
 /// Native scoring calls PointGraphEval directly; metadata is not a second curve.
 pub(super) fn curve(
-    instance: &AttributeRuntimeInstance,
+    instance: &ScoringAttributes,
     offset: usize,
     x: f32,
 ) -> Result<f32, ScoreError> {
+    #[cfg(feature = "skate3-runtime")]
+    if instance.skate3_enabled() {
+        if instance.class == skate3_hom::CLASS {
+            return skate3_hom::data().map_err(ScoreError::NativeCatalog)?.curve(offset,x)
+                .ok_or(ScoreError::Invalid("Skate 3 HoM curve offset"));
+        }
+        let data = super::skate3_catalog::data().map_err(ScoreError::NativeCatalog)?;
+        return match instance.class {
+            0x546c_36b6_5603_8e04 => {
+                let offset = u16::try_from(offset).map_err(|_| ScoreError::Invalid("Skate 3 collector curve offset"))?;
+                data.collector.try_curve(offset, x).ok_or(ScoreError::Invalid("Skate 3 collector curve offset"))
+            },
+            0x3492_15e2_e817_703c => match offset {
+                180 => Ok(data.announcement.evaluate(x)),
+                260 => Ok(data.repetition.evaluate(x)),
+                _ => Err(ScoreError::Invalid("Skate 3 general curve offset")),
+            },
+            _ => Err(ScoreError::Invalid("Skate 3 scoring class")),
+        };
+    }
     let Some(data) = instance.try_cached_layout_field(offset + 16, 64)? else {
         return Ok(PointGraph::<8>::default().evaluate(x));
     };
@@ -86,6 +122,58 @@ pub(super) fn curve(
         y: values[8..].try_into().unwrap(),
     }
     .evaluate(x))
+}
+
+/// Per-ScoreModule selection shared by cloned distance/time graph addresses.
+/// The underlying host collection remains untouched for other skaters and modes.
+#[derive(Clone, Debug)]
+pub(super) struct ScoringAttributes {
+    native: AttributeRuntimeInstance,
+    class: u64,
+    enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl ScoringAttributes {
+    pub(super) fn new(native: AttributeRuntimeInstance, class: u64) -> Self {
+        Self { native, class, enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) }
+    }
+    #[cfg(feature = "skate3-runtime")]
+    pub(super) fn select_skate3(&self, enabled: bool) {
+        self.enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(feature = "skate3-runtime")]
+    pub(super) fn skate3_enabled(&self) -> bool { self.enabled.load(std::sync::atomic::Ordering::Relaxed) }
+    #[cfg(feature = "skate3-runtime")]
+    fn source_word(&self, key: u64) -> Result<u32, ScoreError> {
+        // Parse authored scalar words once, not through JSON/name lookups
+        // during every physics tick. Curve samples are likewise retained by ScoringData.
+        type Words = std::collections::BTreeMap<(u64, u64), u32>;
+        static WORDS: std::sync::OnceLock<Words> = std::sync::OnceLock::new();
+        let words = crate::skate3_native::physics::player::linked_once(&WORDS, || {
+            let data = crate::skate3_native::physics::player::stock_collections()?;
+            let mut words = Words::new();
+            for (class, name) in [(0x546c_36b6_5603_8e04, "Hash_546C36B656038E04"),
+                (0x3492_15e2_e817_703c, "Hash_349215E2E817703C"),
+                (skate3_hom::CLASS, "Hash_9E4C471BC6EAB615")] {
+                let row = data.entries().iter().find(|r| r.class_name == name && r.key == "default")
+                    .ok_or_else(|| format!("Missing embedded scoring default {name}"))?;
+                for (field, value) in &row.fields {
+                    if value.data.len() != 8 { continue; }
+                    let field_key = if let Some(hash) = field.strip_prefix("Hash_") {
+                        u64::from_str_radix(hash, 16).map_err(|e| e.to_string())?
+                    } else { skate2_formats::attrib::string_hash64(field) };
+                    let value = data.words::<1>(name, "default", field)?[0];
+                    words.insert((class, field_key), value);
+                }
+            }
+            Ok(words)
+        }).map_err(ScoreError::NativeCatalog)?;
+        words.get(&(self.class, key)).copied().ok_or_else(||
+            ScoreError::NativeCatalog(format!("Missing Skate 3 scoring field {:016X}/{key:016X}", self.class)))
+    }
+}
+impl std::ops::Deref for ScoringAttributes {
+    type Target = AttributeRuntimeInstance;
+    fn deref(&self) -> &Self::Target { &self.native }
 }
 
 // Raw lis/ori/insrdi operands:82df25f0/2640,82dedd68/ddb8,82dea488/668.

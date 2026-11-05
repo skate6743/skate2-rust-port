@@ -42,6 +42,10 @@ pub struct SkaterAudioPhysOut {
     /// Left leg, right leg, left arm, right arm.
     pub average_limb_speed: [f32; 4],
     pub is_wipeout_over: bool,
+    /// Skate 3 physics: `PhysOut_State` +0x50 (a darkcatch), TU3 `FillSkaterData`'s SkaterData
+    /// +0x98 bit 0x20; false in Skate 2 physics.
+    pub skate3_dark_catch: bool,
+    pub skate3_physics: bool,
     pub is_left_foot_on_deck: bool,
     pub is_right_foot_on_deck: bool,
     pub is_grabbing_left: bool,
@@ -108,6 +112,9 @@ pub struct SkaterAudioPhysOut {
     pub banked_point_change_this_frame: i32,
     pub audio_banked_point_change: i32,
     pub raw_scorable_id: i32,
+    /// Skate 3 physics: (AudioTrickType, AudioTrickFinishType, AudioIsTrickWithScrape) of the
+    /// scorable's linked Skate 3 record, in place of the Skate 2 Vault lookup.
+    pub skate3_scorable_audio: Option<(i32, i32, bool)>,
     pub left_foot_surface_id: u32,
     pub right_foot_surface_id: u32,
     pub is_grabbing_object: bool,
@@ -254,6 +261,8 @@ impl PhysicalPlayerPhysOut {
             is_generally_pushing: state.is_generally_pushing,
             is_generally_pushing_right_foot: state.is_generally_pushing_right_foot,
             is_wiping_out: state.is_wiping_out,
+            skate3_dark_catch: state.skate3_dark_catch,
+            skate3_physics: state.skate3_physics,
             is_manual: state.is_manual,
             is_reverting: state.is_reverting,
             turn: ground.turn,
@@ -289,6 +298,7 @@ impl PhysicalPlayerPhysOut {
             banked_point_change_this_frame: scoring.banked_point_change_this_frame,
             audio_banked_point_change: scoring.audio_banked_point_change,
             raw_scorable_id: scoring.raw_scorable_id,
+            skate3_scorable_audio: scoring.skate3_scorable_audio,
             left_foot_surface_id: offboard.left_foot_surface_id,
             right_foot_surface_id: offboard.right_foot_surface_id,
             is_grabbing_object: offboard.is_grabbing_object,

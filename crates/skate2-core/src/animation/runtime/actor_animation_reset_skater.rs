@@ -74,6 +74,8 @@ impl<K, W> ActorAnimationConstruction<K, W> {
         {
             return Err(E::Missing("initialized SkaterAnim/ChannelAnimatable"));
         }
+        #[cfg(feature="skate3-runtime")]
+        if let Some(playback)=&mut self.pc_gesture_playback {playback.reset();}
         let player = self.player.as_mut().expect("checked player");
         player.relative_stance = 0; // 82c8b6c0, SkaterAnim+0xe60
         self.before_sprint

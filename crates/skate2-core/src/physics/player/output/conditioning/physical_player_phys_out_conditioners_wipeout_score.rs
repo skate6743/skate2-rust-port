@@ -9,16 +9,17 @@ use super::{
     collector_base::RotationTracker,
 };
 use crate::attribute_runtime::{
-    AttributeRuntimeError, AttributeRuntimeInstance, AttributeRuntimeVault,
+    AttributeRuntimeError, AttributeRuntimeVault,
 };
+use super::scoring_attributes::ScoringAttributes;
 use std::sync::Arc;
 
-fn attributes(vault: &Arc<AttributeRuntimeVault>) -> AttributeRuntimeInstance {
+fn attributes(vault: &Arc<AttributeRuntimeVault>) -> ScoringAttributes {
     // Raw82deda2c..44, default key at82df5624..40.
-    vault.instance(0x9e4c_471b_c6ea_b615, 0xd7ed_bd36_2d7d_2152)
+    ScoringAttributes::new(vault.instance(0x9e4c_471b_c6ea_b615, 0xd7ed_bd36_2d7d_2152), 0x9e4c_471b_c6ea_b615)
 }
 pub(super) struct EntityScorer {
-    pub(super) attributes: AttributeRuntimeInstance,
+    pub(super) attributes: ScoringAttributes,
     pub(super) collided_entities: [EntityData; 8],
     pub(super) count: u32,
     pub(super) tracker_score: u32,
@@ -89,13 +90,15 @@ pub(super) struct BoneInfo {
     pub(super) damage_amount: f32,
     pub(super) contact_surface_id: u32,
     pub(super) is_airborne: bool,
+    /// Skate 3 physics: TU3 BoneInfo+44, the decaying running damage total.
+    pub(super) running_damage: f32,
 }
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent native wipeout scoring flags"
 )]
 pub(super) struct WipeoutScorer {
-    pub(super) attributes: AttributeRuntimeInstance,
+    pub(super) attributes: ScoringAttributes,
     pub(super) pedestrian: Option<Box<EntityScorer>>,
     pub(super) vehicle: Option<Box<EntityScorer>>,
     pub(super) dmo: Retained<Box<DmoScorer>>,
@@ -135,6 +138,8 @@ pub(super) struct WipeoutScorer {
     pub(super) is_airborne: bool,
     pub(super) body_tweak_valid: bool,
     pub(super) just_performed_body_tweak: bool,
+    #[cfg(feature = "skate3-runtime")]
+    pub(super) skate3: super::scoring_wipeout_skate3::Skate3HoM,
 }
 impl WipeoutScorer {
     /// Retain before the three source child allocations. NULL outcomes publish
@@ -171,6 +176,7 @@ impl WipeoutScorer {
                 damage_amount: 0.0,
                 contact_surface_id: 0,
                 is_airborne: false,
+                running_damage: 0.0,
             }),
             overall_wipeout_duration_frames: 0,
             moving_wipeout_duration_frames: 0,
@@ -199,6 +205,8 @@ impl WipeoutScorer {
             is_airborne: false,
             body_tweak_valid: false,
             just_performed_body_tweak: false,
+            #[cfg(feature = "skate3-runtime")]
+            skate3: Default::default(),
         }
     }
 }

@@ -83,7 +83,7 @@ fn enter_online_nis_using_definition(_: &mut Lua<World>, world: &mut World, call
     let transition = if (3..=4).contains(&get_int_or(call, 3, 0)) { 4 } else { 0 };
     let hold_camera = get_bool_or(call, 4, false);
     let skip_enabled = get_bool_or(call, 5, true);
-    if scene.is_empty() {
+    if scene.is_empty() || super::natives::is_skate2_scene_at_skate3_spot(world, &scene) {
         world.send(Event::NisChallengeNotify { notification: 1 });
         return Ok(Vec::new());
     }

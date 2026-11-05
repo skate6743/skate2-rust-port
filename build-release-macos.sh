@@ -86,7 +86,7 @@ if [ "$programs" != server ]; then
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
   <key>LSSupportsGameMode</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSHumanReadableCopyright</key><string>MIT-licensed fan project; Skate and Skate 2 are trademarks of Electronic Arts Inc.</string>
+  <key>NSHumanReadableCopyright</key><string>GPL-3.0 fan project; Skate and Skate 2 are trademarks of Electronic Arts Inc.</string>
 </dict></plist>
 PLIST
     # Ad-hoc signatures, which is all an unsigned build can have: they keep macOS from treating

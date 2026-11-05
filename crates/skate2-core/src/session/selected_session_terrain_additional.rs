@@ -57,6 +57,13 @@ impl AdditionalWorld {
     pub(super) fn selectable(&self) -> Option<&CollectionSpace> {
         self.space.as_deref().filter(|_| self.phase == Phase::Loaded)
     }
+
+    /// PC port: a linked Skate 3 district stands where San Vanelona does (`crate::skate3`); once
+    /// it is in, the focus selections take from it alone, and BAM's collections leave as any
+    /// departing collection does.
+    pub(super) fn exclusive(&self) -> Option<&CollectionSpace> {
+        self.selectable().filter(|_| crate::skate3::is_district_world(&self.file))
+    }
 }
 
 impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
@@ -83,6 +90,12 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
     /// The additional world held, loading, loaded or leaving.
     pub(crate) fn additional_world(&self) -> Option<&str> {
         self.additional.as_ref().map(|world| world.file.as_str())
+    }
+
+    /// Whether the held additional world is a Skate 3 district that is in, standing in San
+    /// Vanelona's place.
+    pub(crate) fn exclusive_world_loaded(&self) -> bool {
+        self.additional.as_ref().and_then(AdditionalWorld::exclusive).is_some()
     }
 
     /// Whether the held additional world is in: its stream loaded and selectable.

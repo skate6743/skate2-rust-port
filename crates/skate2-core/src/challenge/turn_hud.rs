@@ -23,8 +23,8 @@ pub enum TurnHudView {
     None,
     /// Each with `PlayerStance_IsRegular` (`0x826b4bd8`): the local skater's stance. The
     /// leaderboard's `online` is `Mission.GetIsOnlineMission` (`0x826058b0`):
-    /// `sGameInfo.isNetworkGame`.
-    Leaderboard { data: LeaderboardHud, stance_regular: bool, online: bool },
+    /// `sGameInfo.isNetworkGame`. `skate3_letters`: see [`TurnHudView::ThrowDown`].
+    Leaderboard { data: LeaderboardHud, stance_regular: bool, online: bool, skate3_letters: bool },
     Abd { data: AbdHud, stance_regular: bool },
     Timer(TimerText),
     /// `CountdownHUD::mCountdownVal` (`Countdown_GetCountdownTime` `0x826b8bd8`) and
@@ -32,7 +32,9 @@ pub enum TurnHudView {
     Countdown { value: i32, has_audio: bool },
     /// `OnlineVotingHUD`'s and `ThrowDownMessageHUD`'s screens read no data.
     Voting,
-    ThrowDown,
+    /// PC port: `skate3_letters`, the main challenge is a linked Skate 3 data folder's game that
+    /// runs Skate 3's own state graph, whose letters are Skate 3's own movies'.
+    ThrowDown { skate3_letters: bool },
     Dpo(DpoView),
     Distance(DistanceText),
 }
@@ -47,6 +49,10 @@ pub struct DpoView {
     pub leaderboard_players: i32,
     /// `GameCmdTranslator::sMethod_GetActiveChallengeIconName` (`0x8260b158`).
     pub challenge_icon: String,
+    /// PC port: the main challenge is a linked Skate 3 data folder's game that runs Skate 3's
+    /// own state graph. Skate 3's `dpo` movie has no icon (its `DPO_GetParams` 0x8265d420 gives
+    /// none), and neither game ships a 1-Up icon.
+    pub skate3: bool,
 }
 
 /// `TimerHUD::mTimeBuffer`'s minutes and seconds (`FormatTime(buffer, 0, minutes, seconds,
@@ -237,6 +243,14 @@ fn active_challenge_icon_name(world: &World) -> String {
     world.db.layout_text(FE_MAP_ICONS, collection, 0).unwrap_or_default().to_owned()
 }
 
+/// PC port: whether the main challenge is a linked Skate 3 data folder's game that runs Skate 3's
+/// own state graph (`crate::skate3`), a 1-Up whose letters the HUD shows as Skate 3 does.
+fn skate3_letters(world: &World) -> bool {
+    let Some(main) = world.activities.main else { return false };
+    let key = world.activities.activities[main].key;
+    crate::skate3::linked().is_some_and(|data| data.runs_own_graph(key))
+}
+
 /// `PlayersBackEnd::IsPlayerStanceRegular` of `SkaterManager::GetLocalIndex`.
 fn local_stance_regular(world: &World) -> bool {
     world.players.as_deref().is_none_or(|players| players.is_stance_regular(world.local_player))
@@ -247,7 +261,9 @@ fn set_screen_state(world: &mut World, kind: Kind, state: i32) {
         Kind::Leaderboard => {
             let stance_regular = local_stance_regular(world);
             let online = world.online.is_some();
-            leaderboard_data(world).map_or(TurnHudView::None, |d| TurnHudView::Leaderboard { data: d.clone(), stance_regular, online })
+            let skate3_letters = skate3_letters(world);
+            leaderboard_data(world)
+                .map_or(TurnHudView::None, |d| TurnHudView::Leaderboard { data: d.clone(), stance_regular, online, skate3_letters })
         }
         Kind::Abd => {
             let stance_regular = local_stance_regular(world);
@@ -257,12 +273,13 @@ fn set_screen_state(world: &mut World, kind: Kind, state: i32) {
         Kind::BigBlackTimer=>TurnHudView::Timer(world.turn_huds.big_black_timer_text),
         Kind::Countdown => TurnHudView::Countdown { value: world.turn_huds.countdown_value, has_audio: countdown_has_audio(world) },
         Kind::Voting => TurnHudView::Voting,
-        Kind::ThrowDown => TurnHudView::ThrowDown,
+        Kind::ThrowDown => TurnHudView::ThrowDown { skate3_letters: skate3_letters(world) },
         Kind::Dpo => {
             let leaderboard_players = leaderboard_data(world).map_or(0, |d| d.num_players);
             let challenge_icon = active_challenge_icon_name(world);
+            let skate3 = skate3_letters(world);
             dpo_data(world).map_or(TurnHudView::None, |d| {
-                TurnHudView::Dpo(DpoView { data: d.clone(), leaderboard_players, challenge_icon })
+                TurnHudView::Dpo(DpoView { data: d.clone(), leaderboard_players, challenge_icon, skate3 })
             })
         }
         Kind::Distance => TurnHudView::Distance(world.turn_huds.distance_text),

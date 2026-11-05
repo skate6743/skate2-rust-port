@@ -77,6 +77,7 @@ pub(crate) enum SelectedSessionMarkerError {
     BreadcrumbLock,
     BreadcrumbOwner(ActorBreadCrumbOwnerError),
     Collision(BreadCrumbCollisionGateError<ReckoningHostNumericError>),
+    Skate3Breadcrumbs(crate::actor_construction::breadcrumbs::LiveBreadCrumbSelectionError),
     /// `GetLocalActor` returns an admitted ghost first; none is ported.
     PendingGhost,
     Observers(crate::skater_manager_local_identity::observers::SkaterObserverError),
@@ -317,7 +318,8 @@ impl<C> SessionMarkerRules for SelectedSessionMarkerSources<'_, C> {
             .terrain
             .ground_pool_for(self.world)
             .map_err(E::Terrain)?;
-        let breadcrumbs = self.local_actor()?
+        let actor = self.local_actor()?;
+        let breadcrumbs = actor
             .retained_breadcrumbs()
             .map_err(E::Breadcrumbs)?
             .ok_or(E::MissingBreadcrumbs)?;
@@ -327,6 +329,16 @@ impl<C> SessionMarkerRules for SelectedSessionMarkerSources<'_, C> {
             .constructor_owners
             .try_verify_world(self.world)
             .map_err(E::BreadcrumbOwner)?;
+        // Skate 3 physics: TU3's IsPositionOk 82BFAFF0 (its ground test also takes category 8).
+        #[cfg(feature = "skate3-runtime")]
+        {
+            let mut numeric = HostCollisionLineNumeric;
+            let mut source = crate::actor_construction::breadcrumbs::LiveBreadCrumbSelectionSource::new(
+                &breadcrumbs, &actor, self.world, &mut world, ground, self.cvars, &mut numeric);
+            if let Some(ok) = source.try_skate3_position_ok(marker).map_err(E::Skate3Breadcrumbs)? {
+                return Ok(ok);
+            }
+        }
         breadcrumbs
             .try_collision_constraints(
                 marker,

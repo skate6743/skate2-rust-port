@@ -495,6 +495,9 @@ where
             for (active_ordinal, occurrence) in occurrences {
                 let joint = occurrence.joint();
                 let body_b = occurrence.body_b();
+                if phase.is_externally_driven(body_b) || phase.is_externally_driven(occurrence.body_a()) {
+                    continue;
+                }
                 observe(
                     SimulationJointPreparationReadKind::StateB,
                     active_ordinal,

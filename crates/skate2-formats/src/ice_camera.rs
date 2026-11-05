@@ -15,7 +15,10 @@ pub mod editor;
 
 type Result<T> = std::result::Result<T, String>;
 
-pub const ELEMENT_COUNT: usize = 146;
+/// Skate 2's elements (`ICE::RegisterElements` `0x82a4e8b8`).
+const SKATE2_ELEMENT_COUNT: usize = 146;
+/// Skate 2's elements and, after them, Skate 3's LENS_USE_DYNAMIC.
+pub const ELEMENT_COUNT: usize = SKATE2_ELEMENT_COUNT + 1;
 const CHANNEL_COUNT: usize = 37;
 const ASSEMBLY_CHANNEL: usize = 35;
 /// The recorded-shake context id.
@@ -95,6 +98,8 @@ pub mod element {
     pub const TAKE_START: usize = 143;
     pub const TAKE_NUMBER: usize = 144;
     pub const CONTAINS_SUBTAKE: usize = 145;
+    /// PC port: Skate 3's LENS_USE_DYNAMIC (TU3 id 102), held after Skate 2's elements.
+    pub const LENS_USE_DYNAMIC: usize = 146;
 }
 
 /// `ICELITEElementDesc`: channel, key (false) or interval (true) element,
@@ -269,7 +274,43 @@ const ELEMENTS: [Element; ELEMENT_COUNT] = [
     el(143, 35, true, 3, 16, 0.0, 0.0, 1.0, 65535, 65535), // TAKE_START
     el(144, 35, true, 1, 6, 0.0, 0.0, 63.0, 65535, 65535), // TAKE_NUMBER
     el(145, 35, true, 1, 1, 0.0, 0.0, 1.0, 65535, 65535), // CONTAINS_SUBTAKE
+    el(146, 1, true, 1, 1, 0.0, 0.0, 1.0, 65535, 65535), // LENS_USE_DYNAMIC (Skate 3)
 ];
+
+/// Skate 3's two elements Skate 2 lacks (TU3 `ICE::RegisterElements` `0x82903840`):
+/// LENS_USE_DYNAMIC and RAWFOCUS_RELATIVE.
+const SKATE3_LENS_USE_DYNAMIC: usize = 102;
+const SKATE3_RAWFOCUS_RELATIVE: usize = 106;
+const SKATE3_ELEMENT_COUNT: usize = SKATE2_ELEMENT_COUNT + 2;
+
+/// A Skate 2 element id as Skate 3 numbers it.
+const fn skate3_id(id: usize) -> usize {
+    if id == NONE {
+        NONE
+    } else if id >= SKATE3_RAWFOCUS_RELATIVE - 1 {
+        id + 2
+    } else if id >= SKATE3_LENS_USE_DYNAMIC {
+        id + 1
+    } else {
+        id
+    }
+}
+
+/// TU3 `ICE::RegisterElements` (`0x82903840`): Skate 2's elements with the same channels, data
+/// and ranges, renumbered around Skate 3's two additions (both channel interval flags).
+const SKATE3_ELEMENTS: [Element; SKATE3_ELEMENT_COUNT] = {
+    let mut out = [el(0, 0, false, 0, 0, 0.0, 0.0, 0.0, NONE, NONE); SKATE3_ELEMENT_COUNT];
+    let mut i = 0;
+    while i < SKATE2_ELEMENT_COUNT {
+        let e = ELEMENTS[i];
+        let id = skate3_id(i);
+        out[id] = Element { id, cubic: skate3_id(e.cubic), tangent: skate3_id(e.tangent), ..e };
+        i += 1;
+    }
+    out[SKATE3_LENS_USE_DYNAMIC] = el(SKATE3_LENS_USE_DYNAMIC, 1, true, 1, 1, 0.0, 0.0, 1.0, NONE, NONE);
+    out[SKATE3_RAWFOCUS_RELATIVE] = el(SKATE3_RAWFOCUS_RELATIVE, 3, true, 1, 1, 0.0, 0.0, 1.0, NONE, NONE);
+    out
+};
 
 /// `ICE_SMALL_FLOAT`.
 fn small() -> f32 {
@@ -407,6 +448,16 @@ pub struct CameraSet {
 
 impl CameraSet {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
+        Self::parse_with(bytes, Take::parse)
+    }
+
+    /// PC port: Skate 3's `ice_000.bin`, its takes read with Skate 3's elements and held as
+    /// Skate 2's.
+    pub fn parse_skate3(bytes: &[u8]) -> Result<Self> {
+        Self::parse_with(bytes, Take::parse_skate3)
+    }
+
+    fn parse_with(bytes: &[u8], parse_take: fn(&[u8]) -> Result<(Take, usize)>) -> Result<Self> {
         let (id, body, end) = chunk(bytes, 0)?;
         if id != 0x8000_0000 || end != bytes.len() {
             return Err("invalid ICE root".into());
@@ -428,7 +479,7 @@ impl CameraSet {
                 let mut takes = Vec::new();
                 let mut at = 8;
                 for _ in 0..count {
-                    let (take, size) = Take::parse(&group[at..])?;
+                    let (take, size) = parse_take(&group[at..])?;
                     at += size;
                     takes.push(take);
                 }
@@ -550,7 +601,19 @@ impl CameraSet {
 
 impl Take {
     fn parse(bytes: &[u8]) -> Result<(Self, usize)> {
-        Self::parse_schema(bytes, &ELEMENTS, CHANNEL_COUNT)
+        Self::parse_schema(bytes, &ELEMENTS[..SKATE2_ELEMENT_COUNT], CHANNEL_COUNT)
+    }
+
+    /// A Skate 3 take with Skate 2's element ids and LENS_USE_DYNAMIC after them.
+    /// RAWFOCUS_RELATIVE is dropped: only TU3's raw focus channel (`0x826765c0`) reads it, and
+    /// the port plays no raw focus.
+    fn parse_skate3(bytes: &[u8]) -> Result<(Self, usize)> {
+        let (mut take, size) = Self::parse_schema(bytes, &SKATE3_ELEMENTS, CHANNEL_COUNT)?;
+        take.data.remove(SKATE3_RAWFOCUS_RELATIVE);
+        let dynamic = take.data.remove(SKATE3_LENS_USE_DYNAMIC);
+        take.data.push(dynamic);
+        take.schema = &ELEMENTS;
+        Ok((take, size))
     }
 
     fn parse_schema(bytes: &[u8], schema: &'static [Element], channel_count: usize) -> Result<(Self, usize)> {
@@ -614,7 +677,7 @@ impl Take {
     /// `ICETake::GetValue` (`0x82a38c88`): the default when the element's
     /// channel has no values.
     fn value(&self, id: usize, index: usize) -> f64 {
-        self.data[id].get(index).copied().unwrap_or(f64::from(self.schema[id].default))
+        self.data.get(id).and_then(|values| values.get(index)).copied().unwrap_or(f64::from(ELEMENTS[id].default))
     }
 
     /// `ICETake::GetValueFloat` (`0x82a38d80`).
@@ -626,7 +689,7 @@ impl Take {
     /// and 4) rounds half up, an unsigned one reads as it is.
     fn value_int(&self, id: usize, index: usize) -> i64 {
         let v = self.value(id, index);
-        if matches!(self.schema[id].kind, 3 | 4) { round_int(v as f32) as i64 } else { v as i64 }
+        if matches!(ELEMENTS[id].kind, 3 | 4) { round_int(v as f32) as i64 } else { v as i64 }
     }
 
     /// `SceneCamera::GetOverlaysFromTake` (`0x82861dd8`): each channel 7
@@ -1554,7 +1617,20 @@ fn camera_matrix(
     // (ICEChannelManager::UpdateFrameEnd) and sets the field of view again:
     // the auxiliary lens under LENS_OVERRIDE, clamped to the lens range.
     let lens_length = if i(element::LENS_OVERRIDE) != 0 { v(element::LENS_LENGTH_AUX) } else { v(element::LENS_LENGTH) };
-    Ok((result, fov_degrees(lens_fov(clamp(lens_length, lens.low, lens.high)))))
+    // Skate 3 (TU3 0x82676d98): under LENS_USE_DYNAMIC the angle is 2 atan(1 / |eye - look|),
+    // both points taken to the world in their spaces with no avatar or player-space options
+    // (0x82676778). TU3 then adds the photo customizer's field-of-view offset
+    // (ScenePhotoCustomizer +0xC), zero outside its photo editor.
+    let fov = if i(element::LENS_USE_DYNAMIC) != 0 {
+        let plain = PlayerSpace::default();
+        let eye = to_world([v(0), v(1), v(2)], i(element::SPACE_EYE), 0, spaces, mover, plain)?;
+        let look = to_world([v(3), v(4), v(5)], i(element::SPACE_LOOK), 0, spaces, mover, plain)?;
+        let [dx, dy, dz] = [eye[0] - look[0], eye[1] - look[1], eye[2] - look[2]];
+        math::atan((dx * dx + (dz * dz + dy * dy)).sqrt().abs(), 1.0).wrapping_mul(2) & 0xfffe
+    } else {
+        lens_fov(clamp(lens_length, lens.low, lens.high))
+    };
+    Ok((result, fov_degrees(fov)))
 }
 
 /// `ICELITE::Clamp` (`0x82a53950`).
@@ -1582,6 +1658,42 @@ mod tests {
     fn element_table_is_in_id_order() {
         assert!(ELEMENTS.iter().enumerate().all(|(i, e)| e.id == i));
         assert!(ELEMENTS.iter().all(|e| e.cubic == NONE || ELEMENTS[e.cubic].channel == e.channel));
+    }
+
+    #[test]
+    fn skate3_elements_renumber_skate2s_around_its_two_flags() {
+        assert!(SKATE3_ELEMENTS.iter().enumerate().all(|(i, e)| e.id == i));
+        assert!(SKATE3_ELEMENTS.iter().all(|e| e.cubic == NONE || SKATE3_ELEMENTS[e.cubic].channel == e.channel));
+        // TU3: FOCAL_DISTANCE's cubic is CUBIC_FOCUS (103), SHAKE_TYPE 107, CONTAINS_SUBTAKE 147.
+        assert_eq!(SKATE3_ELEMENTS[15].cubic, 103);
+        assert_eq!(SKATE3_ELEMENTS[107].bits, ELEMENTS[element::SHAKE_TYPE].bits);
+        assert_eq!(SKATE3_ELEMENTS[147].channel, ELEMENTS[element::CONTAINS_SUBTAKE].channel);
+        assert_eq!((SKATE3_ELEMENTS[102].channel, SKATE3_ELEMENTS[106].channel), (1, 3));
+        assert_eq!(ELEMENTS[element::LENS_USE_DYNAMIC].channel, SKATE3_ELEMENTS[102].channel);
+    }
+
+    #[test]
+    #[ignore = "requires Skate 3's data via SKATE3_ROOT"]
+    fn skate3_cameras_parse_with_skate3s_elements() {
+        use crate::mount::{MountSet, MountedBig};
+        let root = std::path::PathBuf::from(std::env::var("SKATE3_ROOT").expect("SKATE3_ROOT"));
+        let mut mounts = MountSet::new();
+        mounts.push(MountedBig::open(root.join("data").join("big").join("scene.big"), false).unwrap());
+        let bytes = mounts.read_path("data\\scene\\ice_000.bin").unwrap();
+        assert!(CameraSet::parse(&bytes).is_err());
+        let set = CameraSet::parse_skate3(&bytes).unwrap();
+        let takes: Vec<&Take> = set.groups.values().flatten().collect();
+        assert!(takes.iter().all(|t| t.data.len() == ELEMENT_COUNT));
+        let dynamic = takes.iter().filter(|t| t.data[element::LENS_USE_DYNAMIC].iter().any(|&v| v != 0.0)).count();
+        eprintln!("{} groups, {} takes, {dynamic} with a dynamic lens", set.groups.len(), takes.len());
+        // ots_univ_03_intro (a spot intro, context index 9) opens blue and desaturated under its
+        // tint and saturation overrides, then plays without them.
+        let hash = b"ots_univ_03_intro".iter().fold(u32::MAX, |h, &b| h.wrapping_mul(33).wrapping_add(u32::from(b)));
+        let take = &set.groups[&(0x8000_0003 + 9, hash)][0];
+        let at = |id, t| take.sample(id, t).unwrap();
+        assert_eq!((at(element::TINT_OVERRIDE, 1.0), at(element::SATURATE_OVERRIDE, 1.0)), (1.0, 1.0));
+        assert!(at(element::TINT_NEAR_COLOR_X + 2, 1.0) > at(element::TINT_NEAR_COLOR_X, 1.0));
+        assert_eq!(at(element::TINT_OVERRIDE, 5.0), 0.0);
     }
 
     #[test]

@@ -197,6 +197,17 @@ impl Row {
 /// `FrontEndManager::SetScreenState`: the movie's `SetState` refreshes one row, or with 999
 /// `UpdateSelection`.
 pub const SELECTION_STATE: u32 = 999;
+/// PC port: the Area row's refresh, which no native state numbers.
+pub const AREA_STATE: u32 = 1000;
+
+/// PC port: a choice of the Area row a linked Skate 3 data folder adds above the native rows
+/// (`crate::skate3`): San Vanelona's locations, or a district's teleports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Area {
+    /// Literal text (`#`).
+    pub label: String,
+    pub locations: Vec<Location>,
+}
 
 /// `CommonBackEnd::sGameInfo`'s free-skate settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -247,11 +258,20 @@ pub struct Snapshot {
     pub security: bool,
     /// The location image the secondary quad shows (`mbSecondaryQuadActive`).
     pub image: Option<String>,
+    /// PC port: the Area row's choice, when the row is shown, and whether it is selected (the
+    /// native rows' `selection` is then not).
+    pub area: Option<String>,
+    pub area_selected: bool,
 }
 
 pub struct Controller {
     characters: Vec<Character>,
     locations: Vec<Location>,
+    /// PC port: the Area row's choices (none without a linked Skate 3 data folder), the chosen
+    /// one, and whether the row is selected.
+    areas: Vec<Area>,
+    area: usize,
+    area_selected: bool,
     /// `mFreeSkateOption`.
     row: Row,
     /// `mSelectedCharacterIndex`.
@@ -284,6 +304,9 @@ impl Controller {
         Self {
             characters,
             locations,
+            areas: Vec::new(),
+            area: 0,
+            area_selected: false,
             row: Row::Character,
             character: 0,
             location: 0,
@@ -297,6 +320,33 @@ impl Controller {
             screen_states: Vec::new(),
             sounds: Vec::new(),
         }
+    }
+
+    /// PC port: the Area row with these choices, the first one's locations shown; with fewer
+    /// than two there is no row.
+    #[must_use]
+    pub fn with_areas(mut self, areas: Vec<Area>) -> Self {
+        if areas.len() < 2 {
+            return self;
+        }
+        self.locations = areas[0].locations.clone();
+        self.location = 0;
+        self.areas = areas;
+        self.area = 0;
+        self
+    }
+
+    /// PC port: the next or previous Area, its locations from the first, which the Location row
+    /// shows (its image requested again as a location step does).
+    fn step_area(&mut self, forward: bool) {
+        let count = self.areas.len().max(1);
+        self.area = if forward { (self.area + 1) % count } else { (self.area + count - 1) % count };
+        self.locations = self.areas.get(self.area).map(|area| area.locations.clone()).unwrap_or_default();
+        self.location = 0;
+        self.request_image();
+        self.image = None;
+        // The Location row's refresh plays the step's sound, as a location step's does.
+        self.screen_states.extend([AREA_STATE, Row::Location as u32]);
     }
 
     pub fn take_sounds(&mut self) -> Vec<&'static str> {
@@ -321,6 +371,8 @@ impl Controller {
             pedestrians: bars(self.settings.pedestrians),
             security: self.settings.security,
             image: self.image.clone(),
+            area: self.areas.get(self.area).map(|area| area.label.clone()),
+            area_selected: self.area_selected,
         }
     }
 
@@ -400,17 +452,37 @@ impl Controller {
         if self.blocked {
             return Action::None;
         }
+        // PC port: the Area row, when shown, stands above Character in the wrap.
+        let areas = !self.areas.is_empty();
         if input.up {
             self.sounds.push("FE_SOUND_CORE_NAV_UP");
-            self.row = Row::ALL[(self.row as usize + 4) % 5];
+            if self.area_selected {
+                self.area_selected = false;
+                self.row = Row::Security;
+            } else if areas && self.row == Row::Character {
+                self.area_selected = true;
+            } else {
+                self.row = Row::ALL[(self.row as usize + 4) % 5];
+            }
             self.screen_states.push(SELECTION_STATE);
         }
         if input.down {
             self.sounds.push("FE_SOUND_CORE_NAV_DOWN");
-            self.row = Row::ALL[(self.row as usize + 1) % 5];
+            if self.area_selected {
+                self.area_selected = false;
+                self.row = Row::Character;
+            } else if areas && self.row == Row::Security {
+                self.area_selected = true;
+            } else {
+                self.row = Row::ALL[(self.row as usize + 1) % 5];
+            }
             self.screen_states.push(SELECTION_STATE);
         }
         for more in [input.left.then_some(false), input.right.then_some(true)].into_iter().flatten() {
+            if self.area_selected {
+                self.step_area(more);
+                continue;
+            }
             match self.row {
                 Row::Character => {
                     if self.wait_on_enter {
@@ -509,6 +581,33 @@ mod tests {
         let Action::EnterGame(game) = c.update(PauseMenuInput { select: true, ..Default::default() }) else { panic!() };
         assert_eq!(game.settings.traffic, 0.0);
         assert_eq!(game.location.spawn, "S1");
+    }
+
+    #[test]
+    fn the_area_row_stands_above_character_and_swaps_the_locations() {
+        let location = |key, label: &str| Location { key, spawn: format!("S{key}"), label: label.into(), image: format!("img{key}") };
+        let areas = vec![
+            Area { label: "#San Vanelona".into(), locations: vec![location(1, "A")] },
+            Area { label: "#University District".into(), locations: vec![location(7, "U1"), location(8, "U2")] },
+        ];
+        let mut c = controller().with_areas(areas);
+        c.intro_done();
+        assert_eq!(c.snapshot().area.as_deref(), Some("#San Vanelona"));
+        c.update(PauseMenuInput { up: true, ..Default::default() });
+        assert!(c.snapshot().area_selected);
+        c.update(PauseMenuInput { right: true, ..Default::default() });
+        assert_eq!(c.snapshot().area.as_deref(), Some("#University District"));
+        assert_eq!(c.snapshot().location, "U1");
+        c.update(PauseMenuInput { up: true, ..Default::default() });
+        assert!(!c.snapshot().area_selected);
+        assert_eq!(c.snapshot().selection, Row::Security);
+        c.update(PauseMenuInput { down: true, ..Default::default() });
+        assert!(c.snapshot().area_selected);
+        let Action::EnterGame(game) = c.update(PauseMenuInput { select: true, ..Default::default() }) else { panic!() };
+        assert_eq!(game.location.key, 7);
+        // Without a linked Skate 3 data folder, a single area adds no row.
+        let single = controller().with_areas(vec![Area { label: "#San Vanelona".into(), locations: vec![location(1, "A")] }]);
+        assert_eq!(single.snapshot().area, None);
     }
 
     #[test]

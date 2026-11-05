@@ -597,12 +597,19 @@ impl SplineData {
     /// Resolves an object-relative byte offset to an inline spline segment.
     #[must_use]
     pub fn segment_at_object_offset(&self, offset: u32) -> Option<&SplineSegment> {
+        self.segments.get(self.segment_index_at_object_offset(offset)?)
+    }
+
+    /// Resolves an object-relative offset using the serialized segment stride.
+    #[must_use]
+    pub fn segment_index_at_object_offset(&self, offset: u32) -> Option<usize> {
         let relative = offset.checked_sub(self.segments_offset)?;
         let stride = u32::try_from(SPLINE_SEGMENT_SIZE).ok()?;
         if relative % stride != 0 {
             return None;
         }
-        self.segments.get(usize::try_from(relative / stride).ok()?)
+        let index = usize::try_from(relative / stride).ok()?;
+        (index < self.segments.len()).then_some(index)
     }
 }
 
@@ -1644,6 +1651,11 @@ mod tests {
         assert_eq!(data.spline_index_at_object_offset(16), Some(0));
         assert_eq!(data.spline_at_object_offset(16), data.splines.first());
         assert_eq!(data.segment_at_object_offset(48), data.segments.first());
+        assert_eq!(data.segment_index_at_object_offset(48), Some(0));
+        for invalid in [0, 47, 49, 48 + SPLINE_SEGMENT_SIZE as u32, u32::MAX] {
+            assert_eq!(data.segment_index_at_object_offset(invalid), None);
+            assert_eq!(data.segment_at_object_offset(invalid), None);
+        }
         assert_eq!(data.splines[0].instance, ObjectId(0x0080_0000));
     }
 

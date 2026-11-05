@@ -39,15 +39,21 @@ impl ProxyWorldOwner {
     /// PROXY Presentation stream's XSS (`AssetPaths::BuildStreamPath` of
     /// `data\content\world\stream` and `PROXY`).
     pub(crate) fn load_shared(mounts: &MountSet) -> RenderResult<SharedProxyWorld> {
+        Self::load_shared_stream(mounts, "PROXY")
+    }
+
+    /// [`Self::load_shared`] of another proxy stream (PC port: a linked Skate 3 data folder's
+    /// district's, `<District>_100_Proxy`, `skate2_core::skate3`).
+    pub(crate) fn load_shared_stream(mounts: &MountSet, stream: &str) -> RenderResult<SharedProxyWorld> {
         let paths = StreamPaths::derive(
             "data\\content\\world\\stream",
-            "PROXY",
+            stream,
             StreamKind::Presentation,
         )?;
         let space = CollectionSpace::parse(&mounts.read_path(&paths.collection_space)?)?;
         let manager = ProxyWorldManager::from_collection_space(&space);
         eprintln!(
-            "PROXY world: {} collections in load order",
+            "{stream} world: {} collections in load order",
             manager.collection_ids().len()
         );
         Ok(Arc::new(Mutex::new(Self {
@@ -71,6 +77,13 @@ impl ProxyWorldOwner {
 
     pub(crate) fn high_registered(&mut self, high: u64) -> RenderResult<()> {
         let result = self.world.high_registered(high);
+        self.record(result)
+    }
+
+    /// `AddHighCollection` for a high collection outside the world stream's own effects (PC port:
+    /// a Skate 3 district's, named on its tile `c<kind>_<x>_<z>_high`).
+    pub(crate) fn add_high_collection(&mut self, high: u64, x: i32, z: i32) -> RenderResult<()> {
+        let result = self.world.add_high_collection(high, u32::from_ne_bytes(x.to_ne_bytes()), u32::from_ne_bytes(z.to_ne_bytes()));
         self.record(result)
     }
 

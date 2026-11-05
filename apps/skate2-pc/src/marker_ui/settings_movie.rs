@@ -18,7 +18,7 @@ use skate2_core::{
     stick_settings::DEADZONES,
     ui::{
         apt_timeline::{DisplayEntry, PlacementIdentity},
-        options::{FrameRateCap, Page, Row, Snapshot},
+        options::{FIELD_OF_VIEWS, FrameRateCap, Labelled, Page, Row, Snapshot},
         edit_skater::EditSkaterRow,
     },
 };
@@ -50,6 +50,16 @@ pub(super) struct SettingsMovie {
     /// y, then right), which a Stick Settings page's boxes show.
     stick_raw: Option<[i16; 4]>,
 }
+
+/// The space a slider or morph row takes over an option row's 36 so it clears the option's title
+/// (a slider's title sits a selector's pitch, 58, under it: the slider component draws its title
+/// 12 units higher).
+const SLIDER_UNDER_OPTION_GAP: f32 = 34.;
+/// The space a morph knob row (Field of View's) takes over an option row's 36 so its title stands
+/// the option rows' pitch under the option's: the knob draws its `mTitle` at 7, an option row at
+/// 19.85.
+const MORPH_UNDER_OPTION_GAP: f32 = 19.85 - 7.;
+
 impl SettingsMovie {
     pub fn new(assets: &Assets) -> RenderResult<Self> {
         let mut root = Clip::new(assets, 28, 0)?;
@@ -198,13 +208,20 @@ impl SettingsMovie {
             .iter()
             .map(|&row| options_row(assets, &state, row))
             .collect::<RenderResult<Vec<_>>>()?;
-        if previous.page != state.page {
-            let title = state.title();
-            let title = if title.starts_with("ID_") { assets.localize(title)? } else { title.into() };
-            letterbox.set_title(&title)?;
+        // PC port: the Field of View row adds X, which puts it back to the original's.
+        let on_field_of_view = state.rows().get(state.selected) == Some(&Row::FieldOfView);
+        let was_on_field_of_view = previous.page == state.page && previous.rows().get(previous.selected) == Some(&Row::FieldOfView);
+        if previous.page != state.page || on_field_of_view != was_on_field_of_view {
+            if previous.page != state.page {
+                let title = state.title();
+                let title = if title.starts_with("ID_") { assets.localize(title)? } else { title.into() };
+                letterbox.set_title(&title)?;
+            }
             // GetButtonHelpTextA 0x82644128 names A only over `option` rows.
             let help: &[(&str, &str)] = if rows.first().is_some_and(|row| row.kind == "option") {
                 &[("B", "ID_COMMON_BACK"), ("A", "ID_COMMON_SELECT")]
+            } else if on_field_of_view {
+                &[("B", "ID_COMMON_BACK"), ("X", "#Reset to Default")]
             } else {
                 &[("B", "ID_COMMON_BACK")]
             };
@@ -219,9 +236,21 @@ impl SettingsMovie {
                 help,
                 0xffff_ffec,
             )?;
+        }
+        // PC port: a Physics Settings or Weather Settings value can add or take away a row.
+        if previous.page != state.page || previous.rows() != state.rows() {
             // options.CreateOptions0008e5..ab1: first position is dummy0;
             // subsequent y = previous.y + previous.GetHeight(), no CAC gap.
             let mut matrix = child(&mut self.root, "dummy0")?.entry.matrix;
+            // PC port: a slider or morph row straight under a one-line option row (Field of View's
+            // knob under Weather Settings) would sit on it; it moves down and the list starts higher
+            // by the same amount, so its foot stays where it was.
+            let gap = |index: usize| match rows[index].kind.as_str() {
+                "slider" if index > 0 && rows[index - 1].kind == "option" => SLIDER_UNDER_OPTION_GAP,
+                "morph" if index > 0 && rows[index - 1].kind == "option" => MORPH_UNDER_OPTION_GAP,
+                _ => 0.,
+            };
+            matrix.ty -= (0..rows.len()).map(gap).sum::<f32>();
             self.root.children.retain(|_, c| {
                 c.entry
                     .name
@@ -236,6 +265,7 @@ impl SettingsMovie {
                     "morph" => (16, edit_skater_movie::MORPH, 45.),
                     _ => (18, export(assets, 18, "HighlightSelectorComponent")?, 58.), // GetHeight001868
                 };
+                matrix.ty += gap(index);
                 let mut clip = Clip::new(assets, asset, character)?;
                 edit_skater_movie::highlight(&mut clip, assets, row, index == state.selected)?;
                 self.root.children.insert(
@@ -348,8 +378,17 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
         Row::SfxVolume => Some(state.volumes[0]),
         Row::DialogueVolume => Some(state.volumes[1]),
         Row::MusicVolume => Some(state.volumes[2]),
+        Row::RainVolume => Some(i32::from(state.modes.rain_volume)),
         _ => None,
     };
+    if row == Row::FieldOfView {
+        // Its percent after its title and its knob along the morph line, whose ends are the ends
+        // of its range: the original's a quarter of the way along.
+        let percent = state.values.field_of_view;
+        let (low, high) = (i32::from(*FIELD_OF_VIEWS.start()), i32::from(*FIELD_OF_VIEWS.end()));
+        let value = (i32::from(percent) - low) * 100 / (high - low);
+        return Ok(EditSkaterRow { kind: row.kind().into(), title: format!("{title} {percent}%"), value, ..Default::default() });
+    }
     let (subtitle, value) = if let Some(value) = volume {
         let percent = localizer::localized_format_string(assets, "ID_COMMON_PERCENT", &[localizer::AptArgument::Integer(value * 10)])?;
         (String::from_utf16_lossy(&percent), value)
@@ -374,6 +413,10 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
             // Its Off-board Y Axis reads Normal with mInvertYAxis set.
             Row::OffboardYAxis => if state.invert_y { "ID_GAMESETTINGS_AXIS_NORMAL" } else { "ID_GAMESETTINGS_AXIS_INVERTED" },
             Row::Vibration => on_off(state.vibration),
+            Row::PhysicsMode => state.modes.physics.label(),
+            Row::Difficulty => state.modes.difficulty.label(),
+            Row::Weather => state.modes.weather.label(),
+            Row::PuddlePhysics => on_off(state.modes.puddle_physics),
             _ => match state.values.frame_rate_cap {
                 FrameRateCap::Unlimited => "Unlimited",
                 FrameRateCap::Fps60 => "60 (Vanilla)",

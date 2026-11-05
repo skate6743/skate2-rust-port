@@ -700,6 +700,12 @@ pub(crate) struct DmoObjectMan {
 }
 
 impl DmoObjectMan {
+    /// PC Skate 3 physics: the objects with grind splines, by entity ID (their rails move with them).
+    pub(crate) fn grindable_objects(&self) -> Vec<&DynamicObject> {
+        let mut objects: Vec<_> = self.objects.values().filter(|object| !object.grind_splines.is_empty()).collect();
+        objects.sort_unstable_by_key(|object| object.entity_id);
+        objects
+    }
     /// LWComponentMan.InvalidateAllRAINData82d2f8a8: clear every live entity's
     /// cached RAIN pointer; this is independent of census/cull-map processing.
     pub(crate) fn invalidate_rain_data(&mut self) {

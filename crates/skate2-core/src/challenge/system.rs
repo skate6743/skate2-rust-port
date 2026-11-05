@@ -168,7 +168,7 @@ impl Event {
             Self::Challenge(message) => message.clone(),
             Self::TriggerCollision { enter, volume, player } => Message::new(
                 if *enter { "cMsgTriggerEnterCollision" } else { "cMsgTriggerExitCollision" },
-                vec![("VolumeID", Field::Number(*volume as f64 as f32)), ("PlayerID", Field::Number(*player as f32))],
+                vec![("VolumeID", Field::Number(crate::skate3::id_float(*volume))), ("PlayerID", Field::Number(*player as f32))],
             ),
             // BindAllMessageHandlersToLua (0x828e9..): these share the field-less
             // handler cMsgPresGameUnload_HandleMessage_LuaBinding (0x828cda38), whose
@@ -368,8 +368,8 @@ pub enum Output {
     /// FE state 38 (`FrontEndState_PressA`, screen 64) for a player's turn (1-based)
     /// and round; that player's A answers with `cMsgHUDComplete`.
     OpenPressADialog { player_turn: i32, round: i32 },
-    /// `CentralHUD::ShowModifiedCentralMessage` (`0x826bc050`).
-    ModifiedCentralMessage(CentralMessage),
+    /// `CentralHUD::ShowModifiedCentralMessage` (`0x826bc050`), or Skate 3's clear of the line.
+    ModifiedCentralMessage(super::hud::ModifiedCentral),
     /// `cPathedHullLoader::LoadHull` of the asset manager's loader; the hull's
     /// completion answers through `assets::on_complete`.
     LoadHull { hull: u32, file_name: String, register_on_load: bool, high_priority: bool, asset_flags: u32 },
@@ -512,8 +512,9 @@ pub struct World {
     pub objective_notification_window: f32,
     /// `kSkaterStopThreshold` m/s (default 1.2).
     pub stop_threshold: f32,
-    /// `cLocationManager` orientations by `GetHashValue32(name)`, from the
-    /// loaded location data.
+    /// The simulation location table by `GetHashValue32(name)`: the city's `BAM_Sim.loc`, standing
+    /// for its simulation arenas whether or not they are streamed in. [`World::location`] asks the
+    /// host's `cLocationManager` first.
     pub locations: std::collections::HashMap<u32, [f32; 16]>,
     /// `cLocationManager::DefaultLocationPosistion`.
     pub default_location: [f32; 3],
@@ -597,6 +598,15 @@ pub struct World {
 }
 
 impl World {
+    /// `cLocationManager::GetLocationOrientation` (`0x82a8de48`), which `IsValidLocation` and
+    /// `GetLocationPosition` share: the host's location manager (the global locator arenas, the
+    /// downloadable content's included, then the streamed simulation arenas), else the simulation
+    /// location table. A downloadable content challenge's sign-up locator is one of its global
+    /// locators (`MissingGlobalLocator`), which the city's table does not hold.
+    #[must_use]
+    pub fn location(&self, hash: u32) -> Option<[f32; 16]> {
+        self.host.location_orientation(hash).or_else(|| self.locations.get(&hash).copied())
+    }
     pub fn send(&mut self, event: Event) {
         self.queue.push_back(event);
     }
@@ -940,6 +950,7 @@ impl ChallengeSystem {
         list.extend(super::hom::natives());
         list.extend(super::teleporter::natives());
         binder::bind_modules(lua, &natives::MODULES, &list);
+        super::skate3_natives::bind(lua);
         if !challenge_global.is_empty() {
             let main = lua.load_source(challenge_global, "data\\script/challenge/global.lua")?;
             lua.call(&mut self.world, &main, &[])?;
@@ -1025,8 +1036,15 @@ impl ChallengeSystem {
         // Physics::IsScoringMultiplierActive 0x827accc8 reads the main challenge's ChallengeType:
         // Photo (6), BestTrick (8), OwnTheSpot (9), MegaRamp (26), CreateASpot (35) and
         // CreateASpot_Setup (36) score without the multiplier.
-        let multiplier_active = self.world.activities.main
-            .is_none_or(|main| !matches!(signup::challenge_type(&self.world, main), 6 | 8 | 9 | 26 | 35 | 36));
+        // PC port: a linked Skate 3 data folder's game that runs Skate 3's own state graph takes
+        // TU3's (0x82761548), which outside a contest reads the challenge's own setting.
+        let multiplier_active = self.world.activities.main.is_none_or(|main| {
+            let activity = &self.world.activities.activities[main];
+            if crate::skate3::linked().is_some_and(|data| data.runs_own_graph(activity.key)) {
+                return super::skate3_natives::multiplier_active(&self.world, activity);
+            }
+            !matches!(signup::challenge_type(&self.world, main), 6 | 8 | 9 | 26 | 35 | 36)
+        });
         if let Ok(mut scoring) = self.world.scoring.lock() {
             scoring.hom_available = hom_available;
             scoring.multiplier_active = multiplier_active;

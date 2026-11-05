@@ -41,6 +41,9 @@ mod path;
 mod scoring;
 #[path = "physical_player_phys_out_perception.rs"]
 pub(crate) mod perception;
+#[cfg(feature = "skate3-runtime")]
+#[path = "physical_player_phys_out_skate3.rs"]
+pub(crate) mod skate3;
 #[path = "physical_player_phys_out_simple.rs"]
 mod simple;
 #[path = "physical_player_phys_out_surface_motion.rs"]

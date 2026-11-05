@@ -21,8 +21,8 @@ impl<N: ReckoningNumeric> Source<'_, N> {
         detector::try_check_ground(self)?;
         let arms_pointer = self.air_attribute_pointer(0xd031_7181_ce40_bfbc)?;
         let body_pointer = self.air_attribute_pointer(0x68e0_e915_d4f3_af66)?;
-        let arms = self.attribute_value(&arms_pointer)?;
-        let body = self.attribute_value(&body_pointer)?;
+        let arms = self.wipeout_float(&arms_pointer)?;
+        let body = self.wipeout_float(&body_pointer)?;
         if detector::leaves::contact_force(self, body, arms)? {
             self.request(0)?;
             if self.air_display_debug()? {

@@ -178,6 +178,16 @@ impl SkaterManagerLocalIdentity {
             .try_update_selected_prefix(dt, authority, services)
             .map_err(|source| SkaterObserverError::Camera(CameraStartupError::Selected(source)))
     }
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn try_publish_skate3_camera(&self, output: &crate::skate3_native::FrameOutput,
+        owner: &Arc<crate::physical_player_assembly::PhysicalPlayerAssemblyOwner>, dt: f32)
+        -> Result<(), SkaterObserverError> {
+        let camera = self.observer_snapshot()?.into_iter().find_map(|observer| match observer {
+            Observer::Camera(camera) => Some(camera), _ => None,
+        }).ok_or(SkaterObserverError::PendingWorkspaceObservers)?;
+        camera.lock().map_err(|_| SkaterObserverError::Identity(LocalIdentityError::Poisoned))?
+            .try_publish_skate3_camera(output, owner, dt).map_err(SkaterObserverError::CameraProjection)
+    }
     /// Read the same retained camera observer after a successful selected tick.
     /// This returns a provisional producer projection, not restored presentation.
     pub(crate) fn try_set_camera_profile_settings(

@@ -59,6 +59,40 @@ pub fn sponsor_world(world: &World, sponsor: Option<u64>) -> String {
     sponsor.and_then(|key| world.db.attribute(SPONSORS, key, WORLD)).and_then(|attribute| attribute.text(0)).unwrap_or(MISSING_SPONSOR_NAME).to_owned()
 }
 
+/// The localizer parameter `FEBackEnd::Init` registers for `ProcessSponsorWorld`.
+const SPONSOR_WORLD_PARAMETER: &str = "{0:SponsorWorld}";
+
+/// The board sponsor's world the career last published (`cSignPostSponsorMan` lives in the
+/// simulation singleton, which `ProcessSponsorWorld` reads whatever asks); none without a career.
+static PUBLISHED_SPONSOR_WORLD: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// The career's board sponsor world for [`world_file_name`]; none as the career ends.
+pub(crate) fn publish_sponsor_world(world: Option<&str>) {
+    let changed = PUBLISHED_SPONSOR_WORLD.read().map_or(true, |held| held.as_deref() != world);
+    if changed && let Ok(mut held) = PUBLISHED_SPONSOR_WORLD.write() {
+        *held = world.map(str::to_owned);
+    }
+}
+
+/// `CommonBackEnd::GetWorldFilename` (`0x82562480`): a location's `WorldFile` through the
+/// localizer, whose `{0:SponsorWorld}` is `ProcessSponsorWorld`'s board sponsor world
+/// (`kMissingSponsorName` without one), then the Girl sponsor's training facility, which the
+/// disc lacks, as the Online one.
+#[must_use]
+pub fn world_file_name(raw: &str) -> std::borrow::Cow<'_, str> {
+    if !raw.contains(SPONSOR_WORLD_PARAMETER) {
+        return std::borrow::Cow::Borrowed(raw);
+    }
+    let sponsor = PUBLISHED_SPONSOR_WORLD
+        .read()
+        .ok()
+        .and_then(|held| held.clone())
+        .filter(|world| !world.is_empty())
+        .unwrap_or_else(|| MISSING_SPONSOR_NAME.to_owned());
+    let named = raw.replace(SPONSOR_WORLD_PARAMETER, &sponsor);
+    std::borrow::Cow::Owned(if named == "DIST_TrainingFacility_Girl" { "DIST_TrainingFacility_Online".to_owned() } else { named })
+}
+
 /// `GetBoardSponsorHALID` (`0x825d1358`): the beaten pro's board sponsor's HAL id,
 /// `kMissingSponsorName` without a beaten pro.
 #[must_use]
@@ -117,4 +151,22 @@ pub fn demo_competitor_info(world: &World, index: usize) -> Option<Location> {
 #[must_use]
 pub fn competitor_profile_name(world: &World, info: Option<Location>) -> Option<String> {
     info.and_then(|at| world.db.text_at(at)).map(str::to_owned)
+}
+#[cfg(test)]
+mod world_file_tests {
+    use super::*;
+
+    #[test]
+    fn sponsor_world_names_the_training_facility() {
+        publish_sponsor_world(None);
+        assert_eq!(world_file_name("BAM"), "BAM");
+        assert_eq!(world_file_name("DIST_TrainingFacility_{0:SponsorWorld}"), "DIST_TrainingFacility_Online");
+        publish_sponsor_world(Some("Element"));
+        assert_eq!(world_file_name("DIST_TrainingFacility_{0:SponsorWorld}"), "DIST_TrainingFacility_Element");
+        publish_sponsor_world(Some("Girl"));
+        assert_eq!(world_file_name("DIST_TrainingFacility_{0:SponsorWorld}"), "DIST_TrainingFacility_Online");
+        publish_sponsor_world(Some(""));
+        assert_eq!(world_file_name("DIST_TrainingFacility_{0:SponsorWorld}"), "DIST_TrainingFacility_Online");
+        publish_sponsor_world(None);
+    }
 }

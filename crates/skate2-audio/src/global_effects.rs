@@ -15,6 +15,12 @@
 //! and 1 for 0x4000: SubMix, Delay, PeakingIir2, Send (wet, into "EnvSendSub"), Gain (dry),
 //! Pan2D1 (6), Send (6) to the master mix.
 //!
+//! TU3 adds eight effect sub mixes (0x82490CA0, after `CreateLFOs`), stage 253, six channels:
+//! SubMix, DistortionClip, two PeakingIir2, Send to the master mix. Its darkcatch sounds play into
+//! the one `GlobalAttributeCollection` +0x8C names, and the local player's sound sets its filters from that
+//! effect's attributes (0x824916E8); every audio update switches them all off again
+//! (0x82491180). Built only when a Skate 3 sound first asks for one.
+//!
 //! Every Delay reads its constructor parameter one word past the float the creators store (the
 //! debug `Param` is {tag, value}): the assert path pointer there is a tiny negative number, so
 //! every line starts at its 256-sample minimum and its timer grows it to the delay asked for.
@@ -23,8 +29,40 @@
 
 use crate::math::{fmadd, fnmsub};
 use crate::rwac::core::{PlugInConfig, PlugInKind};
+use crate::random::RwRandom;
 use crate::rwac::{AudioCore, PluginRef, VoiceId};
+use crate::vault::{Collection, Vault};
 use crate::vmx;
+
+/// TU3's effect class and its eight collections (`qword_8224DC78`).
+const SKATE3_EFFECT_CLASS: u64 = 0xAA80_1D9F_C0AD_BBBF;
+const SKATE3_EFFECTS: [u64; 8] = [
+    0x42DD_FA3F_5011_BAB4, 0xDA24_A51D_DC51_EDF3, 0x201C_8871_4085_E3C3, 0x8AF2_3914_D89E_4AF0,
+    0xF7CF_A0A8_D2F9_8BDE, 0x8AA9_3567_C056_736B, 0x87D5_F21D_9A71_736A, 0xBFA2_D9D8_C138_F925,
+];
+/// Whether the effect takes its own attributes (otherwise its jitter values, not ported).
+const SKATE3_USE_ATTRIBUTES: u64 = 0xC6DA_68C1_2A38_22D2;
+/// Each PeakingIir2's frequency, gain and Q: (high, low) attribute pairs.
+const SKATE3_FILTERS: [[(u64, u64); 3]; 2] = [
+    [
+        (0x5B48_CBEB_3EB4_40D2, 0x2B77_D4F5_8AF7_1CCF),
+        (0x7317_CC02_098B_DFF6, 0x90A9_4DDD_A5F8_04CB),
+        (0xF30B_7500_D67E_206B, 0xB419_0B5C_4243_2FA2),
+    ],
+    [
+        (0x3264_F689_300A_522A, 0x1DA6_11DA_4DE5_A67A),
+        (0x5486_8EDE_952E_F581, 0x2585_3859_640A_3796),
+        (0x594D_91B3_0B95_483A, 0xCDF5_99CD_EC9C_7C64),
+    ],
+];
+/// The DistortionClip's level.
+const SKATE3_CLIP_LEVEL: u64 = 0x2086_A0CE_99C3_9A86;
+
+struct Skate3Effects {
+    voices: [VoiceId; 8],
+    /// `+0x47C`: switched on this update.
+    active: [bool; 8],
+}
 
 /// The id `RWAudioLFOTask::AddTimer` 0x824f4920 registers its `TIMERSTAGE_BEFORECOMMANDS` timer
 /// under.
@@ -176,6 +214,8 @@ pub struct GlobalEffects {
     /// +0x364, +0x438: the last `SetupReverb` parameters.
     tpp: EnvRvrbPresetParms,
     tpp_set: bool,
+    master: PluginRef,
+    skate3_effects: Option<Skate3Effects>,
 }
 
 fn plugin(voice: VoiceId, index: u8) -> PluginRef {
@@ -303,6 +343,66 @@ impl GlobalEffects {
             lfos,
             tpp: EnvRvrbPresetParms::default(),
             tpp_set: false,
+            master,
+            skate3_effects: None,
+        }
+    }
+
+    /// TU3 `sub_82491108`: the sub mix a sound routed to effect `index` plays into (the master mix
+    /// for 8 and out of range), and for the local player `sub_824916E8` switching the effect on:
+    /// with its attributes, each PeakingIir2's frequency, gain and Q (a pair's low end plus a
+    /// random tenth step of 0..10 toward its high end when they differ) and the clip level.
+    pub fn skate3_effect(&mut self, core: &mut AudioCore, index: i32, local: bool, vault: &Vault, rng: &mut RwRandom) -> PluginRef {
+        let Some(index) = usize::try_from(index).ok().filter(|&index| index < 8) else { return self.master };
+        let master = self.master;
+        let effects = self.skate3_effects.get_or_insert_with(|| {
+            let six = |kind: PlugInKind| PlugInConfig { kind, output_channels: 6 };
+            let configs = [
+                six(PlugInKind::SubMix { name: "Skate3FxSub".into() }),
+                six(PlugInKind::DistortionClip),
+                six(PlugInKind::PeakingIir2),
+                six(PlugInKind::PeakingIir2),
+                six(PlugInKind::Send),
+            ];
+            let voices = [(); 8].map(|()| create_voice(core, 253, "Skate3FxSub", &configs));
+            for &voice in &voices {
+                core.connect_send(plugin(voice, 4), Some(master));
+            }
+            Skate3Effects { voices, active: [false; 8] }
+        });
+        let voice = effects.voices[index];
+        if local && !effects.active[index] {
+            effects.active[index] = true;
+            let collection = Collection::new(SKATE3_EFFECT_CLASS, SKATE3_EFFECTS[index]);
+            let attributes = vault.bool(collection, SKATE3_USE_ATTRIBUTES);
+            let mut set = [[0.0; 3]; 2];
+            let mut clip = 100.0;
+            if attributes {
+                for (filter, keys) in SKATE3_FILTERS.iter().enumerate() {
+                    for (attribute, &(high, low)) in keys.iter().enumerate() {
+                        let (high, low) = (vault.f32(collection, high), vault.f32(collection, low));
+                        let value = if low == high {
+                            low
+                        } else {
+                            let step = (rng.next_u32() % 11) as f32;
+                            fmadd(step * (high - low), 0.1, low)
+                        };
+                        core.set_attribute(plugin(voice, 2 + filter as u8), attribute, value);
+                        set[filter][attribute] = value;
+                    }
+                }
+                clip = vault.f32(collection, SKATE3_CLIP_LEVEL);
+                core.set_attribute(plugin(voice, 1), 0, clip);
+            }
+            trace_skate3_effect(index, attributes, clip, set);
+        }
+        plugin(voice, 0)
+    }
+
+    /// TU3 `sub_82491180`, each audio update: every effect off again.
+    pub fn reset_skate3_effects(&mut self) {
+        if let Some(effects) = self.skate3_effects.as_mut() {
+            effects.active = [false; 8];
         }
     }
 
@@ -491,5 +591,14 @@ impl GlobalEffects {
             lfo.out = fmadd(lfo.max_range * lfo.depth, sine, lfo.base);
             core.set_attribute(lfo.plugin, lfo.attribute, lfo.out);
         }
+    }
+}
+
+/// `SKATE2_TRACE_SKATE3_DARKCATCH`: an effect switched on, with the values it was given.
+fn trace_skate3_effect(index: usize, attributes: bool, clip: f32, filters: [[f32; 3]; 2]) {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_SKATE3_DARKCATCH").is_some()) {
+        eprintln!("skate 3 darkcatch audio: effect {index} attributes {attributes}: clip {clip} filters {:?} {:?}",
+            filters[0], filters[1]);
     }
 }

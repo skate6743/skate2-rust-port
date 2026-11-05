@@ -16,7 +16,7 @@ pub(super) struct Eye {
 fn multiply(a: [f64; 16], b: [f64; 16]) -> [f64; 16] {
     std::array::from_fn(|i| (0..4).map(|k| a[k * 4 + i % 4] * b[i / 4 * 4 + k]).sum())
 }
-fn inverse(m: [f64; 16]) -> RenderResult<[f64; 16]> {
+pub(super) fn inverse(m: [f64; 16]) -> RenderResult<[f64; 16]> {
     let mut rows: [[f64; 8]; 4] = std::array::from_fn(|r| {
         std::array::from_fn(|c| {
             if c < 4 {

@@ -136,10 +136,33 @@ pub fn challenge_type_valid(db: &AttribDb, net_type: u8, valid_location: &dyn Fn
 
 /// The challenge types the unranked custom match lists (`unranked_custom_match.swf`'s
 /// `InitializeScreen`): every type of `GetNumberOfOnlineChallenges` (9) but the last, online
-/// free skate, that is valid and is not 1-Up (`m_1upIndex` 4).
+/// free skate, that is valid. The original's list also leaves out 1-Up (`m_1upIndex` 4), whose
+/// online challenges the game ships; the PC port lists it (user request).
 #[must_use]
 pub fn unranked_match_types(db: &AttribDb, valid_location: &dyn Fn(&str) -> bool) -> Vec<u8> {
-    (0..challenge::ONLINE_FREE_SKATE)
-        .filter(|&net| net != challenge::ONE_UP && challenge_type_valid(db, net, valid_location))
-        .collect()
+    (0..challenge::ONLINE_FREE_SKATE).filter(|&net| challenge_type_valid(db, net, valid_location)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With `SKATE2_GAME_ROOT`, the game's online 1-Ups are online challenges of their type, which
+    /// the custom match lists.
+    #[test]
+    fn the_game_ships_online_1ups() {
+        use skate2_formats::mount::{MountSet, MountedBig, SKATE2_ARCHIVES};
+        let Some(root) = std::env::var_os("SKATE2_GAME_ROOT") else { return };
+        let archive = SKATE2_ARCHIVES.iter().find(|archive| archive.relative_path == "data\\db\\db.big").unwrap();
+        let mut mounts = MountSet::new();
+        mounts.push(MountedBig::open(archive.path_under(std::path::Path::new(&root)), archive.use_external_header).unwrap());
+        let db = AttribDb::load_career(&mounts).unwrap();
+        let listed = online_challenges(&db, challenge::ONE_UP, &|_| true, &|title: &str| title.to_owned());
+        eprintln!("1-Ups: {:?}", listed.iter().map(|one_up| (&one_up.title, &one_up.location)).collect::<Vec<_>>());
+        let keys: Vec<u64> = listed.iter().map(|one_up| one_up.key).collect();
+        for name in ["ol_1up_01_svm_mountainup", "ol_1up_02_dt_matrix", "ol_1up_03_ot_cathedral", "ol_1up_04_wf_gvr", "ol_1up_05_ur_lombardier"] {
+            assert!(keys.contains(&crate::challenge::keys::hash64(name)), "{name} is listed");
+        }
+        assert!(unranked_match_types(&db, &|_| true).contains(&challenge::ONE_UP));
+    }
 }

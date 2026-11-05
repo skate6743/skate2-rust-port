@@ -109,7 +109,7 @@ impl ProfileAudio {
     /// `FrontEndState_Options::RequestExit` 0x82681700: the music player's `mbIsDirty` folds
     /// into `mIsDirty`, which saves the profile (`RequestSave(eBeMemcardSave_Profile)`) when no
     /// main challenge runs or the game mode is Party Play. The PC rows save apart from it: the
-    /// display chunk, Show Lobby Chat and Show Ghost Players in pregame lobby in
+    /// display chunk and Physics/Weather Settings, Show Lobby Chat and Show Ghost Players in pregame lobby in
     /// `online-config.json`, and the stick settings in `controller_config.json`.
     fn request_options_exit(&mut self, options: &mut Controller, main_challenge: bool, party_play: bool) -> Result<(), SelectedLiveError> {
         let dirty = self.menu.take_dirty() | options.dirty();
@@ -122,6 +122,11 @@ impl ProfileAudio {
         if options.display_dirty() {
             EditSkaterProfileStore::open(&path)
                 .and_then(|mut store| store.save_display_settings(options.snapshot().values))
+                .map_err(error)?;
+        }
+        if options.modes_dirty() {
+            EditSkaterProfileStore::open(&path)
+                .and_then(|mut store| store.save_gameplay_modes(options.modes()))
                 .map_err(error)?;
         }
         if options.lobby_chat_dirty() || options.ghost_players_dirty() {

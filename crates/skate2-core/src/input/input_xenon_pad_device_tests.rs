@@ -10,6 +10,7 @@ pub(crate) struct Platform {
     pub(crate) fail_index: Option<u32>,
     pub(crate) wireless: bool,
     pub(crate) scripted_controller_zero: Option<crate::input_pad::XboxPadSample>,
+    pub(crate) scripted_controller_one: Option<crate::input_pad::XboxPadSample>,
     pub(crate) polled_samples: Vec<(u32, crate::input_pad::XboxPadSample)>,
 }
 impl Platform {
@@ -21,6 +22,7 @@ impl Platform {
             fail_index: None,
             wireless: false,
             scripted_controller_zero: None,
+            scripted_controller_one: None,
             polled_samples: Vec::new(),
         }
     }
@@ -65,6 +67,8 @@ impl PadPlatform for Platform {
         };
         let sample = if index == 0 {
             self.scripted_controller_zero.unwrap_or(default)
+        } else if index == 1 {
+            self.scripted_controller_one.unwrap_or(default)
         } else {
             default
         };
@@ -221,14 +225,14 @@ fn wireless_reset_stays_still_and_unknown_guitar_survives_numeric_failure() {
     device
         .reset_actuators(&mut p, &refs, &mut HostReckoningNumeric)
         .unwrap();
-    // A still request stays still (PC port); a moving one takes the wireless tuning.
+    // PC port: a wireless pad takes no 360 wireless tuning, still or moving.
     assert_eq!(device.actuators[0].desired, 0);
     assert_eq!(device.actuators[1].desired, 0);
     device
         .set_actuator(1, 0.5, &mut p, &refs, &mut HostReckoningNumeric)
         .unwrap();
-    assert_eq!(device.actuators[1].desired, 37682);
-    // Supported tuning preserves unordered through both raw branch clamps.
+    assert_eq!(device.actuators[1].desired, 32767);
+    // An unordered request reaches the integer conversion untouched.
     assert!(matches!(
         device.set_actuator(0, f32::NAN, &mut p, &refs, &mut HostReckoningNumeric),
         Err(PadActuatorError::Numeric(_))

@@ -4,13 +4,13 @@
 //! description fills `mOfferDescription` and `mInstalledText` reads Installed (`SetState(1)`);
 //! Link DLCs, no offer, shows neither. No pack has a cost, so `mAmount` stays hidden. The button
 //! menu holds Back, and Select on Link
-//! DLCs (`CanSelectionBePurchased`). The PS3 store logos stay off, as the constructor's
+//! DLCs (`CanSelectionBePurchased`), or Unlink (X) on a pack (PC). The PS3 store logos stay off, as the constructor's
 //! `Platform_PS3` branch leaves them on other platforms. PC: `mInstalledText` stands where
 //! `mAmount` would, but its placement carries no colour, so it would show at full alpha over
 //! the entrance; it takes `mAmount`'s fade instead.
 use super::{assets::Assets, clips::Clip, letterbox::LetterBox, map_movie};
 use crate::gpu_renderer::RenderResult;
-use skate2_core::ui::dlc_menu::{LINK_LABEL, Page, Snapshot, VISIBLE};
+use skate2_core::ui::dlc_menu::{Page, Snapshot, VISIBLE};
 
 pub(super) const ASSET: usize = 119;
 /// `RefreshDLCContent`'s `mMenuPicker.SetItemOffset(32)` and `mScroller.SetSliderLength(215)`.
@@ -60,7 +60,7 @@ impl DlcMovie {
             Page::Result(text) => {
                 Some((("ID_MAIN_MENU_DOWNLOADABLE_CONTENT".to_owned(), text.clone(), 0), vec!["ID_COMMON_OK".to_owned()]))
             }
-            Page::List | Page::Picking => None,
+            Page::List | Page::Picking | Page::Unlinking => None,
         }
     }
 
@@ -112,8 +112,7 @@ impl DlcMovie {
 
     /// `RefreshDLCContent` and `SetState(1)` for the highlighted row.
     fn populate(&mut self, assets: &Assets, state: &Snapshot) -> RenderResult<()> {
-        let rows: Vec<(&str, bool)> =
-            state.packs.iter().map(|pack| (pack.title.as_str(), true)).chain(std::iter::once((LINK_LABEL, true))).collect();
+        let rows: Vec<(&str, bool)> = state.labels().into_iter().map(|label| (label, true)).collect();
         let dlc = self.root.named(&["mDLC"])?;
         let picker = dlc.named(&["mMenuPicker", "mMenuPicker"])?;
         picker.properties.insert("picker_item_offset".into(), ITEM_OFFSET.into());
@@ -135,6 +134,8 @@ impl DlcMovie {
         let mut buttons = vec![("B", "ID_COMMON_BACK")];
         if installed.is_none() {
             buttons.push(("A", "ID_COMMON_SELECT"));
+        } else {
+            buttons.push(("X", "#Unlink"));
         }
         map_movie::configure_button_items(dlc.named(&["mButtonmenu"])?, assets, &buttons, BUTTON_COLOUR)
     }
@@ -244,7 +245,7 @@ mod tests {
         let mut movie = DlcMovie::new(&assets).unwrap();
         assert!(!movie.root.visible);
         let pack = |title: &str| Pack { title: title.into(), description: format!("{title} for the test") };
-        let mut state = Snapshot { packs: vec![pack("Filmer Pack"), pack("Training Facility")], selected: 0, top: 0, page: Page::List };
+        let mut state = Snapshot { packs: vec![pack("Filmer Pack"), pack("Training Facility")], selected: 2, top: 0, page: Page::List };
         movie.update(&assets, Some(&state)).unwrap();
         assert!(movie.pending());
         movie.link(&assets, &mut letterbox).unwrap();
@@ -257,7 +258,7 @@ mod tests {
         assert!(movie.take_intro());
         assert!(movie.root.named(&["mDLC", "mOfferDescription"]).unwrap().visible, "a pack shows its description");
         assert_eq!(installed_alpha(&mut movie), 0xff, "the Installed text ends the entrance opaque");
-        state.selected = 2;
+        state.selected = 0;
         movie.update(&assets, Some(&state)).unwrap();
         for _ in 0..30 {
             movie.tick(&assets, &mut letterbox).unwrap();

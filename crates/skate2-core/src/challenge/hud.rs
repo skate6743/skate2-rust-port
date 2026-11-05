@@ -186,6 +186,18 @@ pub struct CentralMessage {
     pub audio_hook: i32,
 }
 
+/// A change to `CentralHUD`'s modified line, the one under the central message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModifiedCentral {
+    /// `CentralHUD::ShowModifiedCentralMessage` (`0x826bc050`): the line, held up until it is
+    /// cleared when `stay_up` (Skate 3's seventh argument, TU3 `0x826640f0`'s
+    /// `mIsModMessageForcedToStayUp`), else for 180 updates.
+    Show { message: CentralMessage, stay_up: bool },
+    /// Skate 3's `HUD2.ClearModifiedCentralMessage` (`0x828508e0`): the hold ends and screen
+    /// state 88 plays the line's outro.
+    Clear,
+}
+
 #[derive(Debug, Default)]
 pub struct HudManager {
     pub groups: Vec<HudGroup>,

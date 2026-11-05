@@ -45,6 +45,9 @@ pub const AI_PATH_DATA_TYPE_ID: u32 = 0x00eb_0014;
 pub const WAYPOINT_DATA_TYPE_ID: u32 = 0x00eb_001a;
 pub const SPATIAL_MAP_DATA_TYPE_ID: u32 = 0x00eb_0020;
 pub const NAV_MESH_2_DATA_TYPE_ID: u32 = 0x00eb_0022;
+/// Skate 3's `RWOBJECTTYPE_NAVPOWERDATA`, which its Sim tiles carry in place of NavMesh2: a
+/// linked Skate 3 data folder's pedestrian navigation (see `living_world_nav_power`).
+pub const NAV_POWER_DATA_TYPE_ID: u32 = 0x00eb_0027;
 
 /// One owned arena and its currently reconstructed normal `RegArena` slice.
 ///
@@ -947,7 +950,9 @@ const fn registry_kind(raw_object_type: u32) -> Option<SimulationRegistryAssetKi
         WORLD_PAINTER_DATA_TYPE_ID_0F
         | WORLD_PAINTER_DATA_TYPE_ID_10
         | WORLD_PAINTER_DATA_TYPE_ID_11 => SimulationRegistryAssetKind::WorldPainter,
-        NAV_MESH_2_DATA_TYPE_ID => SimulationRegistryAssetKind::NavMesh,
+        // PC port: Skate 3's own RegArena hands a NavPower graph to its NavPower runtime; here it
+        // joins the MeshStore like a NavMesh2 tile.
+        NAV_MESH_2_DATA_TYPE_ID | NAV_POWER_DATA_TYPE_ID => SimulationRegistryAssetKind::NavMesh,
         RAIN_DATA_TYPE_ID => SimulationRegistryAssetKind::Rain,
         AI_PATH_DATA_TYPE_ID => SimulationRegistryAssetKind::AiPath,
         WAYPOINT_DATA_TYPE_ID => SimulationRegistryAssetKind::Waypoint,

@@ -639,8 +639,8 @@ fn activate_objective(world: &mut World, group: u32, index: usize) -> bool {
                 // ActivateObjective 0x82d4c230..0x82d4c248 rearms the scoring volume
                 // even when the skater is still inside it. The next collision update
                 // must activate the newly enabled objective (e.g. sponsor_me_03).
-                #[expect(clippy::cast_precision_loss, reason = "ResetTriggerVolumeCollisionState 0x82e22688: (float)_u64tod")]
-                let volume = scoring_boundary(&db, key) as f64 as f32;
+                // ResetTriggerVolumeCollisionState 0x82e22688: (float)_u64tod.
+                let volume = crate::skate3::id_float(scoring_boundary(&db, key));
                 world.output(Output::ResetTriggerVolumeState { volume });
             }
             true
@@ -781,8 +781,7 @@ fn reset_objective_status(world: &mut World, group: u32, index: usize) {
     for p in groups.into_iter().flatten() {
         presentation::reset_group(world, p);
     }
-    #[expect(clippy::cast_precision_loss, reason = "(float)_u64tod")]
-    let volume = scoring_boundary(&db, key) as f64 as f32;
+    let volume = crate::skate3::id_float(scoring_boundary(&db, key));
     world.output(Output::ResetTriggerVolumeState { volume });
     if state != Status::Disabled {
         let mode = db.attribute(class::CHALLENGE_OBJECTIVE, key, field::ACTIVATION_MODE).and_then(|a| a.i32(0)).unwrap_or(0);
@@ -1391,10 +1390,9 @@ fn scoring_boundary(db: &AttribDb, key: u64) -> u64 {
 
 /// `IsTriggerVolume`: a 64-bit volume id against a script's float id.
 #[must_use]
-#[expect(clippy::cast_precision_loss, reason = "(float)_u64tod")]
 #[expect(clippy::float_cmp, reason = "the native compares exactly")]
 pub fn is_trigger_volume(id: u64, volume: f32) -> bool {
-    (id as f64 as f32) == volume
+    crate::skate3::id_float(id) == volume
 }
 
 /// The objectives manager's Hermes handlers.
@@ -1565,6 +1563,14 @@ pub fn receive(lua: &mut Lua<World>, world: &mut World, event: &Event) {
             .is_some_and(|(_, v)| matches!(v, Field::Bool(true)));
         let length = number("GrindLength").unwrap_or(0.0);
         let splines = [key("PathedSplineID").unwrap_or(0), key("LocalSplineID").unwrap_or(0)];
+        if std::env::var_os("SKATE2_TRACE_SCORE_SEQUENCE").is_some() {
+            eprintln!(
+                "score: cMsgGrindCompleted length={length} splines={:#x}/{:#x} wiped={wiped_out} marker={used_marker} groups={}",
+                splines[0],
+                splines[1],
+                ids.len()
+            );
+        }
         let frame = world.skaters.iter().find(|f| f.player == player).cloned();
         for group in ids {
             if let Some(g) = group_mut(world, group) {

@@ -373,7 +373,7 @@ fn push_value<H: AttribHost>(lua: &mut Lua<H>, host: &mut H, class: u64, collect
         "EA::Reflection::Float" => Value::Number(f32::from_bits(be_u32(&bytes))),
         "EA::Reflection::Double" => Value::Number(f64::from_bits(be_u64(&bytes)) as f32),
         "EA::Reflection::Int64" => Value::Number(be_u64(&bytes).cast_signed() as f32),
-        "EA::Reflection::UInt64" => Value::Number(be_u64(&bytes) as f64 as f32),
+        "EA::Reflection::UInt64" => Value::Number(crate::skate3::id_float(be_u64(&bytes))),
         "EA::Reflection::Int16" => Value::Number(f32::from(i16::from_be_bytes([bytes[0], bytes[1]]))),
         "EA::Reflection::UInt16" => Value::Number(f32::from(u16::from_be_bytes([bytes[0], bytes[1]]))),
         "EA::Reflection::Int8" => Value::Number(f32::from(bytes[0].cast_signed())),
@@ -382,7 +382,7 @@ fn push_value<H: AttribHost>(lua: &mut Lua<H>, host: &mut H, class: u64, collect
         "EA::Reflection::Char" => Value::bytes(&bytes[..1]),
         "EA::Reflection::Bool" => Value::Boolean(bytes[0] != 0),
         "EA::Reflection::Text" => text.map_or(Value::Nil, |t| Value::string(&t)),
-        TRIGGER_VOLUME_INSTANCE => Value::Number(be_u64(&bytes[8..16]) as f64 as f32),
+        TRIGGER_VOLUME_INSTANCE => Value::Number(crate::skate3::id_float(be_u64(&bytes[8..16]))),
         name if REF_SPEC_STRUCTS.contains(&name) => {
             let mt = metatable(lua, REF_SPEC_METATABLE);
             Value::UserData(lua.create_userdata(Box::new(ref_spec.unwrap_or(RefSpec { class: 0, collection: 0 })), mt))

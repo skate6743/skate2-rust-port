@@ -32,6 +32,7 @@ pub(crate) enum HandFaceRuntimeError<E> {
     Stream(HandFaceDispatchError<BindPoseError>),
     Tokens(BlendPoseError),
     Missing(&'static str),
+    Gesture(String),
 }
 impl<E> From<ActorFaceError> for HandFaceRuntimeError<E> {
     fn from(e: ActorFaceError) -> Self {
@@ -63,6 +64,16 @@ enum Target {
     Right,
 }
 impl<K, W> ActorAnimationConstruction<K, W> {
+    /// PC port: the strongest blend of this Actor's own gesture channels (the Skate 2 set's).
+    #[cfg(feature="skate3-runtime")]
+    fn skate2_gesture_weight(&self)->f32 {
+        let Some(channels)=self.initialization().and_then(|init|init.channels.as_ref()) else {return 0.};
+        [b"GestureBoth".as_slice(),b"GestureLeft",b"GestureRight"].iter()
+            .filter_map(|name|channels.dictionary.get(&ActorGraphIntents::native_name(name)))
+            .filter_map(|&index|channels.channels.get(index).and_then(|channel|channel.blend_coefficient))
+            .fold(0.,f32::max).clamp(0.,1.)
+    }
+
     /// Manager begins left/right command sets before this actual Actor call and
     /// submits them afterwards. Face set is begun/ended by this function itself.
     pub(crate) fn try_dispatch_hands_face<S: HandFaceDispatchSource>(
@@ -89,6 +100,31 @@ impl<K, W> ActorAnimationConstruction<K, W> {
             .map_err(HandFaceRuntimeError::Source)?;
         if lod < 6 && (local || lod < 3) {
             self.try_eval_hand_face_tokens(&mut buffer, pool)?;
+            #[cfg(feature="skate3-runtime")]
+            if let Some(gesture)=&self.pc_gesture_playback {
+                if let Some(commands)=&self.mode_body_commands {
+                    // A Skate 2 set gesture plays on this Actor's own gesture channels, whose
+                    // finger cues are already in the buffer: the Skate 3 body's cues cover only
+                    // what the gesture does not.
+                    let weight=1.-self.skate2_gesture_weight();
+                    gesture.apply_body_hand_streams(commands,weight,&mut buffer,pool).map_err(HandFaceRuntimeError::Gesture)?;
+                }
+                gesture.apply_hand_face_streams(&mut buffer,pool).map_err(HandFaceRuntimeError::Gesture)?;
+                static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                if *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_SKATE3_HANDS").is_some()) {
+                    let mut streams = Vec::new();
+                    for name in [b"LeftHand".as_slice(), b"RightHand"] {
+                        let key = crate::actor_graph_construction::ActorGraphIntents::native_name(name);
+                        if let Some(stream) = buffer.stream_index(&key) {
+                            let poses: Vec<u32> = pool.tokens(&buffer, stream).map(|tokens| tokens.iter()
+                                .filter(|token| **token >> 30 == 0).map(|token| (token >> 23) & 0x7f).collect())
+                                .unwrap_or_default();
+                            streams.push(format!("{}={poses:?}", String::from_utf8_lossy(name)));
+                        }
+                    }
+                    eprintln!("skate3 hand streams: s3_body={} s2_gesture_weight={:.3} {}", self.mode_body_commands.is_some(), self.skate2_gesture_weight(), streams.join(" "));
+                }
+            }
             if face_commands.is_some() && ((local && lod < 4) || lod == 0) {
                 self.emit_selected_stream(
                     Target::Face,

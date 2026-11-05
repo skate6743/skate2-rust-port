@@ -262,6 +262,10 @@ pub(crate) struct MarkerUi {
     /// `DistanceMeter`'s hud2/huddistance.
     distance: hud_distance_movie::DistanceMovie,
     throwdown_message: hud_throwmes_movie::ThrowDownMessageMovie,
+    /// PC port: a linked Skate 3 data folder's 1-Up letter banner (`Assets::skate3_hud`), and
+    /// whether its HUD movies' textures await upload.
+    skate3_throwdown_message: Option<hud_throwmes_movie::ThrowDownMessageMovie>,
+    skate3_hud_textures: bool,
     abd: hud_abd_movie::AbdMovie,
     leaderboard: hud_leaderboard_movie::LeaderboardMovie,
     dpo: hud_dpo_movie::DpoMovie,
@@ -573,7 +577,7 @@ impl MarkerUi {
             self.sync_dimmer()?;
         }
         for message in central {
-            self.central.show_formatted(&self.assets, &message.hal_id, &message.args, true)?;
+            self.central.show_formatted(&self.assets, &message.hal_id, &message.args, message.colour, true)?;
         }
         Ok(())
     }
@@ -646,6 +650,10 @@ impl MarkerUi {
         self.big_black_timer=big_black_timer_movie::BigBlackTimerMovie::new(assets)?;
         self.distance = hud_distance_movie::DistanceMovie::new(assets)?;
         self.throwdown_message = hud_throwmes_movie::ThrowDownMessageMovie::new(assets)?;
+        self.skate3_throwdown_message = match assets.skate3_hud {
+            Some(hud) => Some(hud_throwmes_movie::ThrowDownMessageMovie::skate3(assets, hud.throwdown_message)?),
+            None => None,
+        };
         self.abd = hud_abd_movie::AbdMovie::new(assets)?;
         self.leaderboard = hud_leaderboard_movie::LeaderboardMovie::new(assets)?;
         self.dpo = hud_dpo_movie::DpoMovie::new(assets)?;
@@ -939,6 +947,9 @@ impl MarkerUi {
         if let Some(main) = self.main.as_mut() {
             sounds.append(&mut main.letterbox.sounds);
         }
+        if let Some(movie) = self.skate3_throwdown_message.as_mut() {
+            sounds.append(&mut movie.sounds);
+        }
         for reel in &mut self.skate_reel {sounds.append(&mut reel.sounds);}
         for list in self.nis_screens.values_mut().filter_map(NisScreen::sounds) {
             sounds.append(list);
@@ -1050,6 +1061,8 @@ impl MarkerUi {
             big_black_timer,
             distance,
             throwdown_message,
+            skate3_throwdown_message: None,
+            skate3_hud_textures: false,
             abd,
             leaderboard,
             dpo,
@@ -1321,7 +1334,15 @@ impl MarkerUi {
         let pending=self.contacts.pending();self.contacts.update(&self.assets,career.contacts.as_ref())?;
         self.screens.track(Screen::Contacts,pending,self.contacts.pending());
         for message in &career.central_messages {
-            self.central.show_formatted(&self.assets, &message.hal_id, &message.args, central_visible)?;
+            self.central.show_formatted(&self.assets, &message.hal_id, &message.args, message.colour, central_visible)?;
+        }
+        for change in &career.modified_central {
+            match change {
+                skate2_core::challenge::hud::ModifiedCentral::Show { message, stay_up } => {
+                    self.central.show_modified(&self.assets, &message.hal_id, &message.args, message.colour, *stay_up, central_visible)?;
+                }
+                skate2_core::challenge::hud::ModifiedCentral::Clear => self.central.clear_modified(&self.assets)?,
+            }
         }
         for (state, view) in &career.objective_screen {
             self.objective.set_state(&self.assets, *state, view)?;
@@ -1349,6 +1370,22 @@ impl MarkerUi {
         Ok(())
     }
 
+    /// PC port: whether a linked Skate 3 data folder's 1-Up letters can show, its HUD movies
+    /// loaded on first use (`Assets::ensure_skate3_hud`) and their textures uploaded with the next
+    /// draw; without its letter banner the game's shows.
+    fn ensure_skate3_hud(&mut self) -> bool {
+        if self.assets.ensure_skate3_hud() {
+            self.skate3_hud_textures = true;
+            if let Some(hud) = self.assets.skate3_hud {
+                match hud_throwmes_movie::ThrowDownMessageMovie::skate3(&self.assets, hud.throwdown_message) {
+                    Ok(movie) => self.skate3_throwdown_message = Some(movie),
+                    Err(error) => eprintln!("skate 3 data: its 1-Up letter banner cannot show ({error})"),
+                }
+            }
+        }
+        self.assets.skate3_hud.is_some()
+    }
+
     /// The turn HUD components' screen states, each with the data its movie reads then.
     fn apply_turn_huds(&mut self, career: &skate2_core::CareerHud) -> RenderResult<()> {
         for (state,view) in &career.big_black_timer_screen{self.big_black_timer.set_state(&self.assets,*state,view)?;}
@@ -1358,13 +1395,24 @@ impl MarkerUi {
         for (state, view) in &career.distance_screen {
             self.distance.set_state(&self.assets, *state, view)?;
         }
-        for (state, _) in &career.throwdown_screen {
-            self.throwdown_message.set_state(&self.assets, *state)?;
+        for (state, view) in &career.throwdown_screen {
+            // PC port: a linked Skate 3 data folder's 1-Up shows Skate 3's own letter banner.
+            if matches!(view, skate2_core::challenge::turn_hud::TurnHudView::ThrowDown { skate3_letters: true })
+                && self.ensure_skate3_hud()
+                && let Some(movie) = self.skate3_throwdown_message.as_mut()
+            {
+                movie.set_state(&self.assets, *state)?;
+            } else {
+                self.throwdown_message.set_state(&self.assets, *state)?;
+            }
         }
         for (state, view) in &career.abd_screen {
             self.abd.set_state(&self.assets, *state, view)?;
         }
         for (state, view) in &career.leaderboard_screen {
+            if matches!(view, skate2_core::challenge::turn_hud::TurnHudView::Leaderboard { skate3_letters: true, .. }) {
+                self.ensure_skate3_hud();
+            }
             self.leaderboard.set_state(&self.assets, *state, view, &career.mission_title)?;
         }
         for (state, view) in &career.countdown_screen {
@@ -1628,6 +1676,12 @@ impl MarkerUi {
             && !self.slappys.open() && !self.hom_annals.open && !self.replay_editor.open() && !self.replay_footage.open()
             && !self.trick_guide.open() && !self.skate_profile.open();
         let pending = self.pause.pending();
+        if hub && self.pause.rows_change(rows.len()) {
+            // The game behind the hub changed (an online challenge ending into its lobby): the
+            // hub is set up again for it.
+            let layout = pause_movie::HubLayout::new(&self.assets, pause, view)?;
+            self.pause.set_layout(layout);
+        }
         self.pause.update(&self.assets, hub, pause.selected, &rows)?;
         if self.pause.pending() {
             let layout = pause_movie::HubLayout::new(&self.assets, pause, view)?;
@@ -1652,6 +1706,15 @@ impl MarkerUi {
             self.map_facts.snapshot.visible = false;
             self.map_facts.snapshot.career = None;
             return Ok(());
+        }
+        if let Some(image) = snapshot.map.as_ref() {
+            match self.assets.ensure_map(image) {
+                Ok(loaded) if !loaded.is_empty() => {
+                    self.textures.extend(renderer.upload_ui_textures(loaded.iter().filter_map(|key| self.assets.textures.get(key)))?);
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("map: {} not loaded, the default map stays: {error}", image.name),
+            }
         }
         if let Some(career) = snapshot.career.as_deref() {
             self.apply_challenge_map(renderer, career)?;
@@ -1894,6 +1957,9 @@ impl MarkerUi {
             self.big_black_timer.tick(&self.assets)?;
             self.distance.tick(&self.assets)?;
             self.throwdown_message.tick(&self.assets)?;
+            if let Some(movie) = self.skate3_throwdown_message.as_mut() {
+                movie.tick(&self.assets)?;
+            }
             self.abd.tick(&self.assets)?;
             self.leaderboard.tick(&self.assets)?;
             self.dpo.tick(&self.assets)?;
@@ -2020,6 +2086,11 @@ impl MarkerUi {
         Ok(())
     }
     fn draw(&mut self, renderer: &GpuRenderer, scene: &mut GpuScene) -> RenderResult<()> {
+        if std::mem::take(&mut self.skate3_hud_textures) {
+            let uploaded = renderer.upload_ui_textures(self.assets.textures.iter()
+                .filter(|(key, _)| !self.textures.contains_key(*key)).map(|(_, texture)| texture))?;
+            self.textures.extend(uploaded);
+        }
         self.resolve_dpo_icon(renderer)?;
         self.resolve_sponsor_logos(renderer)?;
         self.resolve_footage_textures(renderer)?;
@@ -2142,6 +2213,9 @@ impl MarkerUi {
             (1280, 720), &mut batches, true, None)?;
         project_focus_right(renderer.dimensions(), &mut batches[start..]);
         flatten(&self.assets, &self.throwdown_message.root, IDENTITY, Colour::default(), renderer.dimensions(), &mut batches)?;
+        if let Some(movie) = &self.skate3_throwdown_message {
+            flatten(&self.assets, &movie.root, IDENTITY, Colour::default(), renderer.dimensions(), &mut batches)?;
+        }
         // So are DistanceMeter's (0x82fdb808) and CountdownHUD's (0x82fdb828).
         flatten(&self.assets, &self.distance.root, IDENTITY, Colour::default(), renderer.dimensions(), &mut batches)?;
         flatten(&self.assets, &self.countdown.root, IDENTITY, Colour::default(), renderer.dimensions(), &mut batches)?;
@@ -3192,7 +3266,7 @@ fn render_map_component(assets: &Assets, clip: &Clip, m: Matrix,
     let half = element.positions.get(1).ok_or("map strip has no second position")?;
     let bounds = [-half[0].abs(), -half[1].abs(), half[0].abs(), half[1].abs()];
     let m = concatenate(m, shape_clip.entry.matrix);
-    let info = &assets.map_info;
+    let info = assets.map(facts.and_then(|facts| facts.snapshot.map.as_ref()));
     let texture = assets.texture(&info.texture)?;
     // Native RenderMap uses white, not inherited colour; caller tests visibility.
     out.push(Batch { texture: Some(texture.name.clone()), wrapped: false,

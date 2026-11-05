@@ -6,9 +6,26 @@
 //! the location's image, the event's description, the player's `online_gamer_tag`
 //! (controls/online_gamer_tag, asset 107, fingerprint c9726e6b) and `mMatch`, the matchmaking
 //! card.
-use super::{assets::Assets, clips::Clip, edit_skater_movie, map_movie};
+use super::{
+    assets::Assets,
+    clips::{Child, Clip},
+    edit_skater_movie, map_movie,
+};
 use crate::gpu_renderer::RenderResult;
-use skate2_core::ui::{edit_skater::EditSkaterRow, online_match::Snapshot};
+use skate2_core::ui::{
+    edit_skater::EditSkaterRow,
+    online_match::{MAP_POOL_TITLE, Snapshot},
+};
+
+/// PC port: the Map Pool row's control (see `show_pool_selector`).
+const POOL_SELECTOR: &str = "mSelectorPool";
+/// PC port: the Map Pool row's height, the selectors' spacing, and the panel's bands that take it
+/// in (`shape_bands`): its rows down to the row under its header band's line, that line's clear
+/// content rows (158 to 162, which the lobby browser stretches too) drawn a row high, then the
+/// rest a row lower.
+const POOL_ROW: f32 = 67.0;
+const POOL_PANEL_BANDS: [[f32; 4]; 3] =
+    [[0.0, 160.0, 0.0, 160.0], [158.0, 162.0, 160.0, 160.0 + POOL_ROW], [160.0, 1024.0, 160.0 + POOL_ROW, 1024.0 + POOL_ROW]];
 
 pub(super) const CUSTOM: usize = 105;
 pub(super) const FREESKATE: usize = 106;
@@ -71,6 +88,7 @@ impl OnlineMatchMovie {
             return Ok(());
         }
         self.root.tick(assets)?;
+        self.follow_pool_selector()?;
         let mut calls = Vec::new();
         self.root.take_calls(&mut calls);
         for call in calls {
@@ -143,6 +161,8 @@ impl OnlineMatchMovie {
             return Ok(());
         }
         let previous = self.shown.replace(snapshot.clone());
+        let pooled = snapshot.selectors.first().is_some_and(|selector| selector.title == MAP_POOL_TITLE);
+        self.show_pool_selector(pooled)?;
         for (index, selector) in snapshot.selectors.iter().enumerate() {
             let row = EditSkaterRow {
                 kind: "selector".into(),
@@ -150,7 +170,12 @@ impl OnlineMatchMovie {
                 subtitle: assets.localize(&selector.subtitle)?,
                 ..Default::default()
             };
-            let control = self.root.named(&["mOptions", &format!("mSelector{index}")])?;
+            let name = match (pooled, index) {
+                (true, 0) => POOL_SELECTOR.to_owned(),
+                (true, index) => format!("mSelector{}", index - 1),
+                (false, index) => format!("mSelector{index}"),
+            };
+            let control = self.root.named(&["mOptions", &name])?;
             edit_skater_movie::highlight(control, assets, &row, selector.selected)?;
         }
         if previous.as_ref().is_none_or(|previous| previous.image != snapshot.image) {
@@ -176,6 +201,68 @@ impl OnlineMatchMovie {
                 self.root.named(&["mOptions"])?.goto(assets, "options")?;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// PC port: the Map Pool row (`online_match::MAP_POOL_TITLE`), a copy of the first selector in
+    /// its place while the screen lists one: the selectors, the matchmaking card (half as far, to
+    /// stay over them) and the content move a row down (`Clip::layout_offset`, so their
+    /// timelines' fades and moves play on), and the panel (shape 4 of the custom match's sprite
+    /// at depth 1, shape 7 of the free skate's) takes the row in. Without it they stand where
+    /// the timeline places them.
+    fn show_pool_selector(&mut self, shown: bool) -> RenderResult<()> {
+        let named = |child: &Child, name: &str| child.entry.name.as_deref() == Some(name);
+        let panel_depth = if self.asset == CUSTOM { 3 } else { 6 };
+        let panel = [1, panel_depth]
+            .into_iter()
+            .try_fold(&mut self.root, |clip, depth| clip.children.get_mut(&depth).map(|c| &mut c.clip))
+            .ok_or("online match panel absent")?;
+        if shown {
+            panel.properties.insert("shape_bands".into(), super::shape_bands(&POOL_PANEL_BANDS));
+        } else {
+            panel.properties.remove("shape_bands");
+        }
+        let row = if shown { POOL_ROW } else { 0.0 };
+        for parent in ["mOptions", "mContent"] {
+            let clip = self.root.named(&[parent])?;
+            for child in clip.children.values_mut() {
+                let shift = match (parent, child.entry.name.as_deref()) {
+                    ("mOptions", Some(POOL_SELECTOR)) => continue,
+                    ("mOptions", Some("mMatch")) => row / 2.0,
+                    ("mOptions", Some(name)) if name.starts_with("mSelector") => row,
+                    ("mOptions", _) => continue,
+                    _ => row,
+                };
+                child.entry.matrix.ty += shift - child.clip.layout_offset[1];
+                child.clip.layout_offset[1] = shift;
+            }
+        }
+        let options = self.root.named(&["mOptions"])?;
+        if let Some(pool) = options.children.values_mut().find(|child| named(child, POOL_SELECTOR)) {
+            pool.clip.visible = shown;
+        } else if shown {
+            let mut pool = options.children.values().find(|child| named(child, "mSelector0")).cloned().ok_or("mSelector0 absent")?;
+            pool.entry.name = Some(POOL_SELECTOR.to_owned());
+            pool.clip.layout_offset = [0.0; 2];
+            pool.clip.visible = true;
+            let depth = options.children.keys().next_back().copied().unwrap_or(0) + 1;
+            options.children.insert(depth, pool);
+        }
+        self.follow_pool_selector()
+    }
+
+    /// The Map Pool row stands where the first selector's timeline places it, with its fade:
+    /// it is no timeline's own.
+    fn follow_pool_selector(&mut self) -> RenderResult<()> {
+        let options = self.root.named(&["mOptions"])?;
+        let named = |child: &Child, name: &str| child.entry.name.as_deref() == Some(name);
+        let Some(first) = options.children.values().find(|child| named(child, "mSelector0")) else { return Ok(()) };
+        let mut entry = first.entry.clone();
+        entry.matrix.ty -= first.clip.layout_offset[1];
+        if let Some(pool) = options.children.values_mut().find(|child| named(child, POOL_SELECTOR)) {
+            entry.name = pool.entry.name.take();
+            pool.entry = entry;
         }
         Ok(())
     }

@@ -23,6 +23,8 @@ pub(super) struct GroundFrame<'a> {
     pub minimum_distance: f32,
     pub allow_slow_manuals: bool,
     pub allow_slow_manuals_after_begin: bool,
+    /// The board's velocity direction (SkateboardReckoning +160).
+    pub vel_direction: SkeletonRootVector,
 }
 
 // PPC fsel(x-y,x,y), including source NaN/signed-zero selection.
@@ -31,6 +33,16 @@ fn maximum(x: f32, y: f32) -> f32 {
 }
 
 impl GroundCollector {
+    /// The timed scorables' travel measure: Skate 3's (a manual along the board's velocity
+    /// direction) in Skate 3 scoring, else Skate 2's.
+    fn arc_measure(&self, f: &GroundFrame<'_>, manual: bool) -> super::scoring_timed::ArcMeasure {
+        #[cfg(feature = "skate3-runtime")]
+        if self.base.states.skate3_enabled() {
+            return super::scoring_timed::ArcMeasure::Skate3 { along: manual.then_some(f.vel_direction) };
+        }
+        let _ = manual;
+        super::scoring_timed::ArcMeasure::Skate2 { minimum_distance: f.minimum_distance }
+    }
     /// IsActivitySequenceWorthy82df00e0. Counts are the native current wheel
     /// contact count and cvar frame limits, not elapsed render frames.
     pub(super) fn activity_sequence_worthy(
@@ -180,7 +192,7 @@ impl GroundCollector {
                 self.powerslide_scorable.valid_id().unwrap_or(-1),
                 f.deck_position,
                 f.dt,
-                f.minimum_distance,
+                self.arc_measure(f, false),
             )?;
         }
         if self.manual_tracker.in_state {
@@ -197,7 +209,7 @@ impl GroundCollector {
                 self.manual_scorable.valid_id().unwrap_or(-1),
                 f.deck_position,
                 f.dt,
-                f.minimum_distance,
+                self.arc_measure(f, true),
             )?;
         }
         if self.reverting {
@@ -229,7 +241,7 @@ impl GroundCollector {
                 self.grab_scorable.valid_id().unwrap_or(-1),
                 f.deck_position,
                 f.dt,
-                f.minimum_distance,
+                self.arc_measure(f, false),
             )?;
         }
         self.update_thresholds(out)
@@ -350,7 +362,7 @@ impl GroundCollector {
                 self.powerslide_scorable.valid_id().unwrap_or(-1),
                 f.deck_position,
                 f.dt,
-                f.minimum_distance,
+                self.arc_measure(f, false),
             )?;
             self.powerslide_scorable.reset();
             self.powerslide_tracker.reset();
@@ -371,16 +383,20 @@ impl GroundCollector {
             self.powerslide_scorable.valid_id().unwrap_or(-1),
             f.deck_position,
             f.dt,
-            f.minimum_distance,
+            self.arc_measure(f, false),
         )?;
         if self.powerslide_tracker.score > 0.0 {
-            self.base
+            let mut holder = self
+                .base
                 .score_holder
                 .as_ref()
                 .ok_or(ScoreError::Missing("ground holder"))?
                 .lock()
-                .map_err(|_| ScoreError::Poisoned)?
-                .trick_score += self.powerslide_tracker.score;
+                .map_err(|_| ScoreError::Poisoned)?;
+            // TU3 82DAA840: held while ScoreHolder+0x1C5D is set.
+            if !holder.trick_score_held() {
+                holder.trick_score += self.powerslide_tracker.score;
+            }
         }
         Ok(maximum(finished_score, self.powerslide_tracker.score))
     }
@@ -435,8 +451,14 @@ impl GroundCollector {
         }
         let announced = self.manual_scorable.valid_id().is_some()
             && self.manual_scorable.is_beginning_announced;
+        // TU3 UpdateManual 82DAA8E0 has no speed condition: a slow manual scores.
+        #[cfg(feature = "skate3-runtime")]
+        let any_speed = self.base.states.skate3_enabled();
+        #[cfg(not(feature = "skate3-runtime"))]
+        let any_speed = false;
         // Raw lis/ori/insrdi82dfa260..278, not the truncated decompiler key.
-        let fast = f.allow_slow_manuals
+        let fast = any_speed
+            || f.allow_slow_manuals
             || f.deck_speed > scalar(&self.base.general, 0xacf9_1a8e_5866_0550)?;
         let eligible = active && announced && (f.allow_slow_manuals_after_begin || fast);
         if active && !fast && !announced && !in_sequence {
@@ -463,17 +485,21 @@ impl GroundCollector {
             self.manual_scorable.valid_id().unwrap_or(-1),
             f.deck_position,
             f.dt,
-            f.minimum_distance,
+            self.arc_measure(f, true),
         )?;
         let score = self.manual_tracker.score;
         if score > 0.0 {
-            self.base
+            let mut holder = self
+                .base
                 .score_holder
                 .as_ref()
                 .ok_or(ScoreError::Missing("ground holder"))?
                 .lock()
-                .map_err(|_| ScoreError::Poisoned)?
-                .trick_score += score;
+                .map_err(|_| ScoreError::Poisoned)?;
+            // TU3 82DAAAFC: held while ScoreHolder+0x1C5D is set.
+            if !holder.trick_score_held() {
+                holder.trick_score += score;
+            }
         }
         if self.manual_tracker.just_entered_state {
             let id = (((!bits >> 27) & 1) | 2) as i32;
@@ -515,19 +541,26 @@ impl GroundCollector {
                 out.raw_started_revert = 4 + i32::from(self.previous_animation_revert != 1);
             }
         }
+        // TU3 UpdateRevert 82DAAC10 starts a revert whatever side was last seen (an unseen side is
+        // id 5) and ends an invalid one without banking it; Skate 2 keeps its strict invariants.
+        #[cfg(feature = "skate3-runtime")]
+        let skate3 = self.base.states.skate3_enabled();
+        #[cfg(not(feature = "skate3-runtime"))]
+        let skate3 = false;
         let active = f.is_reverting && f.enabled[11];
         let mut score = 0.0;
         if active && !self.reverting {
-            if self.most_recent_animation_revert == 0 {
+            if self.most_recent_animation_revert == 0 && !skate3 {
                 return Err(ScoreError::Invalid("revert missing animation type"));
             }
             let id = 4 + i32::from(self.most_recent_animation_revert != 1);
             self.start_ground_scorable(db, f, id, GroundScorable::Revert)?;
         } else if !active && self.reverting {
-            let id = self
-                .revert_scorable
-                .valid_id()
-                .ok_or(ScoreError::Invalid("ending invalid revert"))?;
+            let id = match self.revert_scorable.valid_id() {
+                Some(id) => id,
+                None if skate3 => -1,
+                None => return Err(ScoreError::Invalid("ending invalid revert")),
+            };
             out.raw_finished_revert = id;
             let mut holder = self
                 .base
@@ -619,7 +652,7 @@ impl GroundCollector {
                     self.grab_scorable.valid_id().unwrap_or(-1),
                     f.deck_position,
                     f.dt,
-                    f.minimum_distance,
+                    self.arc_measure(f, false),
                 )?;
                 self.end_grab(db)?;
                 self.start_ground_scorable(db, f, id, GroundScorable::Grab)?;
@@ -638,7 +671,7 @@ impl GroundCollector {
                 self.grab_scorable.valid_id().unwrap_or(-1),
                 f.deck_position,
                 f.dt,
-                f.minimum_distance,
+                self.arc_measure(f, false),
             )?;
             self.grab_scorable.reset();
             self.grab_tracker.reset();
@@ -660,16 +693,20 @@ impl GroundCollector {
             self.grab_scorable.valid_id().unwrap_or(-1),
             f.deck_position,
             f.dt,
-            f.minimum_distance,
+            self.arc_measure(f, false),
         )?;
         if self.grab_tracker.score > 0.0 {
-            self.base
+            let mut holder = self
+                .base
                 .score_holder
                 .as_ref()
                 .ok_or(ScoreError::Missing("ground holder"))?
                 .lock()
-                .map_err(|_| ScoreError::Poisoned)?
-                .trick_score += self.grab_tracker.score;
+                .map_err(|_| ScoreError::Poisoned)?;
+            // TU3 82DAB284: held while ScoreHolder+0x1C5D is set.
+            if !holder.trick_score_held() {
+                holder.trick_score += self.grab_tracker.score;
+            }
         }
         Ok(self.grab_tracker.score)
     }

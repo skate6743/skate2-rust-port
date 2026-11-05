@@ -4,12 +4,12 @@ use super::{
     scoring_attributes::{ScoreError, curve, scalar},
     scoring_database::TrickDatabase,
 };
-use crate::attribute_runtime::AttributeRuntimeInstance;
+use super::scoring_attributes::ScoringAttributes;
 impl Scorable {
     pub(super) fn init(
         &mut self,
         db: &TrickDatabase,
-        general: &AttributeRuntimeInstance,
+        general: &ScoringAttributes,
         name: &str,
         point_scalar: f32,
         switched: bool,
@@ -38,7 +38,7 @@ impl Scorable {
         }
         Ok(())
     }
-    pub(super) fn base_score(&self, general: &AttributeRuntimeInstance) -> Result<f32, ScoreError> {
+    pub(super) fn base_score(&self, general: &ScoringAttributes) -> Result<f32, ScoreError> {
         if !self.trick_scoring_settings.is_valid {
             return Err(ScoreError::Invalid("base score of invalid trick"));
         }
@@ -60,7 +60,7 @@ impl Scorable {
     }
     pub(super) fn announce_beginning(
         &mut self,
-        general: &AttributeRuntimeInstance,
+        general: &ScoringAttributes,
     ) -> Result<(), ScoreError> {
         if self.is_beginning_announced {
             return Err(ScoreError::Invalid("duplicate trick beginning"));
@@ -71,7 +71,7 @@ impl Scorable {
     }
     pub(super) fn announce_ending(
         &mut self,
-        general: &AttributeRuntimeInstance,
+        general: &ScoringAttributes,
     ) -> Result<(), ScoreError> {
         if self.is_ending_announced || self.was_a_tap_trick {
             return Err(ScoreError::Invalid("duplicate trick ending"));
@@ -92,7 +92,7 @@ impl Scorable {
     }
     pub(super) fn valid_id(&self) -> Option<i32> {
         let s = &self.trick_scoring_settings;
-        (s.is_valid && (0..269).contains(&s.scorable_id)).then_some(s.scorable_id)
+        (s.is_valid && super::scoring_catalog::info(s.scorable_id).is_some()).then_some(s.scorable_id)
     }
 }
 impl super::super::scoring::Scorables {

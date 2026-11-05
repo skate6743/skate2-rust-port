@@ -484,12 +484,13 @@ impl<FileIdentity, RecordStorage, LocalSpatialIdentity>
         let won =
             plan_winning_ids(&state.records, compact_ids).map_err(PublishAttemptError::Store)?;
 
-        if won.len() > Self::MAX_MAPPED_IDS.saturating_sub(state.records.len()) {
+        let maximum = crate::skate3::stream_capacity(Self::MAX_MAPPED_IDS);
+        if won.len() > maximum.saturating_sub(state.records.len()) {
             return Err(PublishAttemptError::Store(
                 PublishStoreError::IdCapacityExceeded {
                     mapped: state.records.len(),
                     attempted_new: won.len(),
-                    maximum: Self::MAX_MAPPED_IDS,
+                    maximum,
                 },
             ));
         }

@@ -547,10 +547,11 @@ impl StreamRegistrationSink for WorldStreamCatalog {
             .len()
             .checked_add(prepared.len())
             .ok_or(CatalogError::CollectionCountOverflow)?;
-        if attempted > COLLECTION_CAPACITY {
+        let capacity = crate::skate3::stream_capacity(COLLECTION_CAPACITY);
+        if attempted > capacity {
             return Err(CatalogError::CollectionCapacityExceeded {
                 attempted,
-                capacity: COLLECTION_CAPACITY,
+                capacity,
             });
         }
 

@@ -15,6 +15,11 @@ use std::time::{Duration, Instant};
 const CONNECT_RETRY: Duration = Duration::from_millis(250);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const PING_INTERVAL: Duration = Duration::from_secs(1);
+/// While the game loads, how long the thread lets pass without a replay frame or `Busy` from the
+/// game before it says `Busy` itself, and for how long after the load began it does so (a game
+/// that stays stuck past it is let go by the server's inactivity rule).
+const LOADING_BUSY_INTERVAL: Duration = Duration::from_millis(250);
+const LOADING_BUSY_LIMIT: Duration = Duration::from_secs(30);
 
 /// Why the connection ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -313,6 +318,9 @@ enum Command {
     Send(ClientMessage),
     /// Messages and a run of replay frames, handed over together so they share a datagram.
     Tick(Vec<ClientMessage>, Vec<NetFrame>),
+    /// The game is loading (a travel streaming its destination), when its own thread may stall
+    /// past the server's inactivity limit.
+    Loading(bool),
     Shutdown,
 }
 
@@ -350,6 +358,12 @@ impl Client {
     /// Reliable messages, then a run of replay frames: one datagram where they fit.
     pub fn send_tick(&self, messages: Vec<ClientMessage>, frames: Vec<NetFrame>) {
         let _ = self.commands.send(Command::Tick(messages, frames));
+    }
+
+    /// Whether the game is loading: meanwhile the connection's thread says `Busy` for it whenever
+    /// the game itself has said nothing for a while.
+    pub fn set_loading(&self, loading: bool) {
+        let _ = self.commands.send(Command::Loading(loading));
     }
 
     /// Everything heard since the last call.
@@ -454,12 +468,17 @@ fn run_client(server: &str, nickname: &str, game_version: &str, commands: &Recei
     let mut core = ClientCore::new(nonce, nickname, game_version, Build::current(), Instant::now());
     let mut impairment = Impairment::from_env(nonce);
     let mut buffer = [0_u8; 2048];
+    let mut loading: Option<Instant> = None;
+    let mut alive_sent = Instant::now();
     loop {
         let mut busy = false;
         loop {
             match commands.try_recv() {
                 Ok(Command::Send(message)) => {
                     busy = true;
+                    if matches!(message, ClientMessage::Busy) {
+                        alive_sent = Instant::now();
+                    }
                     core.send(&message);
                 }
                 Ok(Command::Tick(messages, frames)) => {
@@ -468,8 +487,12 @@ fn run_client(server: &str, nickname: &str, game_version: &str, commands: &Recei
                         core.send(message);
                     }
                     if !frames.is_empty() {
+                        alive_sent = Instant::now();
                         core.send_frames(&frames);
                     }
+                }
+                Ok(Command::Loading(on)) => {
+                    loading = if on { Some(loading.unwrap_or_else(Instant::now)) } else { None };
                 }
                 Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => {
                     core.disconnect();
@@ -495,6 +518,13 @@ fn run_client(server: &str, nickname: &str, game_version: &str, commands: &Recei
                 Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
                 Err(error) => return Err(error.to_string()),
             }
+        }
+        let now = Instant::now();
+        if loading.is_some_and(|since| now.saturating_duration_since(since) < LOADING_BUSY_LIMIT)
+            && now.saturating_duration_since(alive_sent) >= LOADING_BUSY_INTERVAL
+        {
+            core.send(&ClientMessage::Busy);
+            alive_sent = now;
         }
         if let Some(impairment) = impairment.as_mut() {
             for datagram in Impairment::due(&mut impairment.inbound, Instant::now()) {

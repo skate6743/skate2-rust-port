@@ -13,7 +13,7 @@ use skate2_formats::{
     pegasus::{LOCATION_DESC_DATA_TYPE_ID, LocationDescData, TABLE_OF_CONTENTS_TYPE_ID, TableOfContents},
     rw4::Arena,
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 /// `LoadGlobalLocations`' directory.
 const GLOBAL_LOCATORS: &str = "data\\content\\global_locators\\";
@@ -35,6 +35,8 @@ struct Location {
 #[derive(Default)]
 pub(crate) struct LocationManager {
     global: Vec<Location>,
+    /// Each hash's first global location, which [`LocationManager::find`] answers without a scan.
+    global_index: HashMap<u32, usize>,
     arenas: Vec<(u64, Vec<Location>)>,
 }
 
@@ -80,11 +82,34 @@ fn rx2_locations(bytes: &[u8], locations: &mut Vec<Location>) -> Result<(), Stri
 }
 
 impl LocationManager {
+    fn with_global(global: Vec<Location>) -> Self {
+        let mut global_index = HashMap::new();
+        for (at, location) in global.iter().enumerate() {
+            global_index.entry(location.hash).or_insert(at);
+        }
+        Self { global, global_index, arenas: Vec::new() }
+    }
+
     /// `LoadGlobalLocations` (`0x82a8f3b0`): every global locator arena, in the
     /// directory's order: the game's archives', then the downloadable content's
     /// (`StateDLCFlow::LoadGlobalLocators` loads them again after a content refresh).
     pub(crate) fn with_global_locations(mounts: &MountSet) -> Result<Self, String> {
+        Self::with_global_locations_over(mounts, None)
+    }
+
+    /// [`Self::with_global_locations`], then `more`'s global locators after the game's (PC port: a
+    /// linked Skate 3 data folder's, for a Skate 3 online game, `crate::skate3`); a name both
+    /// hold finds the game's.
+    pub(crate) fn with_global_locations_over(mounts: &MountSet, more: Option<&MountSet>) -> Result<Self, String> {
         let mut global = Vec::new();
+        Self::collect_global_locations(mounts, &mut global)?;
+        if let Some(more) = more {
+            Self::collect_global_locations(more, &mut global)?;
+        }
+        Ok(Self::with_global(global))
+    }
+
+    fn collect_global_locations(mounts: &MountSet, global: &mut Vec<Location>) -> Result<(), String> {
         let dlc = mounts.dlc_archives();
         for archive in mounts.archives().iter().chain(dlc.iter().map(AsRef::as_ref)) {
             for entry in &archive.archive().entries {
@@ -94,10 +119,19 @@ impl LocationManager {
                     continue;
                 }
                 let bytes = archive.read_entry(entry).map_err(|e| format!("{name}: {e}"))?;
-                rx2_locations(&bytes, &mut global).map_err(|e| format!("{name}: {e}"))?;
+                rx2_locations(&bytes, global).map_err(|e| format!("{name}: {e}"))?;
             }
         }
-        Ok(Self { global, arenas: Vec::new() })
+        // A linked Skate 3 data folder's set: Skate 3 ships the global locators loose, one
+        // folder per district (`BAM\DIST_DownTown\...`, `PARK\DIST_StartPark\...`).
+        for name in mounts.loose_files(GLOBAL_LOCATORS) {
+            if !name.to_ascii_lowercase().ends_with(".rx2") {
+                continue;
+            }
+            let bytes = mounts.read_path(&name).map_err(|e| format!("{name}: {e}"))?;
+            rx2_locations(&bytes, global).map_err(|e| format!("{name}: {e}"))?;
+        }
+        Ok(())
     }
 
     /// Follows the registered arenas: a new arena's locations go after those held, a departed
@@ -117,10 +151,10 @@ impl LocationManager {
     /// `GetLocationInfo` (`0x82a8dc40`): the first entry of the hash (streamed entries are
     /// not high priority).
     fn find(&self, hash: u32) -> Option<&Location> {
-        self.global
-            .iter()
-            .chain(self.arenas.iter().flat_map(|(_, locations)| locations))
-            .find(|location| location.hash == hash)
+        self.global_index
+            .get(&hash)
+            .map(|&at| &self.global[at])
+            .or_else(|| self.arenas.iter().flat_map(|(_, locations)| locations).find(|location| location.hash == hash))
     }
 
     /// The global locations, the streamed arenas and their locations held.
@@ -190,7 +224,7 @@ mod tests {
 
     #[test]
     fn an_online_player_past_the_sixth_starts_at_the_sixths_spawn_point() {
-        let manager = LocationManager { global: vec![location(1, 6), location(2, 8)], arenas: Vec::new() };
+        let manager = LocationManager::with_global(vec![location(1, 6), location(2, 8)]);
         let x = |spawn: Option<[f32; 16]>| spawn.map(|transform| (transform[12], transform[14]));
         for player in 0..6 {
             assert_eq!(x(manager.online_spawn_location(1, player)), x(manager.spawn_location(1, player)));

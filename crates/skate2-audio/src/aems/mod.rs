@@ -255,6 +255,25 @@ impl Aems {
         ClassObject { class, data }
     }
 
+    /// PC port: [`Self::create_object`] of the class `name` the interface subscribed as `system`
+    /// declares, not the first loaded interface's class of that name.
+    pub fn create_object_in(&mut self, system: &str, name: &str, data: Vec<i32>) -> ClassObject {
+        let key = format!("{system}|{name}");
+        let mut handle = self.class_handles.get(&key).copied().unwrap_or_default();
+        let (result, mut class) = self.class_create(&mut handle, &data);
+        if result < 0 {
+            if let Some((system_crc, interface_crc)) = self.csis.find_in(system, DescKind::Class, name) {
+                self.csis.set_handle(&mut handle, DescKind::Class, InterfaceId { name, system_crc, interface_crc });
+            }
+            class = self.class_create(&mut handle, &data).1;
+        }
+        self.class_handles.insert(key, handle);
+        if let Some(elapsed) = crate::splicer::trace_elapsed() {
+            eprintln!("{elapsed:9.3} aems create {system} {name} class {class} instances {} data {data:?}", self.instance_count());
+        }
+        ClassObject { class, data }
+    }
+
     /// `Csis::Class::SetMemberData(mpClass, &mData)` when the class exists.
     pub fn set_member_data(&mut self, object: &ClassObject) {
         if object.class != 0 {
@@ -272,6 +291,17 @@ impl Aems {
     /// `Csis::System::Subscribe` of a loaded `.csi`.
     pub fn subscribe_interface(&mut self, name: &str, file: &[u8]) -> bool {
         self.csis.subscribe(name, file).is_some()
+    }
+
+    /// PC port: a second game's `.csi` behind every loaded one ([`Csis::subscribe_last`]).
+    pub fn subscribe_interface_last(&mut self, name: &str, file: &[u8]) -> bool {
+        self.csis.subscribe_last(name, file).is_some()
+    }
+
+    /// PC port: whether an interface was subscribed under `name`.
+    #[must_use]
+    pub fn has_interface(&self, name: &str) -> bool {
+        self.csis.has_system(name)
     }
 
     /// `SNDAEMS_addmodulebank` 0x82c1b7d0 and `SNDAEMSI_resolvemodulebank` 0x82c1b478: bind the

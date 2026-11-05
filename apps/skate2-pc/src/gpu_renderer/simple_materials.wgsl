@@ -71,7 +71,8 @@
     let scale=vec3<f32>(lm.zw,lm.z+lm.w)-vec3<f32>(0.5,0.5,1.0);
     let angle=(globals.animation_time.xxx-scale)*params1.xyz+params2.xyz;
     let reduced=fract(angle*0.159154937+vec3<f32>(0.5))*6.28318548-vec3<f32>(3.14159274);
-    let moved=position+sin(reduced)*(scale*vec3<f32>(params0.w,params1.w,params2.w));
+    // PC weather: the storm's gust (animation_time.y, zero otherwise) sways the authored foliage more.
+    let moved=position+sin(reduced)*(scale*vec3<f32>(params0.w,params1.w,params2.w))*(1.0+globals.animation_time.y);
     var output: PsIn;
     output.position=world_clip(moved);
     output.world=moved;

@@ -256,6 +256,19 @@ impl SkeletonRootTransforms {
             update_heading: true,
         }
     }
+    /// One-time solver handoff. A dormant S2 prediction must not override the
+    /// completed physical root when this assembly resumes its ordinary updates.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn accept_mode_return(&mut self, root: SkeletonRootMatrix, board: SkeletonRootMatrix) {
+        self.animation_to_world = root;
+        self.world_to_animation = root.inverse();
+        self.board = board;
+        self.board_inverse = board.inverse();
+        self.animation_to_board = self.board_inverse.compose(&root);
+        self.last_board_position = board.columns()[3];
+        self.predicted_board_position = self.last_board_position;
+        self.prediction_valid = false;
+    }
     pub(crate) fn animation_to_world(&self) -> &SkeletonRootMatrix {
         &self.animation_to_world
     }
@@ -436,6 +449,7 @@ impl SkeletonRootTransforms {
         self.last_board_position = self.board.columns[3];
         self.board = board.transform_typed().map_err(Error::Board)?;
         self.board_inverse = self.board.inverse();
+        let supplied = self.prediction_valid;
         if !self.prediction_valid {
             let velocity = board.velocity().map_err(Error::Board)?;
             self.predicted_board_position = SkeletonRootVector {
@@ -491,6 +505,14 @@ impl SkeletonRootTransforms {
         // This particular composition has known basis W. Ortho reads basis
         // only and copies P; preserve the actual possibly-unknown P after the
         // existing complete source helper, not per-axis root-state stores.
+        if trace_visual_root() {
+            let velocity = board.velocity().map(|v| v.xyz).unwrap_or([f32::NAN; 3]);
+            eprintln!(
+                "skate2 visual root: supplied={supplied} predicted={:?} board={:?} last_board={:?} velocity={velocity:?} dt={} root={:?}",
+                self.predicted_board_position.xyz, self.board.columns[3].xyz, self.last_board_position.xyz,
+                input.time_delta, self.animation_to_world.columns[3].xyz,
+            );
+        }
         let position = self.animation_to_world.columns[3];
         let normalized = skateboard_spawn_normalize(&self.animation_to_world.xyz_scratch(), ortho);
         self.animation_to_world = SkeletonRootMatrix::known(normalized);
@@ -520,3 +542,10 @@ pub(crate) mod hand_plant;
 
 #[path = "skeleton_root_wipeout.rs"]
 pub(crate) mod wipeout;
+
+/// SKATE2_TRACE_SKATE2_VISUAL_ROOT: each root update's predicted board position, whether it was
+/// supplied, and the board it was placed against.
+fn trace_visual_root() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_SKATE2_VISUAL_ROOT").is_some())
+}

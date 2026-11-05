@@ -80,6 +80,11 @@ pub(super) struct AirCollector {
     pub(super) total_height_gain: f32,
     pub(super) total_trick_points: f32,
     pub(super) air_grab_time: f32,
+    #[cfg(feature = "skate3-runtime")]
+    pub(super) skate3_rotation: Option<crate::skate3_native::scoring_runtime::rotation::Rotation>,
+    /// TU3 AirCollector byte set by each Update2 (82DA8AA4): the air output's locked trajectory.
+    #[cfg(feature = "skate3-runtime")]
+    pub(super) skate3_locked: bool,
     pub(super) player_spin_tracker: RotationTracker,
     pub(super) board_spin_tracker: RotationTracker,
     pub(super) initial_context: ContextGroups,
@@ -132,6 +137,10 @@ impl AirCollector {
             total_height_gain: 0.0,
             total_trick_points: 0.0,
             air_grab_time: 0.0,
+            #[cfg(feature = "skate3-runtime")]
+            skate3_rotation: None,
+            #[cfg(feature = "skate3-runtime")]
+            skate3_locked: false,
             player_spin_tracker: rotation(),
             board_spin_tracker: rotation(),
             initial_context: ContextGroups::new(),
@@ -166,6 +175,8 @@ impl AirCollector {
             return Err(AirResetError::ForeignOutput);
         }
         self.base.reset_analysis();
+        #[cfg(feature = "skate3-runtime")]
+        { self.skate3_rotation = None; }
         output
             .check_current_guard()
             .map_err(AirResetError::Access)?;

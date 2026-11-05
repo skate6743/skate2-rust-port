@@ -138,6 +138,7 @@ impl<C> SimulationAssemblyConstraintSession<skate2_formats::collision::AssemblyP
                 .as_deref()
                 .ok_or_else(|| GrindError("DMO grab force has no entity manager".into()))?;
             let Some(object) = objects.object(objects.grab_spline_owner(spline_id)) else {
+                trace_grab_force(format_args!("spline {spline_id}: no owner object"));
                 return Ok(());
             };
             (object.body.clone(), Arc::clone(&object.model))
@@ -148,6 +149,7 @@ impl<C> SimulationAssemblyConstraintSession<skate2_formats::collision::AssemblyP
             .as_ref()
             .ok_or_else(|| GrindError("DMO grab force has no dynamic pool".into()))?;
         if pool.candidate(&body).is_none() {
+            trace_grab_force(format_args!("spline {spline_id}: body not in the dynamic pool"));
             return Ok(());
         }
         let Some(body) = self
@@ -155,8 +157,10 @@ impl<C> SimulationAssemblyConstraintSession<skate2_formats::collision::AssemblyP
             .map_err(error)?
             .and_then(|part| part.body)
         else {
+            trace_grab_force(format_args!("spline {spline_id}: no part body"));
             return Ok(());
         };
+        trace_grab_force(format_args!("spline {spline_id}: applied {force:?} at {position:?}"));
         let limit = model
             .try_max_angular_acceleration_while_moving()
             .map_err(error)?;
@@ -289,5 +293,12 @@ impl<C> SimulationAssemblyConstraintSession<skate2_formats::collision::AssemblyP
                 .filter(|object| !object.is_static())
                 .map(|_| id))
         })
+    }
+}
+
+/// SKATE2_TRACE_PUSHING_MOVE: each grab force message's outcome.
+fn trace_grab_force(message: std::fmt::Arguments<'_>) {
+    if std::env::var_os("SKATE2_TRACE_PUSHING_MOVE").is_some() {
+        eprintln!("grab force: {message}");
     }
 }

@@ -130,10 +130,13 @@ fn cas_colour(input:Output)->vec4<f32>{
  let world=vec4<f32>(input.relative+stamp.camera_lod.xyz,1.);
  let world_shadow=world_shadow_value(world);
  if mode==4. {
-   let diffuse=clamp(.75*dot(n,light)+.25,0.,1.);
+   var diffuse=clamp(.75*dot(n,light)+.25,0.,1.);
+   if stamp.light.w>0. {diffuse*=1.-stamp.light.w;}
    let h=normalize(light+view);let th=dot(input.tangent,h);
    let spec=stamp.custom[1].xyz*pow(sqrt(1.-th*th),stamp.material[2].w)*clamp(1.75*dot(n,light)+.25,0.,1.);
-   let lit=((vec3<f32>(diffuse*world_shadow)+irradiance(n)*stamp.material[5].w)*stamp.custom[0].xyz+spec*world_shadow)*colour.xyz;
+   var direct_spec=spec;
+   if stamp.light.w>0. {direct_spec*=1.-stamp.light.w;}
+   let lit=((vec3<f32>(diffuse*world_shadow)+irradiance(n)*stamp.material[5].w)*stamp.custom[0].xyz+direct_spec*world_shadow)*colour.xyz;
    return vec4<f32>(cas_tone(lit,input.fog),hair_alpha*object.color.a);
  }
  if mode!=3. {colour*=stamp.custom[0];}

@@ -24,6 +24,14 @@ use std::{
     fmt,
     sync::{Arc, OnceLock},
 };
+#[path = "static_ground_export.rs"]
+mod export;
+pub use export::{ResidentGroundExportError, ResidentGroundFeatures, ResidentGroundGeometry, ResidentGroundJob, decode_resident_geometry};
+#[cfg(feature = "skate3-runtime")]
+pub(crate) use export::ResidentGroundIdentity;
+#[cfg(feature = "skate3-runtime")]
+pub(crate) use export::transformed_mesh_ground;
+
 type TriangleDecodeCache = OnceLock<Result<PreparedMeshTriangles, CollisionError>>;
 
 /// Identity placement constructed by `WorldStreamerView::AddVolume`.
@@ -1930,6 +1938,39 @@ pub(crate) mod tests {
         assert_eq!(result, Err(CollisionError::NoClusters));
         assert_eq!(calls, 2);
         assert_eq!(pool.snapshot(), before);
+    }
+
+    #[test]
+    fn resident_export_retains_every_mesh_and_tracks_source_lifetimes() {
+        let sources: Vec<_> = (1_u16..=65).map(|index| query_source(u64::from(index), triangle_query_mesh(u32::from(index), index))).collect();
+        let mut pool = StaticGroundPool::try_new(65).unwrap();
+        for source in &sources { pool.add(source).unwrap(); }
+        let before = pool.resident_geometry().unwrap();
+        assert_eq!(before.len(), 65);
+        assert!(before.iter().all(|mesh| mesh.triangles.len() == 1));
+        assert!(before.iter().all(|mesh| mesh.features.len() == mesh.triangles.len()));
+        assert!(before.iter().flat_map(|mesh| &mesh.features).all(|feature|
+            feature.flags == 0x01e0 && feature.edge_cosines == [0.; 3]));
+        assert_eq!(before[64].triangles[0].surface_id, Some(0x1234));
+        let material = crate::skate3_bridge::ContactMaterial {
+            static_friction: 0.6, dynamic_friction: 0.4, restitution: 0.,
+        };
+        let mut alternate = crate::skate3_bridge::Skate3GroundWorld::try_new(&pool, material).unwrap();
+        assert_eq!(alternate.world().triangles().len(), 65);
+        assert_eq!(alternate.world().query_metadata().unwrap().packed_surfaces,
+            vec![0x1234_u16; 65]);
+        assert!(!alternate.try_refresh(&pool, material).unwrap());
+        let repeated = pool.resident_geometry().unwrap();
+        assert!(before.iter().zip(&repeated).all(|(a, b)| a.same_source(b)));
+        pool.remove(&sources[0]);
+        let after = pool.resident_geometry().unwrap();
+        assert_eq!(after.len(), 64);
+        assert!(!before[0].same_source(&after[0]));
+        assert!(before[64].same_source(&after[0]));
+        assert_eq!(before[0].triangles[0].surface_id, Some(0x1234));
+        assert!(alternate.try_refresh(&pool, material).unwrap());
+        assert_eq!(alternate.world().triangles().len(), 64);
+        assert!(alternate.source_for_query_mesh(0).unwrap().same_source(&before[64]));
     }
 
     #[test]

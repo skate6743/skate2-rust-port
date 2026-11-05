@@ -89,6 +89,7 @@ fn gpu_native_cube_channels_and_bloom_composition() {
                 planes: [0.2, 1000.],
             }),
             fe_online_menu: false,
+            luminance_scale: 1.0,
         };
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -168,7 +169,7 @@ fn gpu_native_cube_channels_and_bloom_composition() {
         cinematic: false, camera_planes: None,
         final_mult: [1.; 4],
         keep_matrices: false, tazer: false, hom: None,
-        ice: None, fe_online_menu: false,
+        ice: None, fe_online_menu: false, luminance_scale: 1.0,
     };
     post.exposure = 1.;
     post.exposure_time = 0.;

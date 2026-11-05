@@ -57,9 +57,175 @@ impl Location {
     }
 }
 
+#[derive(Clone)]
 struct Vault {
     buffers: Vec<Arc<[u8]>>,
     pointers: BTreeMap<AttributePointerLocation, AttributePointerValue>,
+}
+
+/// PC port (`crate::skate3`): another database's node, its slot moved into a vault adopted here
+/// ([`AttribDb::adopt_vault`]), for [`AttribDb::graft`].
+#[derive(Clone, Copy, Debug)]
+pub struct ForeignNode(Node);
+
+impl ForeignNode {
+    /// Whether its value lives in its own collection's layout (`Node` flag 0x10), which a graft
+    /// onto another collection's layout cannot carry.
+    #[must_use]
+    pub fn is_layout(&self) -> bool {
+        self.0.flags & 0x10 != 0
+    }
+}
+
+/// PC port (`crate::skate3`): values made for [`AttribDb::graft`] rather than read from a vault,
+/// which [`AttribDb::synthesize`] keeps in a vault of their own: each value's pointer slot, the
+/// value, and the texts its `char*`s name, with the relocations between them.
+#[derive(Clone, Debug, Default)]
+pub struct Synthesis {
+    bytes: Vec<u8>,
+    /// (slot, target): the pointer at `slot` points at `target`, both in `bytes`.
+    pointers: Vec<(u32, u32)>,
+    /// Each value's node flags and slot.
+    nodes: Vec<(u8, u32)>,
+}
+
+/// One element of a synthesized `Attrib::Array`.
+#[derive(Clone, Copy, Debug)]
+pub enum Element<'a> {
+    /// Bytes as they are, zero-filled or cut to the element size.
+    Bytes(&'a [u8]),
+    /// A `char*` (`tLocationID`, `EA::Reflection::Text`) to the text.
+    Text(&'a str),
+}
+
+impl Synthesis {
+    fn offset(&self) -> u32 {
+        u32::try_from(self.bytes.len()).expect("a small synthesis")
+    }
+
+    fn align(&mut self, to: usize) {
+        while !self.bytes.len().is_multiple_of(to) {
+            self.bytes.push(0);
+        }
+    }
+
+    /// A zeroed pointer word, aligned.
+    fn slot(&mut self) -> u32 {
+        self.align(4);
+        let at = self.offset();
+        self.bytes.extend([0; 4]);
+        at
+    }
+
+    fn text(&mut self, text: &str) -> u32 {
+        let at = self.offset();
+        self.bytes.extend(text.as_bytes());
+        self.bytes.push(0);
+        at
+    }
+
+    /// A single `char*` value; the vault keeps a word-sized value inline (`Node` flag 0x40), its
+    /// slot holding the pointer. The index of its node.
+    pub fn text_value(&mut self, text: &str) -> usize {
+        let slot = self.slot();
+        let target = self.text(text);
+        self.pointers.push((slot, target));
+        self.nodes.push((0x80 | 0x40, slot));
+        self.nodes.len() - 1
+    }
+
+    /// An `Attrib::Array` of `size`-byte elements (its header: capacity, count, element size and
+    /// flags, each a big-endian `u16`). The index of its node.
+    pub fn array(&mut self, size: u16, elements: &[Element<'_>]) -> usize {
+        let slot = self.slot();
+        self.align(16);
+        let array = self.offset();
+        let count = u16::try_from(elements.len()).expect("a small array");
+        for half in [count, count, size, 0] {
+            self.bytes.extend(half.to_be_bytes());
+        }
+        let mut texts = Vec::new();
+        for element in elements {
+            let at = self.offset();
+            let mut bytes = vec![0; usize::from(size)];
+            match element {
+                Element::Bytes(value) => {
+                    let len = value.len().min(bytes.len());
+                    bytes[..len].copy_from_slice(&value[..len]);
+                }
+                Element::Text(text) => texts.push((at, *text)),
+            }
+            self.bytes.extend(bytes);
+        }
+        for (at, text) in texts {
+            let target = self.text(text);
+            self.pointers.push((at, target));
+        }
+        self.pointers.push((slot, array));
+        self.nodes.push((0x80 | 0x02, slot));
+        self.nodes.len() - 1
+    }
+
+    /// A word-sized value as it is, inline. The index of its node.
+    pub fn word(&mut self, word: [u8; 4]) -> usize {
+        let slot = self.slot();
+        self.bytes[slot as usize..slot as usize + 4].copy_from_slice(&word);
+        self.nodes.push((0x80 | 0x40, slot));
+        self.nodes.len() - 1
+    }
+
+    /// A value of `bytes` behind its slot, each `(offset, text)` of `texts` a `char*` in it to
+    /// the text. The index of its node.
+    pub fn value(&mut self, bytes: &[u8], texts: &[(u32, String)]) -> usize {
+        let slot = self.slot();
+        self.align(16);
+        let value = self.offset();
+        self.bytes.extend(bytes);
+        self.texts(value, texts);
+        self.pointers.push((slot, value));
+        self.nodes.push((0x80, slot));
+        self.nodes.len() - 1
+    }
+
+    /// An `Attrib::Array` of `count` elements of `size` bytes, `bytes` as they are and each
+    /// `(offset, text)` of `texts` a `char*` in them to the text. The index of its node.
+    pub fn raw_array(&mut self, count: u16, size: u16, bytes: &[u8], texts: &[(u32, String)]) -> usize {
+        let slot = self.slot();
+        self.align(16);
+        let array = self.offset();
+        for half in [count, count, size, 0] {
+            self.bytes.extend(half.to_be_bytes());
+        }
+        self.bytes.extend(bytes);
+        self.texts(array + 8, texts);
+        self.pointers.push((slot, array));
+        self.nodes.push((0x80 | 0x02, slot));
+        self.nodes.len() - 1
+    }
+
+    /// An `Attrib::Blob`: its size and a pointer to `bytes`. The index of its node.
+    pub fn blob(&mut self, bytes: &[u8]) -> usize {
+        let slot = self.slot();
+        self.align(16);
+        let value = self.offset();
+        self.bytes.extend(u32::try_from(bytes.len()).expect("a small blob").to_be_bytes());
+        self.bytes.extend([0; 4]);
+        self.align(16);
+        let data = self.offset();
+        self.bytes.extend(bytes);
+        self.pointers.push((value + 4, data));
+        self.pointers.push((slot, value));
+        self.nodes.push((0x80, slot));
+        self.nodes.len() - 1
+    }
+
+    /// The texts of `char*`s at offsets from `base`.
+    fn texts(&mut self, base: u32, texts: &[(u32, String)]) {
+        for (offset, text) in texts {
+            let target = self.text(text);
+            self.pointers.push((base + offset, target));
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -150,24 +316,237 @@ impl AttribDb {
     pub fn load(mounts: &MountSet, paths: &[&str]) -> Result<Self> {
         let mut db = Self::empty();
         for path in paths {
-            let vlt = mounts.read_path(path).map_err(|e| AttribDbError(format!("{path}: {e}")))?;
-            let directory = path.rfind(['/', '\\']).map_or("", |end| &path[..end]);
-            let metadata = AttributeVaultMetadata::parse(&vlt).map_err(|e| AttribDbError(format!("{path}: {e}")))?;
-            let mut buffers: Vec<Arc<[u8]>> = vec![Arc::from(vlt)];
-            for dependency in &metadata.dependencies {
-                let dep_path = format!("{directory}\\{}", dependency.name);
-                let bytes = mounts.read_path(&dep_path).map_err(|e| AttribDbError(format!("{dep_path}: {e}")))?;
-                buffers.push(Arc::from(bytes));
-            }
-            db.add_vault(path, &metadata, buffers)?;
+            db.read_vault(mounts, path)?;
         }
-        for (&(class, collection), _) in &db.collections {
-            db.sorted.entry(class).or_default().push(collection);
+        db.sort_collections();
+        Ok(db)
+    }
+
+    /// One Vault and its dependencies, read from `mounts` beside it.
+    fn read_vault(&mut self, mounts: &MountSet, path: &str) -> Result<()> {
+        let vlt = mounts.read_path(path).map_err(|e| AttribDbError(format!("{path}: {e}")))?;
+        let directory = path.rfind(['/', '\\']).map_or("", |end| &path[..end]);
+        let metadata = AttributeVaultMetadata::parse(&vlt).map_err(|e| AttribDbError(format!("{path}: {e}")))?;
+        let mut buffers: Vec<Arc<[u8]>> = vec![Arc::from(vlt)];
+        for dependency in &metadata.dependencies {
+            let dep_path = format!("{directory}\\{}", dependency.name);
+            let bytes = mounts.read_path(&dep_path).map_err(|e| AttribDbError(format!("{dep_path}: {e}")))?;
+            buffers.push(Arc::from(bytes));
         }
-        for keys in db.sorted.values_mut() {
+        self.add_vault(path, &metadata, buffers)
+    }
+
+    fn sort_collections(&mut self) {
+        self.sorted.clear();
+        for &(class, collection) in self.collections.keys() {
+            self.sorted.entry(class).or_default().push(collection);
+        }
+        for keys in self.sorted.values_mut() {
             keys.sort_unstable();
         }
-        Ok(db)
+    }
+
+    /// PC port (`crate::skate3`): one more Vault after [`AttribDb::load`], read as it reads each.
+    ///
+    /// # Errors
+    ///
+    /// The Vault or a dependency is unreadable or malformed.
+    pub fn load_more(&mut self, mounts: &MountSet, path: &str) -> Result<()> {
+        self.read_vault(mounts, path)?;
+        self.sort_collections();
+        Ok(())
+    }
+
+    /// How many Vaults the database holds, in load order.
+    #[must_use]
+    pub fn vault_count(&self) -> u16 {
+        u16::try_from(self.vaults.len()).unwrap_or(u16::MAX)
+    }
+
+    /// PC port (`crate::skate3`): takes in `source`'s Vault `index` (its buffers and
+    /// relocations), whose nodes [`AttribDb::foreign_node`] then reads here; its index here.
+    pub fn adopt_vault(&mut self, source: &AttribDb, index: u16) -> Option<u16> {
+        let vault = source.vaults.get(usize::from(index))?.clone();
+        let here = u16::try_from(self.vaults.len()).ok()?;
+        self.vaults.push(vault);
+        Some(here)
+    }
+
+    /// PC port (`crate::skate3`): the keys a class defines.
+    #[must_use]
+    pub fn definition_keys(&self, class: u64) -> Vec<u64> {
+        let mut keys: Vec<u64> = self.classes.get(&class).map(|class| class.definitions.keys().copied().collect()).unwrap_or_default();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// PC port (`crate::skate3`): `source`'s definitions of `class` that this database's class
+    /// lacks (the whole class when it has none) and none of the classes `unless_defined_by`
+    /// defines here, with their type names, read as this database's own. None of them has a
+    /// layout node here, so a collection without the value reads none; and a field another of a
+    /// challenge's data providers defines keeps being read there.
+    pub fn merge_definitions(&mut self, source: &AttribDb, class: u64, unless_defined_by: &[u64]) {
+        let Some(theirs) = source.classes.get(&class) else { return };
+        let taken: Vec<u64> = theirs
+            .definitions
+            .keys()
+            .copied()
+            .filter(|&key| unless_defined_by.iter().any(|&other| self.definition(other, key).is_some()))
+            .collect();
+        let ours = self.classes.entry(class).or_insert_with(|| Class { definitions: HashMap::new(), layout_nodes: HashMap::new(), static_data: None });
+        for (&key, definition) in &theirs.definitions {
+            if ours.definitions.contains_key(&key) || taken.contains(&key) {
+                continue;
+            }
+            ours.definitions.insert(key, definition.clone());
+            if let Some(name) = source.type_names.get(&definition.type_id) {
+                self.type_names.entry(definition.type_id).or_insert_with(|| name.clone());
+            }
+        }
+    }
+
+    /// PC port (`crate::skate3`): whether this database's `class` and `source`'s `source_class`
+    /// both define `key`, alike: the same type, element size and arrayness.
+    #[must_use]
+    pub fn defines_alike(&self, class: u64, source: &AttribDb, source_class: u64, key: u64) -> bool {
+        let (Some(ours), Some(theirs)) = (self.definition(class, key), source.definition(source_class, key)) else { return false };
+        ours.type_id == theirs.type_id && ours.size == theirs.size && ours.flags & 1 == theirs.flags & 1
+    }
+
+    /// PC port (`crate::skate3`): a new collection `(class, key)` of `nodes` alone, with no
+    /// parent or layout. False when `key` is taken.
+    pub fn create(&mut self, class: u64, key: u64, nodes: &[(u64, ForeignNode)]) -> bool {
+        if self.collections.contains_key(&(class, key)) {
+            return false;
+        }
+        let nodes = nodes.iter().map(|&(key, ForeignNode(node))| (key, node)).collect();
+        self.collections.insert((class, key), Collection { parent: 0, layout: None, nodes });
+        self.loaded.entry(class).or_default().push(key);
+        let sorted = self.sorted.entry(class).or_default();
+        if let Err(at) = sorted.binary_search(&key) {
+            sorted.insert(at, key);
+        }
+        true
+    }
+
+    /// PC port (`crate::skate3`): the value `(class, collection)` reads for `key` (through its
+    /// parents and layout, as [`AttribDb::attribute`]) made again in `synthesis`, each `char*`
+    /// in it (a relocated word naming a text) with its text. The index of its node; `None`
+    /// without a value.
+    pub fn copy_value(&self, class: u64, collection: u64, key: u64, synthesis: &mut Synthesis) -> Option<usize> {
+        let attribute = self.attribute(class, collection, key)?;
+        if attribute.is_array() {
+            let base = attribute.array_base()?;
+            let header = self.bytes(base, 8)?;
+            let count = u16::from_be_bytes([header[2], header[3]]);
+            let size = u16::from_be_bytes([header[4], header[5]]);
+            let pad = u32::from((u16::from_be_bytes([header[6], header[7]]) >> 12) & 8);
+            let start = base.offset_by(8 + pad);
+            let len = usize::from(count) * usize::from(size);
+            let bytes = self.bytes(start, len)?.to_vec();
+            let texts = self.texts_in(start, len);
+            return Some(synthesis.raw_array(count, size, &bytes, &texts));
+        }
+        let at = attribute.data(0)?;
+        if attribute.is_inline() {
+            if let Some(text) = self.text_at(at) {
+                return Some(synthesis.text_value(text));
+            }
+            let word = self.bytes(at, 4)?;
+            return Some(synthesis.word([word[0], word[1], word[2], word[3]]));
+        }
+        let size = usize::from(attribute.definition.size);
+        let bytes = self.bytes(at, size)?.to_vec();
+        let texts = self.texts_in(at, size);
+        Some(synthesis.value(&bytes, &texts))
+    }
+
+    /// PC port (`crate::skate3`): the `Attrib::Blob` `(class, collection)` reads for `key`.
+    #[must_use]
+    pub fn blob_of(&self, class: u64, collection: u64, key: u64) -> Option<&[u8]> {
+        self.attribute(class, collection, key)?.blob()
+    }
+
+    /// The texts of the relocated words in `len` bytes from `start`, by offset.
+    fn texts_in(&self, start: Location, len: usize) -> Vec<(u32, String)> {
+        (0..len)
+            .step_by(4)
+            .filter_map(|offset| {
+                let offset = u32::try_from(offset).ok()?;
+                let word = start.offset_by(offset);
+                self.pointer_at(word)?;
+                Some((offset, self.text_at(word)?.to_owned()))
+            })
+            .collect()
+    }
+
+    /// PC port (`crate::skate3`): the node `(class, collection)` resolves for `key` through its
+    /// parents (not the class layout), its slot moved by `adopted` (this database's Vault
+    /// indices to the adopting one's); `None` without one or when its Vault was not adopted.
+    #[must_use]
+    pub fn foreign_node(&self, class: u64, collection: u64, key: u64, adopted: &HashMap<u16, u16>) -> Option<ForeignNode> {
+        let mut current = collection;
+        loop {
+            let entry = self.collections.get(&(class, current))?;
+            if let Some(&node) = entry.nodes.get(&key) {
+                let mut node = node;
+                if let Some(slot) = node.slot.as_mut() {
+                    slot.vault = *adopted.get(&slot.vault)?;
+                }
+                return Some(ForeignNode(node));
+            }
+            if entry.parent == 0 {
+                return None;
+            }
+            current = entry.parent;
+        }
+    }
+
+    /// PC port (`crate::skate3`): a [`Synthesis`]'s values as nodes of a vault of their own, in
+    /// the order it made them, for [`AttribDb::graft`].
+    pub fn synthesize(&mut self, synthesis: Synthesis) -> Vec<ForeignNode> {
+        let vault = u16::try_from(self.vaults.len()).expect("few vaults");
+        let pointers = synthesis
+            .pointers
+            .iter()
+            .map(|&(slot, target)| {
+                (
+                    AttributePointerLocation { dependency_index: 0, offset: slot },
+                    AttributePointerValue::Direct { dependency_index: 0, offset: u64::from(target) },
+                )
+            })
+            .collect();
+        self.vaults.push(Vault { buffers: vec![Arc::from(synthesis.bytes)], pointers });
+        synthesis
+            .nodes
+            .iter()
+            .map(|&(flags, slot)| ForeignNode(Node { flags, value: 0, slot: Some(Location { vault, dependency: 0, offset: slot }) }))
+            .collect()
+    }
+
+    /// PC port (`crate::skate3`): a new collection `(class, key)` beside `template`, under its
+    /// parent and with its layout: its own nodes but `drop`, then `nodes` over them. False when
+    /// `template` is absent or `key` is taken.
+    pub fn graft(&mut self, class: u64, key: u64, template: u64, drop: &[u64], nodes: &[(u64, ForeignNode)]) -> bool {
+        if self.collections.contains_key(&(class, key)) {
+            return false;
+        }
+        let Some(base) = self.collections.get(&(class, template)) else { return false };
+        let mut own = base.nodes.clone();
+        for key in drop {
+            own.remove(key);
+        }
+        for &(key, ForeignNode(node)) in nodes {
+            own.insert(key, node);
+        }
+        let collection = Collection { parent: base.parent, layout: base.layout, nodes: own };
+        self.collections.insert((class, key), collection);
+        self.loaded.entry(class).or_default().push(key);
+        let sorted = self.sorted.entry(class).or_default();
+        if let Err(at) = sorted.binary_search(&key) {
+            sorted.insert(at, key);
+        }
+        true
     }
 
     fn add_vault(&mut self, path: &str, metadata: &AttributeVaultMetadata, buffers: Vec<Arc<[u8]>>) -> Result<()> {
@@ -264,6 +643,29 @@ impl AttribDb {
     #[must_use]
     pub fn has_collection(&self, class: u64, collection: u64) -> bool {
         self.collections.contains_key(&(class, collection))
+    }
+
+    /// The keys a collection's own nodes hold, not its parents'.
+    pub(crate) fn own_keys(&self, class: u64, collection: u64) -> Vec<u64> {
+        let mut keys: Vec<u64> = self.collections.get(&(class, collection)).map(|c| c.nodes.keys().copied().collect()).unwrap_or_default();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// PC port (`crate::skate3`): the keys a collection and its parents hold, each once.
+    pub(crate) fn inherited_keys(&self, class: u64, collection: u64) -> Vec<u64> {
+        let mut keys = Vec::new();
+        let mut current = collection;
+        while let Some(entry) = self.collections.get(&(class, current)) {
+            keys.extend(entry.nodes.keys().copied());
+            if entry.parent == 0 {
+                break;
+            }
+            current = entry.parent;
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        keys
     }
 
     /// `AttribSysUtils::GetCollections` (`0x82ab9510`): sorted keys.
@@ -482,6 +884,21 @@ impl<'a> Attribute<'a> {
         self.node.flags & 2 != 0
     }
 
+    /// Whether the value is the node's own word (`Node` flag 0x40).
+    #[must_use]
+    pub const fn is_inline(&self) -> bool {
+        self.node.flags & 0x40 != 0
+    }
+
+    /// An array's `Attrib::Array` header.
+    #[must_use]
+    pub fn array_base(&self) -> Option<Location> {
+        if !self.is_array() {
+            return None;
+        }
+        self.base(self.db.collection_layout(self.container))
+    }
+
     #[must_use]
     pub fn type_name(&self) -> Option<&'a str> {
         self.db.type_name(self.definition.type_id)
@@ -612,6 +1029,65 @@ mod tests {
         let mut mounts = MountSet::new();
         mounts.push(MountedBig::open(archive.path_under(std::path::Path::new(&root)), archive.use_external_header).unwrap());
         AttribDb::load(&mounts, &CAREER_VAULTS).unwrap()
+    }
+
+    /// A synthesized value reads back through its node as a vault's would: an inline `char*`,
+    /// an array of `char*`s, an array of records (cut and zero-filled to the element size) and
+    /// an empty array.
+    #[test]
+    fn synthesized_values_read_back_through_their_nodes() {
+        let mut synthesis = Synthesis::default();
+        let start = synthesis.text_value("_1up_dwtn_02_startlocator_round_1");
+        let starts = synthesis.array(4, &[Element::Text("round_1"), Element::Text("round_2")]);
+        let records = synthesis.array(24, &[Element::Bytes(&[1, 2, 3]), Element::Bytes(&[9; 30])]);
+        let none = synthesis.array(16, &[]);
+        let mut db = AttribDb::empty();
+        let made = db.synthesize(synthesis);
+        let slot = |index: usize| made[index].0.slot.expect("a slot");
+        assert_eq!(made[start].0.flags & 0x40, 0x40, "inline");
+        assert_eq!(db.text_at(slot(start)), Some("_1up_dwtn_02_startlocator_round_1"));
+        let array = |index: usize| {
+            assert_eq!(made[index].0.flags & 0x02, 0x02, "an array");
+            let at = db.pointer_at(slot(index)).expect("the array");
+            let header = db.bytes(at, 8).expect("its header").to_vec();
+            (at, u16::from_be_bytes([header[2], header[3]]), u16::from_be_bytes([header[4], header[5]]))
+        };
+        let (at, count, size) = array(starts);
+        assert_eq!((count, size), (2, 4));
+        assert_eq!(db.text_at(at.offset_by(8)), Some("round_1"));
+        assert_eq!(db.text_at(at.offset_by(12)), Some("round_2"));
+        let (at, count, size) = array(records);
+        assert_eq!((count, size), (2, 24));
+        let mut first = vec![0; 24];
+        first[..3].copy_from_slice(&[1, 2, 3]);
+        assert_eq!(db.bytes(at.offset_by(8), 24), Some(&first[..]));
+        assert_eq!(db.bytes(at.offset_by(32), 24), Some(&[9; 24][..]));
+        assert_eq!(array(none).1, 0);
+    }
+
+    /// A raw word, a value and an array with `char*`s in them, and a blob read back as a vault's.
+    #[test]
+    fn synthesized_raw_values_keep_their_texts() {
+        let mut synthesis = Synthesis::default();
+        let word = synthesis.word([0, 0, 0, 32]);
+        let value = synthesis.value(&[1, 2, 3, 4, 0, 0, 0, 0, 5, 6], &[(4, "scene".to_owned())]);
+        let array = synthesis.raw_array(2, 4, &[0; 8], &[(0, "round_1".to_owned()), (4, "round_2".to_owned())]);
+        let blob = synthesis.blob(b"\x1bLua chunk");
+        let mut db = AttribDb::empty();
+        let made = db.synthesize(synthesis);
+        let slot = |index: usize| made[index].0.slot.expect("a slot");
+        assert_eq!(db.bytes(slot(word), 4), Some(&[0, 0, 0, 32][..]));
+        let at = db.pointer_at(slot(value)).expect("the value");
+        assert_eq!(db.bytes(at, 4), Some(&[1, 2, 3, 4][..]));
+        assert_eq!(db.text_at(at.offset_by(4)), Some("scene"));
+        assert_eq!(db.bytes(at.offset_by(8), 2), Some(&[5, 6][..]));
+        let at = db.pointer_at(slot(array)).expect("the array");
+        assert_eq!(db.text_at(at.offset_by(8)), Some("round_1"));
+        assert_eq!(db.text_at(at.offset_by(12)), Some("round_2"));
+        let at = db.pointer_at(slot(blob)).expect("the blob");
+        assert_eq!(db.bytes(at, 4), Some(&10_u32.to_be_bytes()[..]));
+        let data = db.pointer_at(at.offset_by(4)).expect("its data");
+        assert_eq!(db.bytes(data, 10), Some(&b"\x1bLua chunk"[..]));
     }
 
     #[test]

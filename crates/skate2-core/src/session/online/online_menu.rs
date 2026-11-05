@@ -15,6 +15,9 @@ use skate2_net::protocol::{PlayNowMode, challenge};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// PC port: the location image a linked Skate 3 data folder's maps show.
+const SKATE3_IMAGE: &str = crate::skate3::LOCATION_IMAGE;
+
 /// `LanguageManager`'s English front-end strings the lists sort by.
 const LANGUAGE: &str = "data\\fe\\languages\\english\\LANGUAGE_English";
 
@@ -115,6 +118,68 @@ impl<T, C> SelectedLiveSession<T, C> {
         Ok(lists)
     }
 
+    /// PC port: the linked Skate 3 data's online games of a type (`crate::skate3::OnlineSpot`),
+    /// titled in Skate 3's English (literal text, `#`).
+    pub(super) fn online_skate3_list(net_type: u8) -> Vec<OnlineChallenge> {
+        crate::skate3::linked()
+            .map(|data| {
+                data.online_spots(net_type)
+                    .into_iter()
+                    .map(|spot| OnlineChallenge { key: spot.key, title: format!("#{}", spot.title), image: SKATE3_IMAGE.to_owned(), location: spot.location.clone() })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Every online challenge of a type this build can play: the game's, then the linked Skate 3
+    /// data's.
+    pub(super) fn online_challenge_list_all(&mut self, net_type: u8) -> Result<Vec<OnlineChallenge>, SelectedLiveError> {
+        let mut list = self.online_challenge_list(net_type)?;
+        list.extend(Self::online_skate3_list(net_type));
+        Ok(list)
+    }
+
+    /// The online free skate screen, with the Map Pool row while Skate 3 data is linked and has
+    /// online maps; `host` opens it in its host state, the pool of the game's own location shown.
+    pub(super) fn online_freeskate_screen(&mut self, host: Option<bool>) -> Result<FreeskateMatch, SelectedLiveError> {
+        let locations = self.online_challenge_list(challenge::ONLINE_FREE_SKATE)?;
+        let skate3 = Self::online_skate3_list(challenge::ONLINE_FREE_SKATE);
+        let screen = match host {
+            Some(private) => FreeskateMatch::host(locations, private),
+            None => FreeskateMatch::new(locations),
+        };
+        if skate3.is_empty() {
+            return Ok(screen);
+        }
+        let shown = self.online_game_is_skate3();
+        Ok(screen.with_pools(skate3, shown))
+    }
+
+    /// The unranked custom match screen, with the Map Pool row while Skate 3 data is linked and
+    /// has online games of its types; `host` opens it in its host state.
+    pub(super) fn online_custom_screen(&mut self, host: Option<bool>) -> Result<CustomMatch, SelectedLiveError> {
+        let lists = self.online_match_lists()?;
+        let skate3: Vec<(u8, Vec<OnlineChallenge>)> = lists
+            .iter()
+            .map(|&(net_type, _)| (net_type, Self::online_skate3_list(net_type)))
+            .filter(|(_, list)| !list.is_empty())
+            .collect();
+        let screen = match host {
+            Some(private) => CustomMatch::host(lists, private),
+            None => CustomMatch::new(lists),
+        };
+        if skate3.is_empty() {
+            return Ok(screen);
+        }
+        let shown = self.online_game_is_skate3();
+        Ok(screen.with_pools(skate3, shown))
+    }
+
+    /// Whether the online game's challenge is one of the linked Skate 3 data's.
+    pub(super) fn online_game_is_skate3(&self) -> bool {
+        self.online.game.as_ref().is_some_and(|game| crate::skate3::linked().is_some_and(|data| data.online_spot(game.attributes.challenge_key).is_some()))
+    }
+
     /// `GetOnlineChallengesByType` of a type, at the world's locations, sorted by English title.
     pub(super) fn online_challenge_list(&mut self, net_type: u8) -> Result<Vec<OnlineChallenge>, SelectedLiveError> {
         let titles = self.online_titles()?;
@@ -206,8 +271,8 @@ impl<T, C> SelectedLiveSession<T, C> {
     fn open_online_screen(&mut self, action: OnlineAction) -> Result<(), SelectedLiveError> {
         trace(format_args!("online options: {action:?}"));
         self.online.screen = Some(match action {
-            OnlineAction::Freeskate => MatchScreen::Freeskate(FreeskateMatch::new(self.online_challenge_list(challenge::ONLINE_FREE_SKATE)?)),
-            OnlineAction::CustomMatch => MatchScreen::Custom(CustomMatch::new(self.online_match_lists()?)),
+            OnlineAction::Freeskate => MatchScreen::Freeskate(self.online_freeskate_screen(None)?),
+            OnlineAction::CustomMatch => MatchScreen::Custom(self.online_custom_screen(None)?),
             OnlineAction::QuickMatch => {
                 if let Some(reel) = self.main_menu.as_mut().and_then(|menu| menu.skate_reel.as_mut()) {
                     reel.matching();

@@ -208,28 +208,25 @@ impl EditSkaterPresentationAttributes {
         body: &EditSkaterBody,
         palette: &mut crate::character::palette::CharacterPalette,
     ) -> EditSkaterResult<[f32; 16]> {
-        use crate::{
-            actor_animation_construction::initialization::body_dispatch::tree_commands::numeric::add_sqt,
-            actor_face_playback::presentation::{move_root, twist::try_twist_channels},
-            animation::{AnimationSkeleton, LocalPose, apply_inverse_bind},
-            reckoning_numeric::HostReckoningNumeric,
-            reckoning_sin_cos::HostReckoningSinCosNumeric,
-        };
-        let bone = |name: &str| {
-            hierarchy
-                .bone_names
-                .iter()
-                .position(|b| b.eq_ignore_ascii_case(name))
-                .ok_or_else(|| format!("CAS hierarchy missing {name}"))
-        };
+        use crate::actor_animation_construction::initialization::body_dispatch::tree_commands::numeric::add_sqt;
         if bind.len() != hierarchy.bone_names.len() || delta.len() != bind.len() {
             return Err("CAS bind/clip hierarchy length mismatch".into());
         }
-        let mut pose: Vec<_> = delta
+        let pose: Vec<_> = delta
             .iter()
             .zip(bind)
             .map(|(a, b)| add_sqt(*a, *b, true))
             .collect();
+        self.publish_local_pose(hierarchy,bind,pose,body,palette)
+    }
+    fn publish_local_pose(&self,hierarchy:&skate2_formats::andale::AndaleHierarchy,
+        bind:&[skate2_formats::andale::AndaleSqt],mut pose:Vec<skate2_formats::andale::AndaleSqt>,
+        body:&EditSkaterBody,palette:&mut crate::character::palette::CharacterPalette)->EditSkaterResult<[f32;16]> {
+        use crate::{actor_face_playback::presentation::{move_root,twist::try_twist_channels},
+            animation::{AnimationSkeleton,LocalPose,apply_inverse_bind},reckoning_numeric::HostReckoningNumeric,
+            reckoning_sin_cos::HostReckoningSinCosNumeric};
+        let bone=|name:&str|hierarchy.bone_names.iter().position(|b|b.eq_ignore_ascii_case(name))
+            .ok_or_else(||format!("CAS hierarchy missing {name}"));
         let hips = bone("Hips")?;
         let trajectory = bone("Trajectory")?;
         let saved_hips = move_root::rigid_matrix(pose[hips].rotation, pose[hips].translation);
@@ -356,6 +353,12 @@ pub struct EditSkaterAnimation {
     active_gesture: Option<usize>,
     time: f32,
     previous: f32,
+    #[cfg(feature="skate3-runtime")]
+    skate3_preview:Option<(u32,crate::skate3_gesture_playback::Playback)>,
+    #[cfg(feature="skate3-runtime")]
+    skate3_preview_map:Vec<(usize,usize)>,
+    #[cfg(feature="skate3-runtime")]
+    skate3_preview_hands:Option<PreviewHands>,
 }
 impl EditSkaterAnimation {
     /// LoadBaseAnims8259be98 / CASAnimationLibrary.Load82596fa0.
@@ -387,9 +390,63 @@ impl EditSkaterAnimation {
             active_gesture: None,
             time: 0.0,
             previous: 0.0,
+            #[cfg(feature="skate3-runtime")]
+            skate3_preview:None,
+            #[cfg(feature="skate3-runtime")]
+            skate3_preview_map:Vec::new(),
+            #[cfg(feature="skate3-runtime")]
+            skate3_preview_hands:None,
         })
     }
 
+    pub fn set_skate3_gesture_preview(&mut self,id:Option<u32>)->EditSkaterResult<()> {
+        #[cfg(feature="skate3-runtime")]
+        {
+            if self.skate3_preview.as_ref().map(|(id,_)|*id)!=id {
+                self.skate3_preview=if let Some(id)=id {
+                    if id>=37 {return Err("Invalid Skate 3 gesture preview".into());}
+                    let runtime=crate::skate3_gesture_playback::Playback::new()?;
+                    // The original CAS bank has148 bones (fingers/face/twists),
+                    // whereas movement has36. Bind body bones by their authored
+                    // names; keep the CAS-only channels and physical IK roots.
+                    self.skate3_preview_map.clear();
+                    for (source,name) in runtime.names().iter().enumerate() {
+                        if name.to_ascii_uppercase().ends_with("_REPARENTED") {continue;}
+                        // CAS holds the board under Hips; movement uses its
+                        // own independent root. Keep that native CAS pose,
+                        // together with its finger/face/twist writers.
+                        let mut ancestor=source as i32;let mut board=false;
+                        while ancestor>=0 {
+                            if runtime.names()[ancestor as usize].eq_ignore_ascii_case("SKATEBOARD_ROOT") {board=true;break;}
+                            ancestor=runtime.parents()[ancestor as usize];
+                        }
+                        if board {continue;}
+                        let target=self.database.hierarchy.bone_names.iter().position(|target|target.eq_ignore_ascii_case(name))
+                            .ok_or_else(||format!("CAS gesture body bone {name} missing"))?;
+                        let parent=runtime.parents()[source];
+                        let target_parent=self.database.hierarchy.parents[target];
+                        if parent>=0 {
+                            let parent=&runtime.names()[parent as usize];
+                            let same=target_parent>=0 && self.database.hierarchy.bone_names[target_parent as usize].eq_ignore_ascii_case(parent);
+                            // CAS roots Hips independently of Trajectory; its
+                            // final publication already extracts that root.
+                            if !same && !(target_parent==-1 && name.eq_ignore_ascii_case("Hips") && parent.eq_ignore_ascii_case("Trajectory")) {
+                                return Err(format!("CAS gesture body bone {name} has a different parent").into());
+                            }
+                        }
+                        self.skate3_preview_map.push((source,target));
+                    }
+                    if self.skate3_preview_hands.is_none() {
+                        self.skate3_preview_hands=Some(PreviewHands::load(&self.mounts,&self.database.hierarchy)?);
+                    }
+                    Some((id,runtime))
+                }else{None};
+            }
+        }
+        #[cfg(not(feature="skate3-runtime"))]
+        if id.is_some(){return Err("Skate 3 gestures require the embedded movement feature".into());}
+        Ok(())
+    }
     pub fn hierarchy(&self) -> crate::character::CharacterHierarchy {
         crate::character::CharacterHierarchy {
             bone_names: self.database.hierarchy.bone_names.clone(),
@@ -614,9 +671,138 @@ impl EditSkaterAnimation {
                 .ok_or("CAS part outside hierarchy")?
                 .copy_from_slice(&values);
         }
-        let root = attributes.publish_pose(&database.hierarchy, &bind, &delta, body, palette)?;
+        #[cfg(feature="skate3-runtime")]
+        let root=if let Some((id,runtime))=&mut self.skate3_preview {
+            use crate::actor_animation_construction::initialization::body_dispatch::tree_commands::numeric::add_sqt;
+            runtime.prepare(Some(crate::input_pad::XboxPadSample {buttons:1,left_trigger:0,right_trigger:0,
+                left_x:0,left_y:0,right_x:0,right_y:0}),[*id;4],crate::skate3_gesture_playback::Context {
+                busy_hands:[0;2],filtered:6,hippy:false,holding_board:false,offboard:true,
+                distance_to_cog:1.,blocked:false,skater_animation_flags:0},Default::default())?;
+            runtime.advance(dt)?;
+            let mut pose=delta.iter().zip(bind).map(|(a,b)|add_sqt(*a,*b,true)).collect::<Vec<_>>();
+            for channel in runtime.evaluate(0.)? {
+                let mut body=vec![skate2_formats::andale::AndaleSqt {scale:[1.;4],rotation:[0.,0.,0.,1.],translation:[0.;4]};runtime.names().len()];
+                for &(source,target) in &self.skate3_preview_map {body[source]=pose[target];}
+                channel.compose_over(&mut body)?;
+                for &(source,target) in &self.skate3_preview_map {pose[target]=body[source];}
+            }
+            if let Some(hands)=&self.skate3_preview_hands {hands.apply(runtime,&mut pose)?;}
+            attributes.publish_local_pose(&database.hierarchy,bind,pose,body,palette)?
+        }else{attributes.publish_pose(&database.hierarchy,bind,&delta,body,palette)?};
+        #[cfg(not(feature="skate3-runtime"))]
+        let root=attributes.publish_pose(&database.hierarchy,bind,&delta,body,palette)?;
         self.previous = self.time;
         Ok(root)
+    }
+}
+
+/// The fingers of a Skate 3 gesture preview: in game the hands' blend-pose streams pose them
+/// through the hand command sets (`SetUpBlendPoseStream` 0x825f846c), which the room lacks.
+#[cfg(feature="skate3-runtime")]
+struct PreviewHands {
+    /// Skate 2's 61 hand poses per hand (the fixed frames the game registers first).
+    palettes: [Vec<Vec<skate2_formats::andale::AndaleSqt>>; 2],
+    /// Each hand's `rig_TPose`, which the stream result is added to.
+    tpose: [Vec<skate2_formats::andale::AndaleSqt>; 2],
+    /// Hand bone to room bone, without the hand roots the arms own.
+    map: [Vec<(usize, usize)>; 2],
+}
+
+#[cfg(feature="skate3-runtime")]
+impl PreviewHands {
+    fn load(mounts: &MountSet, hierarchy: &skate2_formats::andale::AndaleHierarchy) -> EditSkaterResult<Self> {
+        use skate2_formats::andale::AndaleDatabase;
+        let mut palettes = [Vec::new(), Vec::new()];
+        let mut tpose = [Vec::new(), Vec::new()];
+        let mut map = [Vec::new(), Vec::new()];
+        for (hand, name) in ["SkaterLeftHand", "SkaterRightHand"].into_iter().enumerate() {
+            let database = AndaleDatabase::parse(&mounts.read_path(&format!("data/anim/{name}.abin"))?)?;
+            let clip = database.clips.iter().find(|c| c.name.eq_ignore_ascii_case("Poses")).ok_or("CAS hand Poses clip")?;
+            if clip.frame_count != 61. {
+                return Err("CAS hand palette must contain its authored 61 frames".into());
+            }
+            palettes[hand] = (0..61).map(|frame| clip.sample_raw_frame_sqt(&database.hierarchy, frame))
+                .collect::<Result<_, _>>().map_err(|e| format!("CAS hand palette: {e:?}"))?;
+            tpose[hand] = named_pose(&database, "rig_TPose")?.ok_or("CAS hand rig_TPose")?;
+            for (source, bone) in database.hierarchy.bone_names.iter().enumerate() {
+                if database.hierarchy.parents[source] < 0 {
+                    continue;
+                }
+                if let Some(target) = hierarchy.bone_names.iter().position(|name| name.eq_ignore_ascii_case(bone)) {
+                    map[hand].push((source, target));
+                }
+            }
+        }
+        Ok(Self { palettes, tpose, map })
+    }
+
+    /// `emit_tokens`' postfix program over the 123-pose palette (Skate 2's 61, then Skate 3's),
+    /// added to the hand's `rig_TPose` as the hands' `add_bind_pose` stream does.
+    fn apply(&self, runtime: &crate::skate3_gesture_playback::Playback, pose: &mut [skate2_formats::andale::AndaleSqt]) -> EditSkaterResult<()> {
+        use crate::actor_animation_construction::initialization::body_dispatch::tree_commands::numeric::{add_sqt, blend};
+        use crate::actor_face_playback::blend_pose_stream::{decode_coefficient, BlendPoseTokenPool};
+        use skate2_formats::andale::AndaleSqt;
+        let mut pool = BlendPoseTokenPool::new();
+        let mut buffer = pool.buffer(0).map_err(|e| format!("CAS hand streams: {e:?}"))?;
+        runtime.apply_hand_face_streams(&mut buffer, &mut pool)?;
+        for (hand, name) in [b"LeftHand".as_slice(), b"RightHand"].into_iter().enumerate() {
+            let key = crate::actor_graph_construction::ActorGraphIntents::native_name(name);
+            let Some(stream) = buffer.stream_index(&key) else { continue };
+            let tokens = pool.tokens(&buffer, stream).map_err(|e| format!("CAS hand tokens: {e:?}"))?;
+            let skate3 = runtime.skate3_hand_poses(hand);
+            let mut stack: Vec<Vec<AndaleSqt>> = Vec::new();
+            let mut coefficients = Vec::new();
+            for &token in tokens {
+                match token >> 30 {
+                    0 => {
+                        let index = ((token >> 23) & 0x7f) as usize;
+                        let frame = match index.checked_sub(self.palettes[hand].len()) {
+                            None => &self.palettes[hand][index],
+                            Some(index) => skate3.get(index).ok_or("CAS hand pose outside the palette")?,
+                        };
+                        stack.push(frame.clone());
+                    }
+                    1 => coefficients.push(decode_coefficient(token)),
+                    _ => {
+                        if coefficients.len() == 1 && stack.len() > 1 {
+                            let second = stack.pop().ok_or("CAS hand blend")?;
+                            let first = stack.pop().ok_or("CAS hand blend")?;
+                            stack.push(first.iter().zip(&second).map(|(a, b)| blend(*a, *b, coefficients[0])).collect());
+                        } else if coefficients.len() > 1 && stack.len() >= coefficients.len() {
+                            // NBlend: the weighted sum, then each rotation normalized.
+                            let inputs = stack.split_off(stack.len() - coefficients.len());
+                            let mut sum = inputs[0].iter().map(|sqt| AndaleSqt {
+                                scale: sqt.scale.map(|v| coefficients[0] * v),
+                                rotation: sqt.rotation.map(|v| coefficients[0] * v),
+                                translation: sqt.translation.map(|v| coefficients[0] * v),
+                            }).collect::<Vec<_>>();
+                            for (input, &coefficient) in inputs.iter().zip(&coefficients).skip(1) {
+                                for (total, sqt) in sum.iter_mut().zip(input) {
+                                    for lane in 0..4 {
+                                        total.scale[lane] = coefficient.mul_add(sqt.scale[lane], total.scale[lane]);
+                                        total.rotation[lane] = coefficient.mul_add(sqt.rotation[lane], total.rotation[lane]);
+                                        total.translation[lane] = coefficient.mul_add(sqt.translation[lane], total.translation[lane]);
+                                    }
+                                }
+                            }
+                            for total in &mut sum {
+                                let length = total.rotation.iter().map(|v| v * v).sum::<f32>().sqrt();
+                                total.rotation = total.rotation.map(|v| v / length);
+                            }
+                            stack.push(sum);
+                        } else {
+                            return Err("CAS hand token program".into());
+                        }
+                        coefficients.clear();
+                    }
+                }
+            }
+            let Some(delta) = stack.pop() else { continue };
+            for &(source, target) in &self.map[hand] {
+                pose[target] = add_sqt(delta[source], self.tpose[hand][source], true);
+            }
+        }
+        Ok(())
     }
 }
 

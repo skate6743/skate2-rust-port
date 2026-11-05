@@ -213,20 +213,27 @@ fn build_arena<I: StreamArenaAssetMetadata>(
         });
     }
 
-    let resources = decode_arena(payload).map_err(DecodedArenaAssetError::Decode)?;
+    let mut resources = decode_arena(payload).map_err(DecodedArenaAssetError::Decode)?;
     let asset_resource_descriptors = asset_info.resource_descriptors();
     for (index, (descriptor, resource)) in asset_resource_descriptors
         .iter()
-        .zip(&resources.resources)
+        .zip(&mut resources.resources)
         .enumerate()
     {
+        // The stream allocates each resource at the XST's size and decompresses the arena's
+        // segment into it: a segment shorter than that (some downloadable content's PROXY
+        // collections are 0x10 short) leaves the rest of the allocation zero. A longer one
+        // would overrun it.
         let expected = descriptor.size;
-        if usize::try_from(expected).ok() != Some(resource.len()) {
-            return Err(DecodedArenaAssetError::ResourceSizeMismatch {
-                index,
-                expected,
-                actual: resource.len(),
-            });
+        match usize::try_from(expected) {
+            Ok(size) if size >= resource.len() => resource.resize(size, 0),
+            _ => {
+                return Err(DecodedArenaAssetError::ResourceSizeMismatch {
+                    index,
+                    expected,
+                    actual: resource.len(),
+                });
+            }
         }
     }
     let arena = Arena::parse(&resources.resources).map_err(DecodedArenaAssetError::Parse)?;

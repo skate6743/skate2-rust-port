@@ -133,6 +133,8 @@ pub struct SfxCtx<'a> {
     pub splicer: &'a mut SpliceManager,
     pub map: &'a mut MixMap,
     pub vault: &'a Vault,
+    /// PC port: a linked Skate 3 data folder's attributes (TU3's darkcatch sounds), none unlinked.
+    pub skate3: Option<&'a Vault>,
     pub rng: &'a mut RwRandom,
     pub master_sub_mix: PluginRef,
     /// The `GlobalEffects` singleton: the reverb and flange sub mixes, the flange pan.

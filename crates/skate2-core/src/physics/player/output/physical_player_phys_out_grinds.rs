@@ -65,6 +65,9 @@ pub(crate) struct Grinds {
     pub(crate) is_grind_facing_forwards: bool,
     pub(crate) is_grinding_ledge: bool,
     pub(crate) is_grinding_curb: bool,
+    /// Skate 3 physics: PhysOut_Grinds+0x146, Tipslide FillPhysOut 82D42788's third flag
+    /// (state +0x63). TU3 CalculateScoreCollectorType 82DA3FDC runs no Grind collector while set.
+    pub(crate) skate3_tipslide_blocks_scoring: bool,
     pub(crate) did_jump: bool,
     pub(crate) hang_primitive_exists: bool,
 }
@@ -101,6 +104,7 @@ impl Grinds {
             is_grind_facing_forwards: false,
             is_grinding_ledge: false,
             is_grinding_curb: false,
+            skate3_tipslide_blocks_scoring: false,
             did_jump: false,
             hang_primitive_exists: false,
         }

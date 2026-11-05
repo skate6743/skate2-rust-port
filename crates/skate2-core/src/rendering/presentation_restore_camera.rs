@@ -86,6 +86,21 @@ fn lerp_matrix(a: &SkeletonRootMatrix, b: &SkeletonRootMatrix, amount: f32) -> S
     result
 }
 
+/// A hard cut that moved the camera under 3 m and turned its view under about 45 degrees: a
+/// collision nudge or a fast swing, not a cut to another shot or place.
+fn nudge(before: &CameraFrame, after: &CameraFrame) -> bool {
+    let [a, b] = [before.matrix.columns(), after.matrix.columns()];
+    let moved: f32 = (0..3).map(|lane| (b[3].xyz[lane] - a[3].xyz[lane]).powi(2)).sum();
+    let facing: f32 = (0..3).map(|lane| a[2].xyz[lane] * b[2].xyz[lane]).sum();
+    moved < 9.0 && facing > 0.7
+}
+
+/// SKATE2_TRACE_CAMERA_RESTORE: the restored camera's hard cuts and kept blends.
+fn trace_restore() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_CAMERA_RESTORE").is_some())
+}
+
 fn lerp_vector(a: SkeletonRootVector, b: SkeletonRootVector, amount: f32) -> SkeletonRootVector {
     b.zip(a, |b, a| (b - a).mul_add(amount, a))
 }
@@ -144,13 +159,25 @@ impl CameraRestore {
         let frames = &next.frames;
         self.lens = Some(next.lens);
         self.count = frames.len().min(MAX_CAMERAS);
+        if trace_restore() && previous.is_some_and(|previous| previous.frames.len() != frames.len()) {
+            eprintln!("camera restore: frame count changed, last blend kept (percent {percent})");
+        }
         if let Some(before) = previous.map(|previous| &previous.frames)
             && !before.is_empty()
             && before.len() == frames.len()
         {
             for (index, (before, after)) in before.iter().zip(frames).take(MAX_CAMERAS).enumerate()
             {
-                let amount = if after.hard_cut {
+                // PC port: the original drew one restore per submitted frame, where snapping a hard
+                // cut to the next frame shows nothing. Drawn between two frames, the camera
+                // positioner's collision cut (`colliding && !previous_colliding`, a nudge off a
+                // wall) would put the camera a fraction of a frame ahead of the skaters it frames.
+                // A cut that barely moves or turns the camera blends with them; a real cut snaps.
+                let snap = after.hard_cut && !nudge(before, after);
+                if trace_restore() && after.hard_cut {
+                    eprintln!("camera restore: hard cut at percent {percent}, snapped={snap}");
+                }
+                let amount = if snap {
                     if forward { 1.0 } else { 0.0 }
                 } else {
                     percent
@@ -185,11 +212,12 @@ impl CameraRestore {
     pub(crate) fn view(&self) -> Option<CameraView> {
         let lens = self.lens?;
         let frame = self.current_frame()?;
+        // PC port addition: Gameplay Settings' Field of View widens or narrows the game camera.
         let projection = project_producer(
             frame.matrix,
             frame.previous_matrix,
             frame.field_of_view,
-            lens.override_fov.unwrap_or(frame.field_of_view),
+            lens.override_fov.unwrap_or(frame.field_of_view) * crate::ui::options::field_of_view_scale(),
             lens.near_plane,
             lens.far_plane,
             lens.override_fov.is_some(),

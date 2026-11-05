@@ -22,6 +22,10 @@ pub(super) struct EditSkaterMovie {
     pub outro_complete: bool,
     pub sounds: Vec<&'static str>,
     previous: Option<EditSkaterView>,
+    /// Authored style-menu geometry (mItem4 y, row step, mInfopanelAnim y), read before the
+    /// Skate 3 rows move anything; cleared whenever the movie root is rebuilt.
+    style_layout: Option<(f32, f32, f32, f32)>,
+    info_shifted: bool,
 }
 impl EditSkaterMovie {
     pub fn new(assets: &Assets) -> RenderResult<Self> {
@@ -39,6 +43,8 @@ impl EditSkaterMovie {
             outro_complete: true,
             sounds: Vec::new(),
             previous: None,
+            style_layout: None,
+            info_shifted: false,
         })
     }
     pub fn update(&mut self, assets: &Assets, view: &EditSkaterView) -> RenderResult<()> {
@@ -49,6 +55,8 @@ impl EditSkaterMovie {
             self.outro_complete = false;
             if view.visible {
                 self.root = Clip::new(assets, 15, 0)?;
+                self.style_layout = None;
+                self.info_shifted = false;
                 self.root.goto(assets, "intro")?;
                 // createskater ctor00e5c0..627, Screen_EdgeOffset==0.
                 // FrontEndManager::SetScreenSize82614300 leaves it zero on
@@ -172,12 +180,22 @@ impl EditSkaterMovie {
             &[("Start", &view.help_start)],
             "HelveticaPresto", 28., 0xff00_0000 | 12047872,
         )?;
+        if mode != "style" && self.info_shifted {
+            if let Some((_, _, info, _)) = self.style_layout {
+                child(self.root.named(&["mSelection"])?, "mInfopanelAnim")?.entry.matrix.ty = info;
+            }
+            self.info_shifted = false;
+        }
         match mode {
             "thumbs" => self.thumbnails(assets, view)?,
             "list" => self.list(assets, view)?,
             "morph" => self.morph(assets, view)?,
             "style" => self.style(assets, view)?,
             _ => return Err("unknown original CAC movie mode".into()),
+        }
+        if std::env::var_os("SKATE2_TRACE_EDIT_SKATER_LAYOUT").is_some() {
+            let info = child(self.root.named(&["mSelection"])?, "mInfopanelAnim")?.entry.matrix.ty;
+            eprintln!("edit skater layout: mode={mode} rows={} info_y={info} shifted={}", view.rows.len(), self.info_shifted);
         }
         // UpdateInfoPanel: rows expose the native description; no synthetic labels.
         let panel = self
@@ -396,7 +414,62 @@ impl EditSkaterMovie {
             menu.named(&["mGestureTitle", "LABELTEXT"])?,
             &assets.localize("ID_CAC_GESTURES_TITLE")?,
         );
-        for i in 0..6 {
+        // PC port: with linked Skate 3 data the menu has more rows (Skate 3 Physics, Gesture Set)
+        // than the six authored items. They are copies of the last item; the two-line rows from
+        // the fifth on move closer together, the menu rises by what that spacing still adds and
+        // the description card moves down, so all of them sit inside the card above it.
+        let authored = 6;
+        if view.rows.len() > authored {
+            let (first, step, info, menu_y) = match self.style_layout {
+                Some(layout) => layout,
+                None => {
+                    let first = child(menu, "mItem4")?.entry.matrix.ty;
+                    let step = child(menu, "mItem5")?.entry.matrix.ty - first;
+                    let selection = self.root.named(&["mSelection"])?;
+                    let info = child(selection, "mInfopanelAnim")?.entry.matrix.ty;
+                    let menu_y = child(selection, "mStylemenu")?.entry.matrix.ty;
+                    self.style_layout = Some((first, step, info, menu_y));
+                    (first, step, info, menu_y)
+                }
+            };
+            let menu = self.root.named(&["mSelection", "mStylemenu"])?;
+            let last = child(menu, "mItem5")?.clone();
+            for i in authored..view.rows.len() {
+                let name = format!("mItem{i}");
+                if child(menu, &name).is_ok() {
+                    continue;
+                }
+                let mut copy = last.clone();
+                copy.entry.name = Some(name);
+                let depth = menu.children.keys().max().copied().unwrap_or(0) + 1;
+                menu.children.insert(depth, copy);
+            }
+            // Stance rises into the spare gap under the gestures; each two-line row then takes
+            // 0.85 of the authored step, the menu rises so its last row ends where 0.77 put it,
+            // and the card drops to the frame's lower edge. Skate 3 Physics, the last row, sits
+            // apart from the rows above it.
+            const SPREAD: f32 = 0.85;
+            const GAP: f32 = 0.45;
+            let physics = skate2_core::ui::edit_skater::EditSkaterOption::Skate3Physics.definition().title;
+            let gap_from = view.rows.iter().position(|row| row.title == physics).filter(|&i| i >= 4);
+            for i in 4..view.rows.len() {
+                let gap = if gap_from.is_some_and(|from| i >= from) { GAP } else { 0. };
+                child(menu, &format!("mItem{i}"))?.entry.matrix.ty =
+                    first + step * (SPREAD * (i - 4) as f32 - 0.23 + gap);
+            }
+            let gap = if gap_from.is_some() { GAP } else { 0. };
+            let lift = step * ((SPREAD - 0.77) * (view.rows.len() - 5) as f32 + gap);
+            child(self.root.named(&["mSelection"])?, "mStylemenu")?.entry.matrix.ty = menu_y - lift;
+            child(self.root.named(&["mSelection"])?, "mInfopanelAnim")?.entry.matrix.ty = info + step * 0.833;
+            self.info_shifted = true;
+        }
+        let menu = self.root.named(&["mSelection", "mStylemenu"])?;
+        let items = menu
+            .children
+            .values()
+            .filter(|c| c.entry.name.as_deref().is_some_and(|n| n.starts_with("mItem")))
+            .count();
+        for i in 0..items.max(authored) {
             let item = menu.named(&[&format!("mItem{i}")])?;
             item.visible = i < view.rows.len();
             if let Some(row) = view.rows.get(i) {
@@ -671,7 +744,9 @@ pub(super) fn highlight(
     // from their timelines; unselected sliders must not retain live arrows.
     for child in clip.children.values_mut() {
         if matches!(child.entry.name.as_deref(), Some("mArrowleft" | "mArrowright")) {
-            child.clip.visible = selected;
+            // PC port: a submenu row on a selector item (the style menu's Skate 3 Physics) has
+            // nothing to step through.
+            child.clip.visible = selected && row.kind != "option";
         }
     }
     for label in ["mTitle", "mTitleglow"] {
@@ -690,6 +765,12 @@ pub(super) fn highlight(
         );
     }
     match row.kind.as_str() {
+        // PC port: the same row drawn on a selector item keeps no value of the item it copies.
+        "option" => {
+            if let Ok(subtitle) = clip.named(&["mSubtitle", "TEXTLABEL"]) {
+                text(subtitle, "");
+            }
+        }
         "selector" | "slider" => {
             let subtitle = clip.named(&["mSubtitle", "TEXTLABEL"])?;
             text(subtitle, &row.subtitle);
@@ -758,7 +839,6 @@ pub(super) fn highlight(
             let title_x = child(clip, "mTitle")?.entry.matrix.tx;
             child(clip, "mArrowright")?.entry.matrix.tx = title_x + width;
         }
-        "option" => {}
         _ => return Err(format!("unsupported CAC control {}", row.kind).into()),
     }
     Ok(())

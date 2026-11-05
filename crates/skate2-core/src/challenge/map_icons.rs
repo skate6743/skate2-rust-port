@@ -389,7 +389,7 @@ fn local_attribute(
 /// `cLocationManager::GetLocationOrientation(name)` (`0x82a8e3b0`)'s translation as X/Z; an
 /// unknown name reads `DefaultLocationOrientation` (the origin).
 fn location_xz(world: &World, name: &str) -> [f32; 2] {
-    world.locations.get(&hash_value32(name)).map_or(
+    world.location(hash_value32(name)).map_or(
         [world.default_location[0], world.default_location[2]],
         |t| [t[12], t[14]],
     )
@@ -546,7 +546,7 @@ pub(crate) fn add_challenge_object_icon(
     location: &str,
 ) -> Option<u32> {
     let icon = icon_named(world, name)?;
-    let position = world.locations.get(&hash_value32(location)).map_or(
+    let position = world.location(hash_value32(location)).map_or(
         [world.default_location[0], world.default_location[2]],
         |t| [t[12], t[14]],
     );
@@ -680,7 +680,7 @@ pub(crate) fn update_player_icons(world: &mut World) {
 /// `0x6ae8ebac95cc3108` at the location's position, none at the origin, kept in
 /// `mVisualIndicatorIcons`.
 fn add_visual_indicator_icon(world: &mut World, location: &str) -> Option<u32> {
-    let position = world.locations.get(&hash_value32(location)).map_or(
+    let position = world.location(hash_value32(location)).map_or(
         [world.default_location[0], world.default_location[2]],
         |t| [t[12], t[14]],
     );

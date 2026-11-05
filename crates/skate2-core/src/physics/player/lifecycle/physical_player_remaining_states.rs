@@ -28,6 +28,7 @@ mod pushing;
 mod pushing_geometry;
 #[path = "../board/physical_player_pushing_move.rs"]
 mod pushing_move;
+pub(crate) use pushing_move::MoveControls;
 #[path = "../board/physical_player_pushing_position.rs"]
 mod pushing_position;
 #[path = "physical_player_remaining_states_simple.rs"]

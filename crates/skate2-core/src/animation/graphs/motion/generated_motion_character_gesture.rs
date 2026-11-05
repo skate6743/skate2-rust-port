@@ -200,6 +200,10 @@ impl ActorConstruction {
             return Err(E::ForeignOwner("Motion controller"));
         }
 
+        #[cfg(feature = "skate3-runtime")]
+        if animation.pc_gesture_preferences.selected==skate2_formats::skater_profile::GestureSet::Skate3 {
+            return Ok(());
+        }
         // Up, Down, Left, Right is the real SkaterGestureSet member order.
         // Debug reads Down before Up, then Left and Right, as in 82cc38bc.
         let indices = if cvars.try_enable_debug_gestures().map_err(E::Cvar)? {

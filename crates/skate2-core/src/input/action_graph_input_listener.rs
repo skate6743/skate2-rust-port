@@ -297,6 +297,10 @@ impl<K> ActionGraphInputListener<K> {
         }
         Ok(())
     }
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn source_auto_push_stick(&self) -> Option<[f32;2]> {
+        self.derived.as_ref().map(|d|[d.current.left_stick_x,d.current.left_stick_y])
+    }
     /// Separate `Actor::GenerateActionGraphIntents`825fdabc publication boundary.
     /// It does not clear the held latch (including when source skips `Fill`).
     pub(crate) fn clear_events_after_generate(&mut self) {

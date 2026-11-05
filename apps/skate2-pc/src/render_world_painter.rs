@@ -198,7 +198,7 @@ pub(crate) struct WorldPainterBlend {
 impl WorldPainterBlend {
     pub(crate) fn postfx(&mut self, environment: &EnvironmentLighting, dt: f32,
         keys: Option<&WorldPainterKeys>, now: std::time::Instant) -> crate::render_postfx::Frame {
-        let [cube,exposure,bloom] = keys.map_or(environment.postfx.location,
+        let [cube,exposure,bloom] = keys.filter(|_| environment.painted_postfx).map_or(environment.postfx.location,
             |k|[k.colour_cube,k.exposure,k.bloom]);
         if self.bloom_key != bloom {
             self.bloom_key=bloom;
@@ -217,6 +217,7 @@ impl WorldPainterBlend {
             exposure: std::array::from_fn(|i|self.exposure[i].update(dt)),
             cube, dt, updated_at: now, cinematic: false, camera_planes: None, hom: None, final_mult: [1.; 4], keep_matrices: false, tazer: false, ice: None,
             fe_online_menu: false,
+            luminance_scale: environment.luminance_scale,
         }
     }
     pub(crate) fn new(environment: &EnvironmentLighting) -> Self {
@@ -243,6 +244,41 @@ impl WorldPainterBlend {
             bloom: environment.postfx.blooms[&crate::render_postfx::DEFAULT_BLOOM].map(|v|BlendScalar::new(v,2.)),
             exposure_key: crate::render_postfx::DEFAULT_EXPOSURE,
             exposure: environment.postfx.exposures[&crate::render_postfx::DEFAULT_EXPOSURE].map(|v|BlendScalar::new(v,5.)),
+        }
+    }
+
+    /// PC port: the next step blends to the environment's values for every key, the keys it
+    /// holds included. A linked Skate 3 district's environment names its collections as
+    /// Skate 2's do (`default`, `auto_exposure`, `bloom`) with values of its own, which a blend
+    /// holding the same key would otherwise never take; and a key the environment lacks (an
+    /// unpainted point) blends to its defaults, which Skate 3's `RenderMan` builds from its own
+    /// collections.
+    pub(crate) fn retarget(&mut self, environment: &EnvironmentLighting) {
+        self.fog.current_key = u64::MAX;
+        self.sky.current_key = u64::MAX;
+        self.bloom_key = u64::MAX;
+        self.exposure_key = u64::MAX;
+        if let Some(fog) = environment.fogs.get(&DEFAULT_COLLECTION_KEY) {
+            self.fog.colour.default = fog.colour;
+            self.fog.far.default = fog.end;
+            self.fog.max.default = fog.strength;
+            self.fog.near.default = fog.start;
+            self.fog.power.default = fog.power;
+        }
+        if let Some(sky) = environment.skies.get(&DEFAULT_COLLECTION_KEY) {
+            for (blend, value) in self.sky.params.iter_mut().zip(sky) {
+                blend.default = *value;
+            }
+        }
+        if let Some(bloom) = environment.postfx.blooms.get(&crate::render_postfx::DEFAULT_BLOOM) {
+            for (blend, value) in self.bloom.iter_mut().zip(bloom) {
+                blend.default = *value;
+            }
+        }
+        if let Some(exposure) = environment.postfx.exposures.get(&crate::render_postfx::DEFAULT_EXPOSURE) {
+            for (blend, value) in self.exposure.iter_mut().zip(exposure) {
+                blend.default = *value;
+            }
         }
     }
 

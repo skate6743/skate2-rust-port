@@ -55,7 +55,8 @@ impl DynamicObjectModifier{
    let cell=mesh.try_get_cell_with_tolerance(SkeletonRootVector::known(candidate),avoid.nav_mesh_y_tolerance).map_err(err)?;
    if !cell.is_valid(){return Ok(());}
    let cost=cell.cost_and_centroid().ok_or("DMO avoid candidate mesh absent")?.0;
-   let current=rig.mesh_info.cell.cost_and_centroid().ok_or("DMO avoid current mesh absent")?.0;
+   // GetCost reads the rig's cell unchecked; PC port: off the mesh (Skate 3's has gaps) it costs most.
+   let current=rig.mesh_info.cell.cost_and_centroid().map_or(f32::MAX,|(cost,_)|cost);
    if !(cost<=current){return Ok(());}
   }
   self.recommended_packet=Some(create_avoid_packet(queue,true,direction)?);self.active=true;self.has_intent=true;Ok(())

@@ -46,7 +46,7 @@ impl Target {
             format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
@@ -404,6 +404,9 @@ impl PostFx {
     pub(super) fn scene_view(&self) -> &wgpu::TextureView {
         &self.scene.view
     }
+    pub(super) fn scene_texture(&self) -> &wgpu::Texture {
+        &self.scene.texture
+    }
     fn update_cube(
         &mut self,
         queue: &wgpu::Queue,
@@ -539,7 +542,7 @@ impl PostFx {
         // reading overshoot and swing the exposure.
         let stepped = self.luminance.is_some() && self.exposure_time >= step;
         if let Some(lum) = self.luminance.filter(|_| stepped) {
-            self.exposure = math::adapt(self.exposure, lum, frame.exposure);
+            self.exposure = math::adapt(self.exposure, lum * frame.luminance_scale, frame.exposure);
             self.exposure_time -= step;
         }
         self.exposure_time = self.exposure_time.min(step);
@@ -687,7 +690,7 @@ impl PostFx {
             .or_else(|| eye.map(|e|(assets.hom.normal_distance,e.planes)))
             .or_else(|| frame.camera_planes.map(|planes|(assets.hom.normal_distance,planes)));
         c[26] = [frame.ice.map_or(0., |ice| ice.scanline), 0., 0., 0.];
-        c[32] = [frame.hom.map_or(0., |hom| hom.overlay), if frame.ice.is_some() { 0. } else { 1. }, 0., 0.];
+        c[32] = [frame.hom.map_or(0., |hom| hom.overlay), if frame.ice.is_some() { 0. } else { 1. }, crate::weather::cloud_cover(), 0.];
         if let Some((lerp, planes)) = depth_inputs {
             // SetParameters' tail 0x8284c6e8..0x8284c77c: g_NISLerp_Mult
             // (-1/(F-N), 1/(F-N)) and g_NISLerp_Add (F/(F-N), N * -1/(F-N)).

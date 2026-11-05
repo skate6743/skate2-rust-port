@@ -24,6 +24,18 @@ impl std::fmt::Display for ScoringUpdateError {
     }
 }
 impl Conditioners {
+    /// PC source solver's actual reset callback; the same ScoreModule.Reset
+    /// that native TeleportPlayerNow82e00988 reaches through ResetAll.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn try_reset_skate3_scoring(&mut self, output: &mut PhysicalPlayerPhysOut)
+        -> Result<(), ScoringUpdateError> {
+        use ScoringUpdateError as E;
+        if !self.matches_output(output) { return Err(E::ForeignOutput); }
+        self.scoring.published_value_mut().ok_or(E::MissingScoring)?.payload
+            .module.published_value_mut().ok_or(E::MissingModule)?
+            .reset(output).map_err(E::Reset)
+    }
+
     pub(crate) fn try_update_scoring(
         &mut self,
         before: &AnimationUpdateComplete,
@@ -31,6 +43,7 @@ impl Conditioners {
         vault: &Arc<AttributeRuntimeVault>,
         input: Arc<ScoringExternalInput>,
         cvars: &InputCvarReferences,
+        use_skate3: bool,
     ) -> Result<(), ScoringUpdateError> {
         use ScoringUpdateError as E;
         if !before.matches_output(output) || !self.matches_output(output) {
@@ -49,11 +62,17 @@ impl Conditioners {
             // Retain its host lookup tables; never rebuild them per simulation tick.
             score.database = Some(TrickDatabase::load(vault).map_err(E::Score)?);
         }
+        #[cfg(feature = "skate3-runtime")]
+        { score.database.as_mut().unwrap().use_skate3 = use_skate3; }
+        #[cfg(not(feature = "skate3-runtime"))]
+        let _ = use_skate3;
         let db = score.database.as_ref().unwrap();
         if !db.matches_vault(vault) {
             return Err(E::Score(ScoreError::Invalid("scoring Vault changed")));
         }
         let module = score.module.published_value_mut().ok_or(E::MissingModule)?;
+        #[cfg(feature = "skate3-runtime")]
+        module.select_skate3(use_skate3).map_err(E::Score)?;
         if input.reset_scoring {
             module.reset(output).map_err(E::Reset)?;
         }

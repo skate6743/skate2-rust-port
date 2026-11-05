@@ -117,7 +117,9 @@ impl Viewer {
                 else {
                     return Ok(None);
                 };
-                let recipe = CharacterRecipe::parse(&record.data.recipe).map_err(|e| e.to_string())?;
+                let mut recipe = CharacterRecipe::parse(&record.data.recipe).map_err(|e| e.to_string())?;
+                crate::edit_skater_character::fill_missing_parts(mounts, &mut recipe, record.data.is_male, "createacharacter")
+                    .map_err(|e| e.to_string())?;
                 (recipe.schema_name.clone(), "createacharacter", Some((recipe, record.data.is_male)))
             }
         };

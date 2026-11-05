@@ -67,6 +67,8 @@ mod field {
 pub const DEFAULT_SETTINGS: u64 = 0xd7ed_bd36_2d7d_2152;
 /// `key_trail` (0x8211ce28), the follow trail's `visualindicators` collection.
 pub const TRAIL_SETTINGS: u64 = 0xa391_a729_f737_46b9;
+/// The `ribbon_spline_colour` `blue` collection.
+const BLUE: u64 = 0x5460_3ffc_31d8_dbf3;
 
 /// `Attrib::Gen::visualindicators` (layout 0x58; `DefaultDataArea` zeros without a collection).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -238,6 +240,10 @@ pub struct VisualIndicatorFrame {
     /// `SkaterPresentation::GetHipsPos` of the first follow target, where
     /// `VIPresentation::UpdateDynamicIndicator` 0x82803fa0 samples the trail.
     pub follow_target_hips: Option<[f32; 3]>,
+    /// PC port: the front and back textures of the `blue` ribbon colour, which a linked
+    /// Skate 3 data folder's streamed splines (its spots' trick areas, which Skate 3 draws
+    /// blue) draw with. Natively a streamed spline binds no texture of its own.
+    pub skate3_area_textures: (Option<u64>, Option<u64>),
 }
 
 /// `VDWriter::_PrepareChallengeVisualIndicators`' `VD_SplineInfo::mType` of an
@@ -323,6 +329,7 @@ pub fn prepare(world: &World, point: [f32; 3]) -> VisualIndicatorFrame {
         default_settings: visual_indicator_settings(db, DEFAULT_SETTINGS),
         trail_settings: visual_indicator_settings(db, TRAIL_SETTINGS),
         follow_target_hips: None,
+        skate3_area_textures: colour_textures(db, BLUE),
     }
 }
 

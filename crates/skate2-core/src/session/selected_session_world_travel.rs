@@ -34,10 +34,12 @@ impl TravelWorld {
     /// The world of the world location `location`, whose `WorldFile` is `world`: BAM's is the
     /// main world (`StringNoCaseCompare(world, "BAM")`).
     pub(crate) fn of_location(world: &str, location: u64) -> Self {
+        // `GetWorldFilename`: a sponsor's training facility names the board sponsor's world.
+        let world = crate::challenge::sponsors::world_file_name(world);
         if world.eq_ignore_ascii_case(crate::game::DEBUG_REFERENCE_WORLD_FILE) {
             Self::Main
         } else {
-            Self::Additional { file: world.to_owned(), location }
+            Self::Additional { file: world.into_owned(), location }
         }
     }
 }
@@ -46,9 +48,8 @@ fn error(e: impl std::fmt::Display) -> SelectedLiveError {
     SelectedLiveError::failed(Stage::TerrainResident, format!("additional world: {e}"))
 }
 
-/// `FELocationManager::IsValidLocation`'s test of a world: its Sim stream is mounted, and its name
-/// takes no localizer parameter the port lacks (`{0:SponsorWorld}`, a sponsor's training
-/// facility's).
+/// `FELocationManager::IsValidLocation`'s test of a world: its Sim stream is mounted (a name
+/// [`TravelWorld::of_location`] formatted: a sponsor's training facility is the board sponsor's).
 fn loadable(mounts: &skate2_formats::mount::MountSet, world: &str) -> bool {
     !world.is_empty()
         && !world.contains('{')
@@ -59,6 +60,7 @@ fn loadable(mounts: &skate2_formats::mount::MountSet, world: &str) -> bool {
 /// global locators (`LoadGlobalLocations`, the downloadable content's included), then the
 /// world's own `<world>_Sim.loc`, which holds the location data its simulation arenas register.
 pub(super) fn world_location(mounts: &skate2_formats::mount::MountSet, world: &str, name: &str) -> Result<[f32; 16], SelectedLiveError> {
+    let world = &*crate::challenge::sponsors::world_file_name(world);
     let hash = crate::challenge::keys::hash_value32(name);
     if let Some(transform) = super::career::locations::LocationManager::with_global_locations(mounts).map_err(error)?.orientation(hash) {
         return Ok(transform);
@@ -84,6 +86,30 @@ impl<T, C> SelectedLiveSession<T, C> {
             _ => false,
         };
         (!in_place).then_some(target)
+    }
+
+    /// Diagnostics (`SKATE2_DIAGNOSTIC_WORLD_TRAVEL=<fe_locations key hex>[:<location>]`): the
+    /// travel into a world location as `TeleportLocalToWorldLocation` makes it, to the named
+    /// location of the location's world (its `_Sim.loc` first one without a name). False when the
+    /// location or its world's location is missing.
+    pub fn diagnostic_world_travel(&mut self, key: u64, name: Option<&str>) -> bool {
+        let Some(mounts) = self.inner.assets.as_ref().map(|assets| std::sync::Arc::clone(&assets.mounts)) else { return false };
+        let Ok(db) = crate::challenge::attrib_db::AttribDb::load_career(&mounts) else { return false };
+        let Some(raw) = crate::ui::freeskate_option::location_world(&db, key) else { return false };
+        let world = crate::challenge::sponsors::world_file_name(&raw).into_owned();
+        let transform = match name {
+            Some(name) => world_location(&mounts, &world, name).ok(),
+            None => mounts
+                .read_path(&format!("data\\content\\world\\stream\\{world}\\{world}_Sim.loc"))
+                .ok()
+                .and_then(|bytes| skate2_formats::location::LocationTable::parse(&bytes).ok())
+                .and_then(|table| table.locations.first().map(|location| location.transform)),
+        };
+        let Some(transform) = transform else { return false };
+        eprintln!("diagnostic: world travel to {world} ({raw}) at {:?}", &transform[12..15]);
+        let travel = self.world_operation(key, Some(&raw)).unwrap_or_default();
+        self.start_world_travel(travel, transform, true);
+        true
     }
 
     /// Whether a travel's additional world is one the port can load (see [`loadable`]).

@@ -50,7 +50,7 @@ impl ChallengeAvoidVolumes {
         -> Result<ResolvedAvoidVolumes, String> {
         let mut volumes = Vec::with_capacity(self.ids.len());
         for &id in &self.ids {
-            if let Some(volume) = triggers.try_find_volume_id((id as f64) as f32)
+            if let Some(volume) = triggers.try_find_volume_id(crate::skate3::id_float(id))
                 .map_err(|e| format!("world avoid trigger lookup: {e:?}"))? {
                 volumes.push(volume);
             }

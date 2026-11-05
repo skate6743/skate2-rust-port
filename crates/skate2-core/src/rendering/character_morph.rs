@@ -89,11 +89,16 @@ impl CharacterMorph {
                 if name.starts_with("global_fat") {
                     name = "fat";
                 }
-                let zone = self
-                    .keywords
-                    .iter()
-                    .position(|prefix| !prefix.is_empty() && name.starts_with(prefix))
-                    .ok_or_else(|| format!("unknown original CAS morph target {name}"))?;
+                let Some(zone) = self.keywords.iter().position(|prefix| !prefix.is_empty() && name.starts_with(prefix)) else {
+                    // PC port: a linked Skate 3 data folder's clothing (`crate::skate3`) carries
+                    // targets for body shapes Skate 2 has no zone for (`thin_...`); they stay at
+                    // the base shape.
+                    if crate::skate3::linked().is_some() {
+                        crate::skate3::note_unmatched_morph(name);
+                        continue;
+                    }
+                    return Err(format!("unknown original CAS morph target {name}").into());
+                };
                 ordered.push((zone, target.blend_shape));
             }
             ordered.sort_by_key(|(zone, _)| *zone);

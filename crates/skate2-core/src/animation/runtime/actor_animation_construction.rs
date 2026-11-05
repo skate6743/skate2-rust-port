@@ -714,8 +714,38 @@ pub(crate) struct ActorAnimationConstruction<K, W> {
     face: Option<ActorFacePlayback>,
     initialization: Option<initialization::ActorAnimationInitialization>,
     sim_allocation_cleared: bool,
+    /// PC mode: the selected S3 physical owner supplies walking trajectories.
+    /// Native S2 character/body/hands/face jobs still use their real owners.
+    skate3_movement: bool,
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) mode_body_pose: Option<initialization::bind_pose::sqt_output::OwnedAnimationSqtBuffer>,
+    /// The S3 body tree behind `mode_body_pose`; its clips' hand streams pose the fingers.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) mode_body_commands: Option<Vec<skate3_core::animation::playback_tree::PoseCommand>>,
+    /// The S3 SkaterAnim's leading foot with fakie (82592B68), RIGHT as true: markers and
+    /// checkpoints read the animation that actually poses the skater.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) mode_foot_forward_right: Option<bool>,
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) pc_gesture_preferences: skate2_formats::skater_profile::PcGestureSettings,
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) pc_gesture_playback: Option<crate::skate3_gesture_playback::Playback>,
 }
 impl<K, W> ActorAnimationConstruction<K, W> {
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn select_skate3_movement(&mut self, selected: bool) {
+        if self.skate3_movement != selected {
+            // A handoff never resurrects a pending trajectory from the other
+            // solver. These are IsInLocomotion / WasInLocomotion, not tuning.
+            if let Some(player) = self.player.as_mut() {
+                player.flags_bits &= !(0x0010_0000 | 0x0008_0000);
+                player.flags_known_mask |= 0x0010_0000 | 0x0008_0000;
+            }
+            self.skate3_movement = selected;
+            if !selected { self.mode_body_pose=None; self.mode_body_commands=None; self.mode_foot_forward_right=None; }
+        }
+    }
+
     /// `cPedestrianAnim82e90390` shares Animatable/ChannelAnimatable storage.
     /// No ISkaterAnim, player flags, face owner or skater suffix is constructed.
     pub(crate) fn new_pedestrian(authority: &ActorGraphAuthority<K>, world: Arc<W>) -> Self {
@@ -754,6 +784,17 @@ impl<K, W> ActorAnimationConstruction<K, W> {
             face: None,
             initialization: None,
             sim_allocation_cleared: false,
+            skate3_movement: false,
+            #[cfg(feature = "skate3-runtime")]
+            mode_body_pose: None,
+            #[cfg(feature = "skate3-runtime")]
+            mode_body_commands: None,
+            #[cfg(feature = "skate3-runtime")]
+            mode_foot_forward_right: None,
+            #[cfg(feature = "skate3-runtime")]
+            pc_gesture_preferences: Default::default(),
+            #[cfg(feature = "skate3-runtime")]
+            pc_gesture_playback: None,
         }
     }
     /// Actual Actor allocation825fedbc uses Sim category55: maskFFFFFFFF,

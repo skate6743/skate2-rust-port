@@ -377,6 +377,12 @@ pub(crate) struct PhysicalPlayerAssemblyInputs {
 /// manager owner make this meaningful construction ownership, not an empty token.
 /// Distinct constructions always allocate distinct owners, even for same assets.
 pub(crate) struct PhysicalPlayerAssemblyOwner {
+    /// PC mode state belongs to this same Actor physical allocation. Replacing
+    /// character recipes does not create another player runtime or body owner.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) skate3: std::sync::Mutex<Option<Box<crate::skate3_native::physics::player::Skate3Player>>>,
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) skate3_exit: std::sync::Mutex<Option<crate::skate3_native::physics::player::exit::PlayerExit>>,
     /// Actual mAnimOutPhysIn+2b4, assigned by `SetPhysUpdateData82dfe688`.
     pub(crate) animation_physics_input: std::sync::Mutex<Option<Arc<std::sync::Mutex<crate::actor_construction::anim_out_phys_in::AnimOutPhysInOwner>>>>,
     pub(crate) actor_query: std::sync::Mutex<Option<Arc<crate::actor_construction::physical_mount::ActorPhysicalQueryBinding>>>,
@@ -705,6 +711,10 @@ impl<'world> PhysicalPlayerAssemblyConstruction<'world> {
         inputs: PhysicalPlayerAssemblyInputs,
     ) -> Self {
         let owner = Arc::new(PhysicalPlayerAssemblyOwner {
+            #[cfg(feature = "skate3-runtime")]
+            skate3: std::sync::Mutex::new(None),
+            #[cfg(feature = "skate3-runtime")]
+            skate3_exit: std::sync::Mutex::new(None),
             animation_physics_input: std::sync::Mutex::new(None),
             actor_query: std::sync::Mutex::new(None),
             skeleton_constructor_complete: std::sync::atomic::AtomicBool::new(false),

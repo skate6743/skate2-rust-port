@@ -318,6 +318,9 @@ pub(crate) struct Air {
     pub(crate) height_of_com: [f32; 25],
     pub(crate) is_at_apex: bool,
     pub(crate) is_traj_valid: bool,
+    /// TU3 PhysOut_Air+452: the trajectory's velocity is locked (KnownAir, ground wipeout).
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) use_air_reckoning: bool,
     pub(crate) is_skateboard_airborne: bool,
     pub(crate) is_preparing_to_jump: bool,
     pub(crate) is_starting_to_jump: bool,
@@ -373,6 +376,8 @@ impl Air {
             height_of_com: [0.0; 25],
             is_at_apex: false,
             is_traj_valid: false,
+            #[cfg(feature = "skate3-runtime")]
+            use_air_reckoning: false,
             is_skateboard_airborne: false,
             is_preparing_to_jump: false,
             is_starting_to_jump: false,
@@ -456,6 +461,9 @@ pub(crate) struct Skeleton {
     pub(crate) skateboard_dont_push: bool,
     pub(crate) tell_anim_dont_push_or_brake: bool,
     pub(crate) is_wipeout_over: bool,
+    /// Skate 3 physics: PhysOut_Skeleton+580, the wipeout response strength TU3's Hall of
+    /// Meat sums (UpdateInWipeout 82DAF6D4).
+    pub(crate) skate3_response_strength: f32,
     pub(crate) is_left_foot_on_deck: bool,
     pub(crate) is_right_foot_on_deck: bool,
     pub(crate) is_grabbing_left: bool,
@@ -515,6 +523,7 @@ impl Skeleton {
             skateboard_dont_push: false,
             tell_anim_dont_push_or_brake: false,
             is_wipeout_over: false,
+            skate3_response_strength: 0.0,
             is_left_foot_on_deck: false,
             is_right_foot_on_deck: false,
             is_grabbing_left: false,
@@ -560,6 +569,9 @@ pub(crate) struct GroundRemainder {
     pub(crate) is_hippy_jumping: bool,
     pub(crate) is_full_hippy_jump: bool,
     pub(crate) just_hippy_jumped: bool,
+    /// TU3 PhysOut_Ground +0x138: the hippy jump's half turns, from the landing-on-deck state.
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) landing_half_turns: i32,
 }
 impl GroundRemainder {
     pub(crate) fn reset_values() -> Self {
@@ -592,6 +604,8 @@ impl GroundRemainder {
             is_hippy_jumping: false,
             is_full_hippy_jump: false,
             just_hippy_jumped: false,
+            #[cfg(feature = "skate3-runtime")]
+            landing_half_turns: 0,
         }
     }
 }
@@ -771,6 +785,15 @@ pub(crate) struct State {
     pub(crate) is_offboard_ground: bool,
     pub(crate) physics_requests_dismount: bool,
     pub(crate) physics_requests_runout: bool,
+    /// Skate 3 physics: PhysOut_State+68/+69 from WipeoutGround FillPhysOut 82D3EEE8 (the
+    /// respawn countdown is running / a teleport is requested), TU3's Hall of Meat wipeout gate.
+    pub(crate) skate3_wipeout_countdown: bool,
+    /// Skate 3 physics: state flag 80 (processed flags 2484 bit 21, a darkcatch), TU3's
+    /// `PhysOut_State` +0x50, which its audio reads as the inverted-board flag.
+    pub(crate) skate3_dark_catch: bool,
+    /// PC port: Skate 3 physics publishes this state.
+    pub(crate) skate3_physics: bool,
+    pub(crate) skate3_teleport_requested: bool,
 }
 impl State {
     pub(crate) fn reset_values() -> Self {
@@ -815,6 +838,10 @@ impl State {
             is_offboard_ground: false,
             physics_requests_dismount: false,
             physics_requests_runout: false,
+            skate3_wipeout_countdown: false,
+            skate3_dark_catch: false,
+            skate3_physics: false,
+            skate3_teleport_requested: false,
         }
     }
 }

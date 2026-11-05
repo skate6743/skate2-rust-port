@@ -117,6 +117,22 @@ pub(crate) fn cube_texel_index(x: usize, y: usize, z: usize) -> usize {
         / 4
 }
 
+/// The identity colour cube in the decoded volume's channel order: what a linked Skate 3
+/// district's `colour_cube/default`, which names no file, grades with (no grade).
+#[allow(dead_code, reason = "a district keeps the Skate 2 world's PostFX (user request)")]
+pub(crate) fn neutral_cube() -> Vec<u8> {
+    let mut out = Vec::with_capacity(32 * 32 * 32 * 4);
+    for z in 0..32_u32 {
+        for y in 0..32_u32 {
+            for x in 0..32_u32 {
+                let level = |value: u32| u8::try_from(value * 255 / 31).unwrap_or(u8::MAX);
+                out.extend_from_slice(&[level(31 - y), level(x), level(z), 255]);
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn decode_cube(bytes: &[u8]) -> Option<Vec<u8>> {
     if bytes.len() != 32 * 32 * 32 * 3 {
         return None;

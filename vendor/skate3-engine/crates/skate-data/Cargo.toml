@@ -1,0 +1,12 @@
+[package]
+name = "skate-data"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+flate2 = "=1.1.10"
+zstd = "=0.13.3"
+skate-core = { path = "../skate-core" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"

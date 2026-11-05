@@ -72,6 +72,16 @@ fn restore_blends_until_a_hard_cut() {
 }
 
 #[test]
+fn a_collision_nudge_flagged_as_a_cut_blends_with_the_frame() {
+    let mut restore = CameraRestore::new();
+    let a = game(frame(0.0, [0.0; 3], 60.0));
+    let mut nudged = frame(0.0, [0.3, 0.0, 0.0], 60.0);
+    nudged.hard_cut = true;
+    restore.restore(&game(nudged), Some(&a), 0.5, true);
+    assert!((restore.view().expect("blended view").position[0] - 0.15).abs() < 1e-5);
+}
+
+#[test]
 fn a_changed_camera_count_keeps_the_last_blend() {
     let mut restore = CameraRestore::new();
     let a = game(frame(0.0, [0.0; 3], 60.0));

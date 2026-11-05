@@ -287,8 +287,8 @@ impl MovieRenderer {
 fn open_movie(settings: &MovieSettings, mounts: &MountSet) -> Result<(String, MovieSource), String> {
     if let Some(root) = game_root(mounts) {
         let path = skate2_formats::host_path::on_disk(&root.join(settings.file.replace('\\', "/")));
-        if path.is_file() {
-            let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        if skate2_formats::host_path::is_file(&path) {
+            let file = skate2_formats::host_path::open(&path).map_err(|e| e.to_string())?;
             return Ok((path.display().to_string(), BufReader::new(Box::new(file))));
         }
     }

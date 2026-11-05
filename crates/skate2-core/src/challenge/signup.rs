@@ -158,7 +158,7 @@ pub(crate) fn challenge_type(world: &World, activity: usize) -> i32 {
 
 /// `cLocationManager::IsValidLocation`.
 fn location_position(world: &World, name: &str) -> Option<[f32; 3]> {
-    world.locations.get(&hash_value32(name)).map(|t| [t[12], t[13], t[14]])
+    world.location(hash_value32(name)).map(|t| [t[12], t[13], t[14]])
 }
 
 /// `cActivityManager::CreateActivity` (`0x82cdbca8`) passes every activity

@@ -10,6 +10,11 @@ impl AirCollector {
         complete: bool,
         out: &mut Scoring2,
     ) -> Result<(), ScoreError> {
+        // TU3 UpdateScoreThresholds 82DA992C: nothing while the trajectory is locked.
+        #[cfg(feature = "skate3-runtime")]
+        if self.skate3_locked {
+            return Ok(());
+        }
         let mut set = |id, value| {
             super::scoring_thresholds::update(
                 &self.base.general,

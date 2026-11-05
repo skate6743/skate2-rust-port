@@ -116,6 +116,10 @@ impl<const N: usize, E> EntityMan<N, E> {
     /// Direct native inter-entity callbacks may mutate a peer during the
     /// selected entity's update. Keep every payload in the SAME roster and
     /// borrow disjoint entries; do not defer calls or clone peer state.
+    /// The KD tree of the members' positions (`GetEntitiesWithinRange`).
+    pub(crate) fn spatial(&self) -> Option<&LocatorKdTree> {
+        self.spatial.as_ref()
+    }
     pub(crate) fn split_entity_and_peers_mut(&mut self, id: u32)
         -> Option<(&mut E, Vec<(u32, &mut E)>)> {
         let mut selected = None;

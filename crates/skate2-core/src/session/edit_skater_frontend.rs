@@ -8,7 +8,7 @@ use crate::{
 };
 use skate2_formats::{
     cac_parts::CacPartDb, recipe::customizations::CharacterCustomizations,
-    skater_profile::CacRecord,
+    skater_profile::{CacRecord, GestureSet, PcGestureSettings, PcSkate3Style},
 };
 use std::sync::Arc;
 
@@ -21,6 +21,8 @@ pub(crate) struct EditSkaterEffects {
 pub(crate) struct EditSkaterFrontend {
     pub controller: EditSkaterController,
     pub record: CacRecord,
+    pub(crate) gesture_settings: PcGestureSettings,
+    pub(crate) skate3_style: PcSkate3Style,
     db: Arc<CacPartDb>,
     vault: Arc<AttributeRuntimeVault>,
     policy: EditSkaterPolicy,
@@ -56,6 +58,8 @@ pub(crate) struct EditSkaterFrontend {
 }
 const MAIN: u64 = 0xad45_4a0e_cd0e_2edf;
 const SHOP: u64 = 0xb5c3_cac4_b3dc_0165;
+/// PC port: the image a linked Skate 3 data folder's part without a thumbnail shows.
+const GENERIC_THUMBNAIL: &str = "fe\\cas\\general\\remove";
 const PETE: u64 = 0xe986_20ed_39c8_3b7a;
 const STAMP_ZONE: u64 = 0xbd77_229e_4122_863e;
 const STAMP: u64 = 0x0d71_da87_70e0_9cbc;
@@ -147,6 +151,22 @@ mod parity_tests {
         assert!(!logos.is_empty());
         assert_eq!(frontend.brand_key("not a brand").unwrap(), 0);
     }
+
+    /// A new Skate 3 skater's trucks read Medium at seven bars; ten steps loosen them to Loose at
+    /// none, and the slider stops at both ends.
+    #[test]
+    fn skate3_truck_slider_steps_from_its_default() {
+        let mut bits = PcSkate3Style::default().tuning_bits[0];
+        assert_eq!(tuning_row(bits, false), (7, "ID_CAC_EDIT_TRUCKS_MEDIUM".to_owned()));
+        for _ in 0..10 {
+            bits = step_tuning(bits, false);
+        }
+        assert_eq!(tuning_row(bits, false), (0, "ID_CAC_EDIT_TRUCKS_LOOSE".to_owned()));
+        for _ in 0..12 {
+            bits = step_tuning(bits, true);
+        }
+        assert_eq!(tuning_row(bits, true), (10, "ID_CAC_EDIT_WHEELS_HARD".to_owned()));
+    }
 }
 #[derive(Clone)]
 struct StampChoice {
@@ -183,6 +203,24 @@ fn cycle(index: usize, n: usize, forward: bool) -> usize {
         (index + n - 1) % n
     }
 }
+/// A truck or wheel slider's step, 0.1 within `0..=1`.
+fn step_tuning(bits: u32, forward: bool) -> u32 {
+    (f32::from_bits(bits) + if forward { 0.1 } else { -0.1 }).clamp(0.0, 1.0).to_bits()
+}
+/// A truck or wheel slider's bars and label (`GetStringValue`'s 0.35 and 0.75 thresholds, the
+/// same in Skate 3's `0x82600160`).
+fn tuning_row(bits: u32, wheel: bool) -> (i32, String) {
+    let v = f32::from_bits(bits);
+    let label = match (wheel, v) {
+        (true, v) if v < 0.35 => "ID_CAC_EDIT_WHEELS_SOFT",
+        (true, v) if v <= 0.75 => "ID_CAC_EDIT_WHEELS_MEDIUM",
+        (true, _) => "ID_CAC_EDIT_WHEELS_HARD",
+        (false, v) if v < 0.35 => "ID_CAC_EDIT_TRUCKS_LOOSE",
+        (false, v) if v <= 0.75 => "ID_CAC_EDIT_TRUCKS_MEDIUM",
+        (false, _) => "ID_CAC_EDIT_TRUCKS_TIGHT",
+    };
+    ((v * 10.0 + 0.5).floor() as i32, label.into())
+}
 fn gesture_slot(o: EditSkaterOption) -> Option<usize> {
     use EditSkaterOption as O;
     match o {
@@ -210,6 +248,8 @@ impl EditSkaterFrontend {
             controller: EditSkaterController::default(),
             undo: record.clone(),
             record,
+            gesture_settings: PcGestureSettings::default(),
+            skate3_style: PcSkate3Style::default(),
             preview: None,
             available_parts: db
                 .parts
@@ -258,6 +298,11 @@ impl EditSkaterFrontend {
     pub(crate) fn camera_key(&self) -> u64 {
         self.camera
     }
+    pub(crate) fn skate3_gesture_preview(&self)->Option<u32> {
+        if self.gesture_settings.selected!=GestureSet::Skate3 {return None;}
+        self.controller.selected_option().and_then(gesture_slot)
+            .map(|slot|self.available_gestures[self.gesture_index(slot)])
+    }
     pub(crate) fn body_key(&self) -> u64 {
         self.body
     }
@@ -265,10 +310,32 @@ impl EditSkaterFrontend {
     /// ReceiveInput 0x8268dd2c..0x8268e088 use index zero when the equipped
     /// gesture is absent from the available list, without rewriting the slot.
     fn gesture_index(&self, slot: usize) -> usize {
+        let selected = match self.gesture_settings.selected {
+            GestureSet::Skate2 => self.record.data.gestures[slot],
+            GestureSet::Skate3 => self.gesture_settings.skate3[slot],
+        };
         self.available_gestures
             .iter()
-            .position(|&gesture| gesture == self.record.data.gestures[slot])
+            .position(|&gesture| gesture == selected)
             .unwrap_or(0)
+    }
+    pub(crate) fn set_skate3_style(&mut self, settings: PcSkate3Style) -> RecordResult<()> {
+        settings.validate().map_err(|e| e.to_string())?;
+        self.skate3_style = settings;
+        crate::diagnostics::test_log::event("skate3_style", format_args!("style={} posture={} trucks={} wheels={}", settings.style, settings.posture, settings.truck_tightness(), settings.wheel_hardness()));
+        Ok(())
+    }
+    pub(crate) fn set_gesture_settings(&mut self, settings: PcGestureSettings) -> RecordResult<()> {
+        settings.validate()?;
+        crate::diagnostics::test_log::event("gesture_set", format_args!("selected={:?} skate2_up_down_left_right={:?} skate3_up_down_left_right={:?}", settings.selected, self.record.data.gestures, settings.skate3));
+        self.gesture_settings = settings;
+        let count = match settings.selected {
+            GestureSet::Skate2 => GESTURE_UNLOCK_NAMES.len(),
+            GestureSet::Skate3 => SKATE3_GESTURE_HAL.len(),
+        };
+        self.available_gestures = (0..u32::try_from(count)?).collect();
+        self.gesture_presentation();
+        Ok(())
     }
     /// `SetScreenState(24)` (`0x82684b40`), entering the wear styles menu or coming back to it:
     /// `mCurrentPart`'s colour when it is colourizable; unless it is a deck, its wear styles
@@ -297,6 +364,12 @@ impl EditSkaterFrontend {
         Ok(())
     }
     fn gesture_presentation(&mut self) {
+        if self.gesture_settings.selected == GestureSet::Skate3 {
+            // The room composes the embedded S3 gesture over this native
+            // CAS base, using the explicit catalog-aware preview selection.
+            self.body = MAIN;
+            return;
+        }
         self.body = self
             .controller
             .selected_option()
@@ -528,7 +601,7 @@ impl EditSkaterFrontend {
                         self.body = MAIN;
                         self.undo = self.record.clone();
                     }
-                    M::Slappys => {
+                    M::Slappys | M::MerchandisePools => {
                         self.camera = SHOP;
                         self.body = SHOP;
                     }
@@ -556,12 +629,16 @@ impl EditSkaterFrontend {
                 }
             }
             A::LoadParts(o) => {
+                // PC port: with Skate 3 data linked, the Merchandise Pools row chosen picks the
+                // game whose clothing the list holds.
+                let pooled = self.controller.skate3_merchandise;
+                let skate3 = self.controller.skate3_pool;
                 let indices = clothing_parts(&self.db, o, self.record.data.is_male, |p| {
                     self.db
                         .parts
                         .iter()
                         .position(|q| std::ptr::eq(p, q))
-                        .is_some_and(|i| self.available_parts[i])
+                        .is_some_and(|i| self.available_parts[i] && (!pooled || self.db.is_skate3(i) == skate3))
                 })?;
                 self.parts = indices.into_iter().map(Some).collect();
                 let slot = clothing_slot(o).ok_or("CAC category has no native part slot")?;
@@ -921,18 +998,41 @@ impl EditSkaterFrontend {
         if let Some(slot) = gesture_slot(o) {
             let i = self.gesture_index(slot);
             let id = self.available_gestures[cycle(i, self.available_gestures.len(), forward)];
-            self.record.data.gestures[slot] = id;
-            self.body = GESTURE_BODY[id as usize];
-            e.gesture = Some(id);
+            match self.gesture_settings.selected {
+                GestureSet::Skate2 => {
+                    self.record.data.gestures[slot] = id;
+                    self.body = GESTURE_BODY[id as usize];
+                    e.gesture = Some(id);
+                }
+                GestureSet::Skate3 => {
+                    self.gesture_settings.skate3[slot] = id;
+                    self.body = MAIN;
+                }
+            }
+            crate::diagnostics::test_log::event("gesture_assignment", format_args!("set={:?} slot_up_down_left_right={slot} id={id} skate2={:?} skate3={:?}", self.gesture_settings.selected, self.record.data.gestures, self.gesture_settings.skate3));
             return Ok(true);
         }
         match o {
+            O::GestureSet => self.set_gesture_settings(PcGestureSettings {
+                selected: self.gesture_settings.selected.toggle(), ..self.gesture_settings
+            })?,
+            O::Skate3Style => self.set_skate3_style(PcSkate3Style {
+                style: cycle(self.skate3_style.style as usize, SKATE3_STYLE_HAL.len(), forward) as u32,
+                ..self.skate3_style
+            })?,
+            O::Skate3Posture => self.set_skate3_style(PcSkate3Style {
+                posture: cycle(self.skate3_style.posture as usize, SKATE3_POSTURE_HAL.len(), forward) as u32,
+                ..self.skate3_style
+            })?,
             O::EditTrucks | O::EditWheels => {
                 let i = usize::from(o == O::EditWheels);
-                let v = f32::from_bits(self.record.data.tuning_bits[i]);
-                self.record.data.tuning_bits[i] = (v + if forward { 0.1 } else { -0.1 })
-                    .clamp(0.0, 1.0)
-                    .to_bits();
+                self.record.data.tuning_bits[i] = step_tuning(self.record.data.tuning_bits[i], forward);
+            }
+            O::Skate3Trucks | O::Skate3Wheels => {
+                let mut tuning_bits = self.skate3_style.tuning_bits;
+                let i = usize::from(o == O::Skate3Wheels);
+                tuning_bits[i] = step_tuning(tuning_bits[i], forward);
+                self.set_skate3_style(PcSkate3Style { tuning_bits, ..self.skate3_style })?;
             }
             O::EditStance => self.record.data.stance = u32::from(self.record.data.stance == 0),
             O::EditPosture => {
@@ -1012,7 +1112,8 @@ impl EditSkaterFrontend {
                 continue;
             }
             let accept = if o == O::HairStyle {
-                p.slot == 2 && self.db.string(p.attributes[16])? == "full"
+                // Skate 2's hair styles only: linked Skate 3 hair does not fit the Skate 2 heads.
+                p.slot == 2 && self.db.string(p.attributes[16])? == "full" && !self.db.is_skate3(i)
             } else {
                 p.slot == 3
                     && [13, 35, 14, 15]
@@ -1343,10 +1444,7 @@ impl EditSkaterFrontend {
                         description_candidates: self.description_candidates(*i)?,
                         title: self.part_description(*i)?,
                         description: self.part_description(*i)?,
-                        texture: Some(format!(
-                            "fe\\cas\\{}",
-                            clothing_thumbnail(&self.db, p, self.record.data.is_male)?
-                        )),
+                        texture: Some(self.part_thumbnail(*i)?),
                         sponsor_logo: self.sponsor_logo(*i)?,
                         status: self.part_status(*i).into(),
                         is_new: self.shop.is_new(*i),
@@ -1377,7 +1475,21 @@ impl EditSkaterFrontend {
                 };
                 if let Some(slot) = gesture_slot(o) {
                     let gesture = self.available_gestures[self.gesture_index(slot)];
-                    row.subtitle = GESTURE_HAL[gesture as usize].into();
+                    row.subtitle = match self.gesture_settings.selected {
+                        GestureSet::Skate2 => GESTURE_HAL[gesture as usize].into(),
+                        GestureSet::Skate3 => SKATE3_GESTURE_HAL[gesture as usize].into(),
+                    };
+                }
+                if o == EditSkaterOption::GestureSet {
+                    row.subtitle = format!("#{}", self.gesture_settings.selected.label());
+                }
+                if o == EditSkaterOption::Skate3Style {
+                    row.description = skate3_text(d.description);
+                    row.subtitle = skate3_text(SKATE3_STYLE_HAL[self.skate3_style.style as usize]);
+                }
+                if o == EditSkaterOption::Skate3Posture {
+                    row.description = skate3_text(d.description);
+                    row.subtitle = skate3_text(SKATE3_POSTURE_HAL[self.skate3_style.posture as usize]);
                 }
                 if d.kind == "color" {
                     let colours = self.colours(o)?;
@@ -1434,26 +1546,11 @@ impl EditSkaterFrontend {
                     }
                     EditSkaterOption::EditTrucks | EditSkaterOption::EditWheels => {
                         let wheel = o == EditSkaterOption::EditWheels;
-                        let v = f32::from_bits(self.record.data.tuning_bits[usize::from(wheel)]);
-                        row.value = (v * 10.0 + 0.5).floor() as i32;
-                        row.subtitle = if wheel {
-                            if v < 0.35 {
-                                "ID_CAC_EDIT_WHEELS_SOFT"
-                            } else if v <= 0.75 {
-                                "ID_CAC_EDIT_WHEELS_MEDIUM"
-                            } else {
-                                "ID_CAC_EDIT_WHEELS_HARD"
-                            }
-                        } else {
-                            if v < 0.35 {
-                                "ID_CAC_EDIT_TRUCKS_LOOSE"
-                            } else if v <= 0.75 {
-                                "ID_CAC_EDIT_TRUCKS_MEDIUM"
-                            } else {
-                                "ID_CAC_EDIT_TRUCKS_TIGHT"
-                            }
-                        }
-                        .into();
+                        (row.value, row.subtitle) = tuning_row(self.record.data.tuning_bits[usize::from(wheel)], wheel);
+                    }
+                    EditSkaterOption::Skate3Trucks | EditSkaterOption::Skate3Wheels => {
+                        let wheel = o == EditSkaterOption::Skate3Wheels;
+                        (row.value, row.subtitle) = tuning_row(self.skate3_style.tuning_bits[usize::from(wheel)], wheel);
                     }
                     EditSkaterOption::EditStance => {
                         row.subtitle = if self.record.data.stance == 0 {
@@ -1535,14 +1632,50 @@ impl EditSkaterFrontend {
     fn part_status(&self, index: usize) -> &'static str {
         if self.policy.unlock_all_clothing { "owned" } else { self.shop.status(&self.db, &self.record, index) }
     }
+    /// `GetThumbnailPath` (`clothing_thumbnail`) under `fe\cas`. PC port: Skate 3 files a part's
+    /// thumbnail under one sex only, and some only for its wear style group's other members, so
+    /// a linked Skate 3 data folder's part takes the first of those its `fedynamic.big` holds,
+    /// else the generic image.
+    fn part_thumbnail(&self, index: usize) -> RecordResult<String> {
+        let p = &self.db.parts[index];
+        let male = self.record.data.is_male;
+        let own = clothing_thumbnail(&self.db, p, male)?;
+        if !self.db.is_skate3(index) {
+            return Ok(format!("fe\\cas\\{own}"));
+        }
+        let Some(data) = crate::skate3::linked() else { return Ok(GENERIC_THUMBNAIL.into()) };
+        let holds = |path: &str| data.mounts.contains_path(&format!("data\\fe\\cas\\{path}.rx2"));
+        let slot = format!("{}\\", skate2_formats::cac_parts::SLOT_NAMES[p.slot as usize].to_ascii_lowercase());
+        let bare = own.find(&slot).map_or(own.as_str(), |at| &own[at..]).to_owned();
+        let mut candidates = vec![own.clone(), format!("male\\{bare}"), format!("female\\{bare}"), bare];
+        let group = wear_style_group(p);
+        if group != u16::MAX {
+            for (other, q) in self.db.parts.iter().enumerate() {
+                if other != index && q.slot == p.slot && self.db.is_skate3(other) && wear_style_group(q) == group {
+                    candidates.push(clothing_thumbnail(&self.db, q, male)?);
+                }
+            }
+        }
+        Ok(candidates.into_iter().find(|path| holds(path)).map_or_else(|| GENERIC_THUMBNAIL.into(), |path| format!("fe\\cas\\{path}")))
+    }
     fn part_description(&self, index: usize) -> RecordResult<String> {
         let p = &self.db.parts[index];
-        Ok(format!(
+        let id = format!(
             "ID_CAC_PART_{}_{}",
             self.db.attribute(p, 38)?,
             self.db.attribute(p, 36)?
         )
-        .to_ascii_uppercase())
+        .to_ascii_uppercase();
+        // PC port: a linked Skate 3 data folder's part is named in Skate 3's English (literal
+        // text, `#`), else by its slot's component type.
+        if self.db.is_skate3(index) {
+            let text = crate::skate3::linked().and_then(|data| data.text(&id).filter(|text| !text.is_empty()).map(str::to_owned));
+            return Ok(match text {
+                Some(text) => format!("#{text}"),
+                None => hal("ID_CAC_COMPONENT_TYPE_", skate2_formats::cac_parts::SLOT_NAMES[p.slot as usize]),
+            });
+        }
+        Ok(id)
     }
     fn description_candidates(&self, index: usize) -> RecordResult<Vec<String>> {
         let p = &self.db.parts[index];
@@ -1682,6 +1815,41 @@ const GESTURE_HAL: [&str; 35] = [
     "ID_GESTURE_RAISEROOF",
     "ID_GESTURE_WINGS",
     "ID_GESTURE_AXE_SPRAY",
+];
+
+// FrontEndState_CaC::GetStringValue 82600018..826000F0: options 54 (style, record +8212) and 53
+// (posture, +8216) label values 0..3. GetCACSettings 82590B50 maps style 1/2/3 to the Loose/
+// Gonzo/Aggressive animation sets and posture 1/2/3 to the Stiff/Slouch/Buff poses; 0 is neither.
+/// Skate 3's own words for `label`: Skate 2 has some of the same ids with other text (its
+/// `ID_CAC_LABEL_STYLE_NORMAL` is "Normal", Skate 3's "Standard").
+fn skate3_text(label: &str) -> String {
+    crate::skate3::linked()
+        .and_then(|data| data.strings.get(&skate2_formats::localization::string_hash(label.as_bytes())).cloned())
+        .map_or_else(|| label.to_owned(), |text| format!("#{text}"))
+}
+
+const SKATE3_STYLE_HAL: [&str; 4] = [
+    "ID_CAC_LABEL_STYLE_NORMAL", "ID_CAC_LABEL_STYLE_LOOSE",
+    "ID_CAC_LABEL_STYLE_GONZO", "ID_CAC_LABEL_STYLE_AGGRESSIVE",
+];
+const SKATE3_POSTURE_HAL: [&str; 4] = [
+    "ID_CAC_LABEL_POSTURE_1", "ID_CAC_LABEL_POSTURE_2",
+    "ID_CAC_LABEL_POSTURE_3", "ID_CAC_LABEL_POSTURE_4",
+];
+
+// The Skate 3 Edit Skater's gesture names, FrontEndState_CaC's table (TU3 825F9434, +0x1830
+// onward), in CharacterGesture's order; the linked Skate 3 data holds their text.
+const SKATE3_GESTURE_HAL: [&str; 37] = [
+    "ID_GESTURE_AIRGUITAR", "ID_GESTURE_AIRPLANE", "ID_GESTURE_BOXING", "ID_GESTURE_BRUCE",
+    "ID_GESTURE_CHECKTIME", "ID_GESTURE_DEVIL", "ID_GESTURE_DOUBLE_GUN", "ID_GESTURE_DUNNO",
+    "ID_GESTURE_FINGERWAG", "ID_GESTURE_FISTS", "ID_GESTURE_BICEPFLEX", "ID_GESTURE_FLIPTABLE",
+    "ID_GESTURE_FONZ", "ID_GESTURE_FREEDOM", "ID_GESTURE_FU", "ID_GESTURE_GETAWAY",
+    "ID_GESTURE_GETOUTTAHERE", "ID_GESTURE_HANDCUFFS", "ID_GESTURE_PUMP_HI", "ID_GESTURE_PUMP_LO",
+    "ID_GESTURE_PREWIND", "ID_GESTURE_PEACE", "ID_GESTURE_FINGERPOINT", "ID_GESTURE_RAISEROOF",
+    "ID_GESTURE_SHAKA", "ID_GESTURE_SHRUG", "ID_GESTURE_SKY", "ID_GESTURE_SNAP",
+    "ID_GESTURE_SOULARCH", "ID_GESTURE_SPOCK", "ID_GESTURE_SURFSUP", "ID_GESTURE_SWINGHIGH",
+    "ID_GESTURE_SWINGLOW", "ID_GESTURE_THROWARMS", "ID_GESTURE_THMB_DWN", "ID_GESTURE_WINGS",
+    "ID_GESTURE_YARDSALE",
 ];
 
 // Native constructor82680054..82680470 std stores. Full64 words recovered

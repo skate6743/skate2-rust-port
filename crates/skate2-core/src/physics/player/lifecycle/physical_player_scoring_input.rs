@@ -120,7 +120,10 @@ impl PhysicalAssemblyWorld {
             .map_err(dependency)?
             .collect_scoring_entities(root, player, category, grind_guid, &mut input)
             .map_err(dependency)?;
-        input.score_over_skaters = true;
+        // CollectNearbyEntitiesForScoring 0x827af180 sets the over-skater bit (0x400000) only
+        // outside a network game. The port's online game runs this offline branch, and its
+        // remote skaters never collide, so nobody scores over them (user report).
+        input.score_over_skaters = !self.sim_rate.lock().map_err(dependency)?.online_game();
         if flags & 1 != 0 && player != 8 {
             // Original uses SkaterManager order, not World allocation order.
             for actor in local.try_scoring_roster().map_err(dependency)? {

@@ -48,6 +48,9 @@ pub(super) struct Clip {
     /// 31): `placeObject` and `ReplaceDisplyListItem` then skip this
     /// instance's timeline matrix and colour moves.
     pub script_transform: bool,
+    /// PC port: an offset added to each of this instance's timeline placements, which moves it
+    /// with its timeline's moves and colour left playing.
+    pub layout_offset: [f32; 2],
     deferred_actions: Option<DeferredFrameActions>,
 }
 impl Clip {
@@ -118,6 +121,7 @@ impl Clip {
             visible: true,
             calls: Vec::new(),
             script_transform: false,
+            layout_offset: [0.0; 2],
             deferred_actions: None,
         };
         if let Character::Text(text) = clip.definition(assets)? {
@@ -181,7 +185,10 @@ impl Clip {
                         .get_mut(&depth)
                         .ok_or("APT retained child absent")?;
                     if !child.clip.script_transform {
+                        let [x, y] = child.clip.layout_offset;
                         child.entry = entry;
+                        child.entry.matrix.tx += x;
+                        child.entry.matrix.ty += y;
                     }
                 }
                 FrameEffect::Remove { depth, .. } => {
@@ -246,6 +253,8 @@ impl Clip {
                         super::hud_timer_movie::action(self, action.offset)?;
                     } else if self.asset == super::hud_throwmes_movie::ASSET {
                         super::hud_throwmes_movie::action(self, action.offset)?;
+                    } else if assets.skate3_hud.is_some_and(|hud| hud.throwdown_message == self.asset) {
+                        super::hud_throwmes_movie::skate3_action(self, action.offset)?;
                     } else if self.asset == super::online_eventlog_movie::ASSET {
                         super::online_eventlog_movie::action(self, action.offset)?;
                     } else if (super::online_match_movie::CUSTOM..=super::online_match_movie::GAMER_TAG).contains(&self.asset) {
@@ -416,6 +425,7 @@ impl Clip {
                         || super::hud_timer_movie::init_action(self.asset, character, actions.offset)
                         || super::big_black_timer_movie::init_action(self.asset, character, actions.offset)
                         || super::hud_throwmes_movie::init_action(self.asset, character, actions.offset)
+                        || super::hud_throwmes_movie::skate3_init_action(assets, self.asset, character, actions.offset)
                         || super::online_eventlog_movie::init_action(self.asset, character, actions.offset)
                         || super::online_match_movie::init_action(self.asset, character, actions.offset)
                         || super::online_hub_movie::init_action(self.asset, character, actions.offset)

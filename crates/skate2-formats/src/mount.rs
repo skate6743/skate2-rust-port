@@ -1,13 +1,12 @@
 //! Seek-based mounting of Skate 2's EA BIG archives.
 
 use crate::{
-    big::{BigArchive, BigEntry, BigEntryKey, BigError},
+    big::{BigArchive, BigEntry, BigEntryKey, BigError, EB_FIXED_HEADER_SIZE},
     refpack::{self, RefPackError},
     stfs::{StfsFile, StfsReader},
 };
 use std::{
     fmt,
-    fs::File,
     io::{self, Read, Seek, SeekFrom},
     ops::Range,
     path::{Path, PathBuf},
@@ -40,6 +39,8 @@ pub enum LogicalEntryStorage {
     Raw,
     /// The complete outer BIG entry was RefPack-expanded before slicing.
     RefPack,
+    /// The complete outer entry was a Skate 3 `chunkref` container, expanded before slicing.
+    Chunked,
 }
 
 /// Bytes from one logical BIG entry together with range diagnostics.
@@ -177,7 +178,7 @@ impl ArchiveSource {
 /// `Read` and `Seek` over an [`ArchiveSource`].
 #[derive(Debug)]
 pub enum ArchiveReader {
-    File(File),
+    File(crate::host_path::GameFile),
     Package(StfsReader),
 }
 
@@ -245,7 +246,7 @@ impl MountedBig {
             preferred_header = crate::host_path::on_disk(&preferred_header);
         }
 
-        let header_path = if use_external_header && !preferred_header.is_file() {
+        let header_path = if use_external_header && !crate::host_path::is_file(&preferred_header) {
             data_path.clone()
         } else {
             preferred_header
@@ -383,6 +384,13 @@ pub struct MountSet {
     /// mounts to the `dlcbig:` device (`EnumerateContent` `0x825e86c8`). Linking more while the
     /// game runs adds to them.
     dlc: RwLock<Vec<Arc<MountedBig>>>,
+    /// PC port, a linked Skate 3 data folder's own set: the game folder, whose loose files a
+    /// virtual path no archive holds is read from, as `xcore::FileLoader` does (Skate 3 keeps
+    /// `data\content\global_locators` loose).
+    loose_root: Option<PathBuf>,
+    /// Host-built files that take precedence over the archives, keyed by lowercase virtual path
+    /// (Skate 3's skater database joined into one `skater.vlt`/`.bin`).
+    virtual_files: std::collections::BTreeMap<String, Arc<[u8]>>,
 }
 
 impl MountSet {
@@ -402,15 +410,84 @@ impl MountSet {
     }
 
     /// Adds a downloadable content archive, which later reads find after the game's archives
-    /// and every earlier one's.
-    pub fn push_dlc(&self, archive: MountedBig) {
-        self.dlc.write().unwrap_or_else(PoisonError::into_inner).push(Arc::new(archive));
+    /// and every earlier one's. Returns it, which [`MountSet::remove_dlc`] takes back.
+    pub fn push_dlc(&self, archive: MountedBig) -> Arc<MountedBig> {
+        let archive = Arc::new(archive);
+        self.dlc.write().unwrap_or_else(PoisonError::into_inner).push(Arc::clone(&archive));
+        archive
+    }
+
+    /// Removes a downloadable content archive [`MountSet::push_dlc`] added; later reads no
+    /// longer find its files. Whoever still holds it keeps reading it.
+    pub fn remove_dlc(&self, archive: &Arc<MountedBig>) {
+        self.dlc.write().unwrap_or_else(PoisonError::into_inner).retain(|mounted| !Arc::ptr_eq(mounted, archive));
     }
 
     /// The downloadable content archives in mount order.
     #[must_use]
     pub fn dlc_archives(&self) -> Vec<Arc<MountedBig>> {
         self.dlc.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Reads paths no archive holds from the game folder `root`.
+    pub fn set_loose_root(&mut self, root: impl Into<PathBuf>) {
+        self.loose_root = Some(root.into());
+    }
+
+    /// Serves `bytes` at the virtual `path` ahead of every archive.
+    pub fn insert_virtual(&mut self, path: &str, bytes: Vec<u8>) {
+        self.virtual_files.insert(normalize_game_path(path).to_ascii_lowercase(), bytes.into());
+    }
+
+    fn virtual_file(&self, normalized: &str) -> Option<&Arc<[u8]>> {
+        if self.virtual_files.is_empty() {
+            return None;
+        }
+        self.virtual_files.get(&normalized.to_ascii_lowercase())
+    }
+
+    /// Skate 3's skater database is two Vaults (`skaterschema`, `skatercollections`); this
+    /// serves them joined as `data\db\skater.vlt` and `skater.bin`
+    /// ([`crate::attrib::merge_vaults`]). A set without them is left unchanged.
+    ///
+    /// # Errors
+    ///
+    /// The Vaults' read error, or a Vault the join cannot read.
+    pub fn join_skater_database(&mut self) -> Result<(), MountError> {
+        if !self.contains_path("data\\db\\skaterschema.vlt") || self.contains_path("data\\db\\skater.vlt") {
+            return Ok(());
+        }
+        let schema = (self.read_path("data\\db\\skaterschema.vlt")?, self.read_path("data\\db\\skaterschema.bin")?);
+        let collections = (self.read_path("data\\db\\skatercollections.vlt")?, self.read_path("data\\db\\skatercollections.bin")?);
+        let (vlt, bin) = crate::attrib::merge_vaults(
+            (&schema.0, &schema.1),
+            (&collections.0, &collections.1),
+            ["skater.vlt", "skater.bin"],
+        )
+        .map_err(|error| MountError::Io { path: PathBuf::from("data\\db\\skater.vlt"), source: io::Error::other(error) })?;
+        self.insert_virtual("data\\db\\skater.vlt", vlt);
+        self.insert_virtual("data\\db\\skater.bin", bin);
+        Ok(())
+    }
+
+    /// The host file of a loose virtual path, when a game folder is set and the file exists.
+    fn loose_file(&self, normalized: &str) -> Option<PathBuf> {
+        let root = self.loose_root.as_ref()?;
+        let path = crate::host_path::on_disk(&root.join(normalized.replace('\\', std::path::MAIN_SEPARATOR_STR)));
+        crate::host_path::is_file(&path).then_some(path)
+    }
+
+    /// Every loose file below the virtual folder `prefix` (e.g. `data\content\global_locators\`),
+    /// as virtual paths in case-insensitive name order, folders before the files after them.
+    #[must_use]
+    pub fn loose_files(&self, prefix: &str) -> Vec<String> {
+        let Some(root) = self.loose_root.as_ref() else { return Vec::new() };
+        let prefix = normalize_game_path(prefix);
+        let trimmed = prefix.trim_end_matches('\\');
+        let folder = crate::host_path::on_disk(&root.join(trimmed.replace('\\', std::path::MAIN_SEPARATOR_STR)));
+        let mut found = Vec::new();
+        collect_loose(&folder, trimmed, &mut found);
+        found
     }
 
     /// The archive that owns a path: the game's first, then downloadable content's.
@@ -428,7 +505,10 @@ impl MountSet {
     /// (`xcore::FileLoader::FileExists` for archived files).
     #[must_use]
     pub fn contains_path(&self, path: &str) -> bool {
-        self.owner(&normalize_game_path(path), |_, _| ()).is_some()
+        let normalized = normalize_game_path(path);
+        self.virtual_file(&normalized).is_some()
+            || self.owner(&normalized, |_, _| ()).is_some()
+            || self.loose_file(&normalized).is_some()
     }
 
     /// Resolves a virtual game path in mount order.
@@ -439,8 +519,16 @@ impl MountSet {
     /// the path, or propagates a read/decompression failure from the owner.
     pub fn read_path(&self, path: &str) -> Result<Vec<u8>, MountError> {
         let normalized = normalize_game_path(path);
-        self.owner(&normalized, |mounted, entry| mounted.read_entry(entry))
-            .unwrap_or_else(|| Err(MountError::EntryNotFound(normalized.clone())))
+        if let Some(bytes) = self.virtual_file(&normalized) {
+            return Ok(bytes.to_vec());
+        }
+        if let Some(read) = self.owner(&normalized, |mounted, entry| mounted.read_entry(entry)) {
+            return read;
+        }
+        if let Some(file) = self.loose_file(&normalized) {
+            return crate::host_path::read(&file).map_err(|source| MountError::Io { path: file, source });
+        }
+        Err(MountError::EntryNotFound(normalized))
     }
 
     /// Resolves a virtual path in mount order and reads a logical entry range.
@@ -458,9 +546,23 @@ impl MountSet {
         range: Range<u64>,
     ) -> Result<LogicalEntryRange, MountError> {
         let normalized = normalize_game_path(path);
-        let mut range = Some(range);
-        self.owner(&normalized, |mounted, entry| mounted.read_entry_range(entry, range.take().unwrap_or(0..0)))
-            .unwrap_or_else(|| Err(MountError::EntryNotFound(normalized.clone())))
+        let whole = |bytes: &[u8], range: Range<u64>| -> Result<LogicalEntryRange, MountError> {
+            let logical_len = u64::try_from(bytes.len()).map_err(|_| MountError::LogicalRangeTooLarge(u64::MAX))?;
+            let slice = checked_logical_slice(bytes, range, logical_len)?;
+            Ok(LogicalEntryRange { bytes: slice.to_vec(), logical_len, storage: LogicalEntryStorage::Raw })
+        };
+        if let Some(bytes) = self.virtual_file(&normalized) {
+            return whole(bytes, range);
+        }
+        let mut wanted = Some(range.clone());
+        if let Some(read) = self.owner(&normalized, |mounted, entry| mounted.read_entry_range(entry, wanted.take().unwrap_or(0..0))) {
+            return read;
+        }
+        if let Some(file) = self.loose_file(&normalized) {
+            let bytes = crate::host_path::read(&file).map_err(|source| MountError::Io { path: file, source })?;
+            return whole(&bytes, range);
+        }
+        Err(MountError::EntryNotFound(normalized))
     }
 
     /// Resolves a virtual path in mount order and streams its entry, for an entry too large to
@@ -517,6 +619,8 @@ pub enum MountError {
         entry_offset: u64,
         logical_offset: u64,
     },
+    /// A Skate 3 `chunkref` container whose header or chunk records do not fit.
+    MalformedChunks(&'static str),
 }
 
 impl fmt::Display for MountError {
@@ -554,6 +658,7 @@ impl fmt::Display for MountError {
                 formatter,
                 "BIG archive offset overflow: {entry_offset} + {logical_offset}"
             ),
+            Self::MalformedChunks(problem) => write!(formatter, "BIG chunked entry is malformed: {problem}"),
         }
     }
 }
@@ -585,32 +690,44 @@ fn normalize_game_path(path: &str) -> String {
     path.replace('/', "\\")
 }
 
-fn open_file(path: &Path) -> Result<File, MountError> {
-    File::open(path).map_err(|source| MountError::Io {
+fn open_file(path: &Path) -> Result<crate::host_path::GameFile, MountError> {
+    crate::host_path::open(path).map_err(|source| MountError::Io {
         path: path.to_owned(),
         source,
     })
 }
 
 fn read_archive_header(file: &mut impl Read, path: &Path) -> Result<BigArchive, MountError> {
-    let mut fixed = [0_u8; FIXED_HEADER_SIZE];
-    file.read_exact(&mut fixed)
+    let mut fixed = [0_u8; EB_FIXED_HEADER_SIZE];
+    file.read_exact(&mut fixed[..FIXED_HEADER_SIZE])
         .map_err(|source| MountError::Io {
             path: path.to_owned(),
             source,
         })?;
-    let header_size = usize::try_from(u32::from_be_bytes(fixed[12..16].try_into().unwrap()))
-        .map_err(|_| BigError::IntegerOverflow)?;
-    if header_size < FIXED_HEADER_SIZE {
+    let mut fixed_len = FIXED_HEADER_SIZE;
+    let header_size = if fixed.starts_with(b"EB") {
+        // A Skate 3 `EB` table declares its end through the name table's offset and size.
+        file.read_exact(&mut fixed[FIXED_HEADER_SIZE..])
+            .map_err(|source| MountError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+        fixed_len = EB_FIXED_HEADER_SIZE;
+        crate::big::eb_header_size(&fixed).ok_or(BigError::IntegerOverflow)?
+    } else {
+        usize::try_from(u32::from_be_bytes(fixed[12..16].try_into().unwrap()))
+            .map_err(|_| BigError::IntegerOverflow)?
+    };
+    if header_size < fixed_len {
         return Err(BigError::HeaderOutsideFile {
             declared: header_size,
-            actual: FIXED_HEADER_SIZE,
+            actual: fixed_len,
         }
         .into());
     }
     let mut header = vec![0_u8; header_size];
-    header[..FIXED_HEADER_SIZE].copy_from_slice(&fixed);
-    file.read_exact(&mut header[FIXED_HEADER_SIZE..])
+    header[..fixed_len].copy_from_slice(&fixed[..fixed_len]);
+    file.read_exact(&mut header[fixed_len..])
         .map_err(|source| MountError::Io {
             path: path.to_owned(),
             source,
@@ -635,7 +752,9 @@ fn read_entry(reader: &mut (impl Read + Seek), entry: &BigEntry) -> Result<Vec<u
             source,
         })?;
 
-    let unpacked = if is_refpack(&stored) {
+    let unpacked = if is_chunked(&stored) {
+        decompress_chunked(&stored)?
+    } else if is_refpack(&stored) {
         refpack::decompress(&stored)?
     } else {
         stored
@@ -679,6 +798,39 @@ fn read_entry_range(
             path: data_path.to_owned(),
             source,
         })?;
+
+    // Skate 3 `chunkref` containers start with "ch"; a RefPack stream never does.
+    if prefix[..prefix_len] == *b"ch" {
+        let stored_size = usize::try_from(entry.stored_size)
+            .map_err(|_| MountError::StoredSizeTooLarge(entry.stored_size))?;
+        let mut stored = vec![0_u8; stored_size];
+        stored[..prefix_len].copy_from_slice(&prefix[..prefix_len]);
+        reader
+            .read_exact(&mut stored[prefix_len..])
+            .map_err(|source| MountError::Io {
+                path: data_path.to_owned(),
+                source,
+            })?;
+        if is_chunked(&stored) {
+            let unpacked = decompress_chunked(&stored)?;
+            let logical_len = u64::try_from(unpacked.len())
+                .map_err(|_| MountError::LogicalRangeTooLarge(u64::MAX))?;
+            let slice = checked_logical_slice(&unpacked, range, logical_len)?;
+            return Ok(LogicalEntryRange {
+                bytes: slice.to_vec(),
+                logical_len,
+                storage: LogicalEntryStorage::Chunked,
+            });
+        }
+        validate_logical_range(&range, entry.stored_size)?;
+        let start = usize::try_from(range.start).map_err(|_| MountError::LogicalRangeTooLarge(range.start))?;
+        let end = usize::try_from(range.end).map_err(|_| MountError::LogicalRangeTooLarge(range.end))?;
+        return Ok(LogicalEntryRange {
+            bytes: stored[start..end].to_vec(),
+            logical_len: entry.stored_size,
+            storage: LogicalEntryStorage::Raw,
+        });
+    }
 
     if is_refpack(&prefix[..prefix_len]) {
         let stored_size = usize::try_from(entry.stored_size)
@@ -781,6 +933,80 @@ fn checked_logical_slice(
     let end =
         usize::try_from(range.end).map_err(|_| MountError::LogicalRangeTooLarge(range.end))?;
     Ok(&bytes[start..end])
+}
+
+/// Depth-first listing of `folder` (virtual name `virtual_folder`) in case-insensitive order.
+fn collect_loose(folder: &Path, virtual_folder: &str, found: &mut Vec<String>) {
+    let Ok(mut entries) = crate::host_path::read_dir(folder) else { return };
+    let name = |path: &Path| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    entries.sort_by_key(|(path, _)| name(path).to_ascii_lowercase());
+    for (path, is_folder) in entries {
+        let virtual_path = format!("{virtual_folder}\\{}", name(&path));
+        if is_folder {
+            collect_loose(&path, &virtual_path, found);
+        } else if crate::host_path::is_file(&path) {
+            found.push(virtual_path);
+        }
+    }
+}
+
+fn is_chunked(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"chunkref")
+}
+
+/// Expands a Skate 3 `chunkref` container: a 0x28-byte header (`chunkref`, version 2, unpacked
+/// size, chunk size, chunk count, four reserved words), then the chunks. Each chunk record sits 8
+/// bytes past a 16-byte boundary and holds the stored size, the kind (4 = stored as is, otherwise
+/// RefPack) and the payload; every chunk but the last unpacks to the chunk size.
+///
+/// # Errors
+///
+/// [`MountError::MalformedChunks`] when a record does not fit, or the RefPack error of a chunk.
+pub fn decompress_chunked(stored: &[u8]) -> Result<Vec<u8>, MountError> {
+    let word = |offset: usize| -> Result<usize, MountError> {
+        let field = stored.get(offset..offset + 4).ok_or(MountError::MalformedChunks("truncated header"))?;
+        usize::try_from(u32::from_be_bytes(field.try_into().expect("4 bytes"))).map_err(|_| MountError::MalformedChunks("size overflow"))
+    };
+    if !is_chunked(stored) {
+        return Err(MountError::MalformedChunks("missing chunkref tag"));
+    }
+    if word(8)? > 2 {
+        return Err(MountError::MalformedChunks("unsupported version"));
+    }
+    let full_size = word(0x0C)?;
+    let chunk_size = word(0x10)?;
+    let chunk_count = word(0x14)?;
+    let mut out = Vec::with_capacity(full_size);
+    let mut offset = 0x28_usize;
+    for _ in 0..chunk_count {
+        if out.len() >= full_size {
+            break;
+        }
+        offset = (offset + 7) & !7;
+        if offset % 16 != 8 {
+            offset += 8;
+        }
+        let compressed = word(offset)?;
+        let kind = word(offset + 4)?;
+        let start = offset + 8;
+        let end = start.checked_add(compressed).ok_or(MountError::MalformedChunks("chunk size overflow"))?;
+        let payload = stored.get(start..end).ok_or(MountError::MalformedChunks("chunk outside entry"))?;
+        let expected = chunk_size.min(full_size - out.len());
+        if kind == 4 {
+            out.extend_from_slice(payload);
+        } else {
+            let chunk = refpack::decompress(payload)?;
+            if chunk.len() != expected {
+                return Err(MountError::UnpackedSizeMismatch { expected: expected as u64, actual: chunk.len() });
+            }
+            out.extend_from_slice(&chunk);
+        }
+        offset = end;
+    }
+    if out.len() != full_size {
+        return Err(MountError::UnpackedSizeMismatch { expected: full_size as u64, actual: out.len() });
+    }
+    Ok(out)
 }
 
 fn is_refpack(bytes: &[u8]) -> bool {

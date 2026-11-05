@@ -342,6 +342,7 @@ impl MountedPlayerRecipeLoad {
         // Prepare actual replacement geometry before releasing registry ownership.
         // Transfer this same allocation to the new load, avoiding duplicate IO.
         let mut replacement = CharacterRecipe::parse(&record.data.recipe).map_err(E::Recipe)?;
+        fill_missing(mounts, &mut replacement, record)?;
         replacement.category = 3;
         replacement.clone_type = 3;
         let mut scene = crate::mounted_character_scene::own_character_scene_category(
@@ -716,10 +717,13 @@ impl MountedPlayerRecipeLoad {
         // Selected admission before source work. Category/locality are genuine loader
         // outputs, not a replacement player-index or backend selection.
         let next = self.requests.next_request_id();
-        let saved_recipe = cac
+        let mut saved_recipe = cac
             .map(|r| CharacterRecipe::parse(&r.data.recipe))
             .transpose()
             .map_err(E::Recipe)?;
+        if let (Some(recipe), Some(record)) = (saved_recipe.as_mut(), cac) {
+            fill_missing(mounts, recipe, record)?;
+        }
         let action = if let Some(recipe) = &saved_recipe {
             // A party member's SetCACCharacter already carries its peer.
             if !matches!(loader.requested, super::PlayerSelection::CreateACharacter { .. }) {
@@ -903,3 +907,32 @@ impl MountedPlayerRecipeLoad {
 #[cfg(test)]
 #[path = "player_mounted_recipe_load_tests.rs"]
 mod tests;
+
+/// A saved skater's parts whose files are absent (Skate 3 clothes with the Skate 3 data
+/// unlinked) load as their slots' defaults; see `fill_missing_parts`.
+fn fill_missing(
+    mounts: &MountSet,
+    recipe: &mut CharacterRecipe,
+    record: &skate2_formats::skater_profile::CacRecord,
+) -> Result<(), MountedRecipeError> {
+    // SKATE2_DIAGNOSTIC_MISSING_PART=<slot>: that slot's model is one no archive holds, as a
+    // Skate 3 part is once the Skate 3 data is unlinked.
+    if let Ok(slot) = std::env::var("SKATE2_DIAGNOSTIC_MISSING_PART") {
+        for component in recipe.components.iter_mut().filter(|c| c.name.eq_ignore_ascii_case(&slot)) {
+            for lod in component.models.iter_mut().flat_map(|m| m.lods.iter_mut()) {
+                lod.arena_asset_id = 0x5ca7_e300_0000_0001;
+            }
+        }
+    }
+    let replaced = crate::edit_skater_character::fill_missing_parts(
+        mounts,
+        recipe,
+        record.data.is_male,
+        "createacharacter",
+    )
+    .map_err(MountedRecipeError::Scene)?;
+    if !replaced.is_empty() {
+        eprintln!("skater parts missing from the mounted data, defaults worn: {}", replaced.join(", "));
+    }
+    Ok(())
+}

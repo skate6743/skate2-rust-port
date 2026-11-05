@@ -4,9 +4,19 @@ use super::{
     scoring_attributes::{ScoreError, curve},
 };
 use crate::{
-    reckoning_numeric::{HostReckoningNumeric, try_length},
+    reckoning_numeric::{HostReckoningNumeric, ReckoningNumeric, try_length},
     skeleton_root_transforms::SkeletonRootVector,
 };
+
+/// How a timed scorable measures the board's travel each tick.
+#[derive(Clone, Copy)]
+pub(super) enum ArcMeasure {
+    /// Skate 2: the step's length, counted past the cvar's minimum.
+    Skate2 { minimum_distance: f32 },
+    /// TU3 TimedArcLengthScorable::Update 82DB0588: the step's length, or for a manual its
+    /// length along the board's velocity direction (reckoning +160), counted past 0.005 m.
+    Skate3 { along: Option<SkeletonRootVector> },
+}
 
 impl TimedArcLength {
     pub(super) fn update(
@@ -17,7 +27,7 @@ impl TimedArcLength {
         id: i32,
         position: SkeletonRootVector,
         dt: f32,
-        minimum_distance: f32,
+        measure: ArcMeasure,
     ) -> Result<(), ScoreError> {
         self.just_entered_state = false;
         self.just_exited_state = false;
@@ -39,8 +49,22 @@ impl TimedArcLength {
                     position.xyz[2] - last.xyz[2],
                     0.0,
                 ];
-                let distance =
-                    try_length(delta, &mut HostReckoningNumeric).map_err(ScoreError::Numeric)?;
+                let (distance, minimum_distance) = match measure {
+                    ArcMeasure::Skate2 { minimum_distance } => (
+                        try_length(delta, &mut HostReckoningNumeric).map_err(ScoreError::Numeric)?,
+                        minimum_distance,
+                    ),
+                    ArcMeasure::Skate3 { along: Some(direction) } => (
+                        HostReckoningNumeric
+                            .dot_vector(SkeletonRootVector::known(delta), direction)
+                            .map_err(ScoreError::Numeric)?,
+                        f32::from_bits(0x3ba3_d70a),
+                    ),
+                    ArcMeasure::Skate3 { along: None } => (
+                        try_length(delta, &mut HostReckoningNumeric).map_err(ScoreError::Numeric)?,
+                        f32::from_bits(0x3ba3_d70a),
+                    ),
+                };
                 if distance > minimum_distance {
                     self.total_distance += distance;
                 }

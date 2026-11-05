@@ -9,6 +9,26 @@ const HASHED_ENTRY_SIZE: usize = 16;
 pub enum BigFormat {
     Named { integer_width: u8 },
     Hash16,
+    /// Skate 3's `EB` archives (PC port: a linked Skate 3 data folder): a fixed 0x30-byte header,
+    /// then 16-byte (or 20-byte) entry records, then fixed-width name records (a folder index and
+    /// a file name) and the folder names. Entry offsets count blocks of 16 bytes (64 with flag
+    /// `0x200`).
+    Eb { version: u16, flags: u32 },
+}
+
+/// The fixed part of an `EB` archive header, which declares where the name table ends.
+pub const EB_FIXED_HEADER_SIZE: usize = 0x30;
+
+/// The size of an `EB` archive's whole header (fixed part, entries, names and folders) from its
+/// fixed part, or `None` when `fixed` is not an `EB` header.
+#[must_use]
+pub fn eb_header_size(fixed: &[u8]) -> Option<usize> {
+    if fixed.get(..2)? != b"EB" {
+        return None;
+    }
+    let name_offset = usize::try_from(read_be_u32(fixed, 12).ok()?).ok()?;
+    let name_size = usize::try_from(read_be_u32(fixed, 16).ok()?).ok()?;
+    name_offset.checked_add(name_size)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +84,7 @@ impl BigArchive {
             .get(..FIXED_HEADER_SIZE)
             .ok_or(BigError::TruncatedHeader)?;
         match &header[0..4] {
+            magic if &magic[0..2] == b"EB" => parse_eb(bytes),
             b"Viv4" => parse_hash16(bytes),
             magic if &magic[0..3] == b"BIG" => parse_named(bytes),
             magic => Err(BigError::UnknownMagic([
@@ -95,7 +116,7 @@ impl BigArchive {
     #[must_use]
     pub fn find_path(&self, path: &str) -> Option<&BigEntry> {
         match self.format {
-            BigFormat::Named { .. } => self.find_name(path),
+            BigFormat::Named { .. } | BigFormat::Eb { .. } => self.find_name(path),
             BigFormat::Hash16 => self.find_hashed_name(path),
         }
     }
@@ -219,6 +240,73 @@ fn parse_hash16(bytes: &[u8]) -> Result<BigArchive, BigError> {
         // raw little-endian value for evidence/debugging.
         declared_archive_size: read_le_u32(bytes, 4)?,
         header_size,
+        entries,
+    })
+}
+
+/// Skate 3's `EB` table. Names are kept as `folder\file` with backslashes, the spelling the
+/// game's virtual paths use elsewhere in this crate.
+fn parse_eb(bytes: &[u8]) -> Result<BigArchive, BigError> {
+    let fixed = bytes.get(..EB_FIXED_HEADER_SIZE).ok_or(BigError::TruncatedHeader)?;
+    let version = u16::from_be_bytes([fixed[2], fixed[3]]);
+    let count = read_be_u32(fixed, 4)?;
+    let flags = read_be_u32(fixed, 8)?;
+    let name_offset = usize::try_from(read_be_u32(fixed, 12)?).map_err(|_| BigError::IntegerOverflow)?;
+    let name_size = usize::try_from(read_be_u32(fixed, 16)?).map_err(|_| BigError::IntegerOverflow)?;
+    let name_width = usize::from(fixed[20]);
+    let folder_width = usize::from(fixed[21]);
+    let folder_count = usize::from(u16::from_be_bytes([fixed[22], fixed[23]]));
+    let header_end = name_offset.checked_add(name_size).ok_or(BigError::IntegerOverflow)?;
+    if header_end > bytes.len() {
+        return Err(BigError::HeaderOutsideFile { declared: header_end, actual: bytes.len() });
+    }
+    if name_width < 2 {
+        return Err(BigError::EntryTableOverflow);
+    }
+    let entry_size = if flags & 0x1_0000 != 0 { 0x14 } else { 0x10 };
+    let block = if flags & 0x200 != 0 { 0x40 } else { 0x10 };
+    let count_usize = usize::try_from(count).map_err(|_| BigError::IntegerOverflow)?;
+    let names_end = count_usize
+        .checked_mul(name_width)
+        .and_then(|size| size.checked_add(name_offset))
+        .ok_or(BigError::IntegerOverflow)?;
+    let folder_offset = names_end.checked_add(0xF).ok_or(BigError::IntegerOverflow)? & !0xF;
+    let mut folders = Vec::with_capacity(folder_count);
+    for index in 0..folder_count {
+        let start = folder_offset + index * folder_width;
+        let field = bytes.get(start..start + folder_width).ok_or(BigError::EntryTableOverflow)?;
+        let end = field.iter().position(|byte| *byte == 0).unwrap_or(field.len());
+        folders.push(String::from_utf8_lossy(&field[..end]).replace('/', "\\"));
+    }
+    let mut entries = Vec::with_capacity(count_usize);
+    for header_index in 0..count {
+        let index = header_index as usize;
+        let cursor = EB_FIXED_HEADER_SIZE + index * entry_size;
+        let offset = u64::from(read_be_u32(bytes, cursor)?) * block;
+        let stored = u64::from(read_be_u32(bytes, cursor + 4)?);
+        let unpacked = u64::from(read_be_u32(bytes, cursor + 8)?);
+        let record_start = name_offset + index * name_width;
+        let record = bytes.get(record_start..record_start + name_width).ok_or(BigError::EntryTableOverflow)?;
+        let folder = usize::from(u16::from_be_bytes([record[0], record[1]]));
+        let name_field = &record[2..];
+        let end = name_field.iter().position(|byte| *byte == 0).unwrap_or(name_field.len());
+        let name = String::from_utf8_lossy(&name_field[..end]).replace('/', "\\");
+        let path = match folders.get(folder) {
+            Some(folder) if !folder.is_empty() => format!("{folder}\\{name}"),
+            _ => name,
+        };
+        entries.push(BigEntry {
+            key: BigEntryKey::Name(path),
+            offset,
+            stored_size: if stored == 0 { unpacked } else { stored },
+            unpacked_size: unpacked,
+            header_index,
+        });
+    }
+    Ok(BigArchive {
+        format: BigFormat::Eb { version, flags },
+        declared_archive_size: u32::try_from(u64::from_be_bytes(fixed[24..32].try_into().expect("8 bytes"))).unwrap_or(u32::MAX),
+        header_size: u32::try_from(header_end).map_err(|_| BigError::IntegerOverflow)?,
         entries,
     })
 }

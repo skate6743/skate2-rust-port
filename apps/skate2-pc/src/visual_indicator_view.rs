@@ -128,6 +128,7 @@ impl VisualIndicatorView {
         renderer: &GpuRenderer,
         mounts: &MountSet,
         indicators: &VisualIndicatorFrame,
+        streamed: &[Arc<VisualIndicatorData>],
         view: &CameraView,
         clip_from_world: &[f32; 16],
         camera: &CameraRelativeClip,
@@ -150,6 +151,7 @@ impl VisualIndicatorView {
         // SceneManager::IsInNIS: a scene handle exists.
         let in_nis = nis.is_some_and(|nis| nis.scene.is_some());
         let hidden = nis.is_some_and(|nis| nis.vis_indicators_hidden);
+        self.presentation.sync_streamed_splines(streamed);
         if self.updated_tick == Some(shown.0) {
             self.presentation.face_camera(&inputs);
         } else {

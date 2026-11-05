@@ -38,9 +38,11 @@ impl EditSkaterSession {
         new_unlock: &impl Fn(u32, &str) -> bool,
         new_career: bool,
     ) -> Result<Self> {
-        let db = Arc::new(CacPartDb::parse(
-            &mounts.read_path(skate2_formats::cac_parts::DATABASE_PATH)?,
-        )?);
+        let db = CacPartDb::parse(&mounts.read_path(skate2_formats::cac_parts::DATABASE_PATH)?)?;
+        // PC port: a linked Skate 3 data folder's clothing joins Slappy's (`crate::skate3`).
+        let skate3 = crate::skate3::linked().and_then(|data| data.clothing_for(&db));
+        let skate3_merchandise = skate3.is_some();
+        let db = Arc::new(skate3.unwrap_or(db));
         let store = EditSkaterProfileStore::open(EditSkaterProfileStore::default_path()?)?;
         let record = match store.load_record()? {
             Some(record) if !new_career => record,
@@ -57,6 +59,11 @@ impl EditSkaterSession {
             shop,
             new_career,
         )?;
+        frontend.controller.skate3_merchandise = skate3_merchandise;
+        // PC port: the Gesture Set row only with linked Skate 3 data, whose gestures it lists.
+        frontend.controller.skate3_gestures = crate::skate3::linked().is_some();
+        frontend.set_gesture_settings(store.load_gesture_settings()?)?;
+        frontend.set_skate3_style(store.load_skate3_style()?)?;
         let originally_male = frontend.preview_record().data.is_male;
         let mut hierarchies = std::array::from_fn(|_| None);
         let hierarchy = Self::cached_hierarchy(
@@ -100,6 +107,7 @@ impl EditSkaterSession {
             false,
             cvars.try_cas_correct_rostral().map_err(|e| e.to_string())?,
         )?;
+        let parts = crate::edit_skater_character::wearable_parts(db, parts, record.data.is_male);
         let custom = CharacterCustomizations::parse_prefix(record.customizations_bytes()?)?.0;
         let recipe = crate::edit_skater_character::compose_recipe(db, &parts, custom)?;
         EditSkaterCharacter::load(mounts, recipe, hierarchy, Arc::clone(vault), cvars.clone())
@@ -174,6 +182,7 @@ impl EditSkaterSession {
                 .try_cas_correct_rostral()
                 .map_err(|e| e.to_string())?,
         )?;
+        let parts = crate::edit_skater_character::wearable_parts(&self.db, parts, record.data.is_male);
         let custom = CharacterCustomizations::parse_prefix(record.customizations_bytes()?)?.0;
         let mut recipe = crate::edit_skater_character::compose_recipe(&self.db, &parts, custom)?;
         recipe.clone_type = 3;

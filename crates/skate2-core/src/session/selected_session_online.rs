@@ -122,6 +122,10 @@ pub(super) struct OnlineGame {
     character_sent: bool,
     /// When the local recipe last went: the server takes none within two seconds of the last.
     character_sent_at: Option<std::time::Instant>,
+    /// PC port: the local skater's character as sent, which stands in for a remote skater whose
+    /// own this console cannot build (one wearing a linked Skate 3 data folder's clothing that
+    /// this console lacks, `crate::skate3`).
+    own_character: Option<Vec<u8>>,
     /// The server holds the local recipe and a replay frame (`ChatEnabled`): T opens the chat.
     chat_enabled: bool,
     /// The last frame's header flags, for a pose sample after a teleport.
@@ -180,6 +184,8 @@ pub(super) struct Online {
     results_instance: u32,
     /// `cLocationManager`'s global locators, for each player's spawn location.
     pub(super) locations: Option<Arc<super::career::locations::LocationManager>>,
+    /// PC port: the same over the linked Skate 3 data's global locators, for a Skate 3 game's.
+    pub(super) skate3_locations: Option<Arc<super::career::locations::LocationManager>>,
     /// The wipeout limit last given to the physics (`sync_turn_bail_limit`).
     turn_bail_limit: Option<f32>,
     /// The lobby skate HUD, and whether `SetupLobbyHUD` runs again.
@@ -190,6 +196,9 @@ pub(super) struct Online {
     /// When the game last sent a replay frame or `Busy`: the server drops a game that sends
     /// neither for two seconds.
     alive_sent: Option<std::time::Instant>,
+    /// Whether the connection was last told the game is loading (a travel streams its
+    /// destination), so its thread keeps the game alive through a stalled frame.
+    loading_told: bool,
     /// The facts waiting to go out with the run of replay frames being gathered.
     outbox: Vec<ClientMessage>,
     /// The local skater's replay frames since the last run went out.
@@ -311,6 +320,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         trace(format_args!("signing in to {} as {}", config.server(), config.nickname.trim()));
         self.online.nickname = config.nickname.trim().to_owned();
         self.online.client = Some(Client::connect(config.server(), &self.online.nickname, crate::online::GAME_VERSION));
+        self.online.loading_told = false;
         self.online.sign_in = SignIn::Connecting;
     }
 
@@ -419,6 +429,13 @@ impl<T, C> SelectedLiveSession<T, C> {
                 self.online.alive_sent = Some(now);
             }
         }
+        let loading = self.online.game.is_some() && self.map_travel.is_some() && !self.map_travel_dispatched;
+        if loading != self.online.loading_told
+            && let Some(client) = self.online.client.as_ref()
+        {
+            client.set_loading(loading);
+            self.online.loading_told = loading;
+        }
         self.update_online_spectate()?;
         self.update_online_activities();
         self.update_online_edit_skater()?;
@@ -468,7 +485,9 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.online_data()?;
         let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
         let challenges = crate::online::catalog::online_challenges(db, attributes.challenge_type, &|name| self.online_location_known(name), &|title| title.to_owned());
-        Ok(challenges.iter().any(|challenge| challenge.key == attributes.challenge_key))
+        // PC port: or one of the linked Skate 3 data's games of the type.
+        Ok(challenges.iter().any(|challenge| challenge.key == attributes.challenge_key)
+            || Self::skate3_online_spot(attributes.challenge_key).is_some_and(|spot| spot.net_type == attributes.challenge_type))
     }
 
     /// PC port: the online challenges this build has, every type's, sent once signed in so the
@@ -481,6 +500,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             .flat_map(|net_type| crate::online::catalog::online_challenges(db, net_type, &|name| self.online_location_known(name), &|title| title.to_owned()))
             .map(|online| online.key)
             .collect();
+        // PC port: the linked Skate 3 data's games, which only consoles that have it are offered.
+        if let Some(data) = crate::skate3::linked() {
+            challenges.extend(data.online.iter().map(|spot| spot.key));
+        }
         challenges.sort_unstable();
         challenges.dedup();
         trace(format_args!("this build has {} online challenges", challenges.len()));
@@ -490,10 +513,11 @@ impl<T, C> SelectedLiveSession<T, C> {
 
     /// `SKATE2_DIAGNOSTIC_ONLINE_START`: the challenge asked for after that many lobby ticks,
     /// counted while every other player's skater shows, as the server starts a challenge only
-    /// with the members in the game's world.
+    /// with the members in the game's world, and with as many as its type plays with.
     fn online_diagnostic_start(&mut self) {
         let Some(game) = self.online.game.as_ref() else { return };
-        if self.online.round.is_some() || game.players.len() < 2 || !game.remotes.values().all(RemoteSkater::visible) {
+        let fewest = skate2_net::protocol::challenge::min_participants(game.attributes.challenge_type);
+        if self.online.round.is_some() || game.players.len() < fewest || !game.remotes.values().all(RemoteSkater::visible) {
             return;
         }
         let Some(start) = std::env::var("SKATE2_DIAGNOSTIC_ONLINE_START").ok().and_then(|ticks| ticks.parse::<u32>().ok()) else { return };
@@ -687,7 +711,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         if spec == "list" {
             self.online.diagnostic_requested = true;
             for net_type in 0..challenge::COUNT {
-                for listed in self.online_challenge_list(net_type)? {
+                for listed in self.online_challenge_list_all(net_type)? {
                     let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
                     let name = db.attribute(CHALLENGES, listed.key, CHALLENGE_NAME).and_then(|name| name.text(0)).unwrap_or_default();
                     eprintln!("online challenge type {net_type} {name} at {}: {}", listed.location, listed.title);
@@ -706,9 +730,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let mut parts = spec.split(':');
         let create = parts.next() == Some("create");
         let challenge_type = parts.next().and_then(|text| text.parse().ok()).unwrap_or(challenge::SKATE);
-        self.online_data()?;
-        let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
-        let challenges = crate::online::catalog::online_challenges(db, challenge_type, &|name| self.online_location_known(name), &|title| title.to_owned());
+        let challenges = self.online_challenge_list_all(challenge_type)?;
         let named = parts.next().map(crate::challenge::keys::hash64);
         let key = challenges
             .iter()
@@ -830,6 +852,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             entered: false,
             character_sent: false,
             character_sent_at: None,
+            own_character: None,
             chat_enabled: false,
             last_teleport: false,
             last_camera_rotation: None,
@@ -860,6 +883,9 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// Where a player of the challenge `challenge` starts, as [`Self::online_location`]: an
     /// activity's own location for its players (`GetStreamerPosition` with the activity key).
     pub(super) fn online_spawn(&mut self, challenge: u64, player: u8) -> Result<[f32; 16], SelectedLiveError> {
+        if let Some(spot) = Self::skate3_online_spot(challenge) {
+            return self.skate3_online_spawn(&spot, player);
+        }
         let location = self.online_key_location_name(challenge)?;
         if self.online.locations.is_none() {
             let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts);
@@ -878,7 +904,32 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.online_key_location(attributes.challenge_key)
     }
 
+    /// PC port: the linked Skate 3 data's online game with this key (`crate::skate3`).
+    fn skate3_online_spot(challenge: u64) -> Option<crate::skate3::OnlineSpot> {
+        crate::skate3::linked().and_then(|data| data.online_spot(challenge).cloned())
+    }
+
+    /// A Skate 3 game's start for a player: the spawn location of that index of its `Location`
+    /// among Skate 3's global locators, read as `cLocationManager` reads the game's, else the
+    /// location itself.
+    fn skate3_online_spawn(&mut self, spot: &crate::skate3::OnlineSpot, player: u8) -> Result<[f32; 16], SelectedLiveError> {
+        if self.online.skate3_locations.is_none() {
+            let data = crate::skate3::linked().ok_or_else(|| error("skate 3 data unlinked"))?;
+            self.online.skate3_locations = Some(Arc::new(super::career::locations::LocationManager::with_global_locations(&data.mounts).map_err(error)?));
+        }
+        let hash = crate::challenge::keys::hash_value32(&spot.location);
+        Ok(self
+            .online
+            .skate3_locations
+            .as_ref()
+            .and_then(|locations| locations.online_spawn_location(hash, i32::from(player)))
+            .unwrap_or(spot.transform))
+    }
+
     fn online_key_location(&mut self, challenge: u64) -> Result<(String, [f32; 16]), SelectedLiveError> {
+        if let Some(spot) = Self::skate3_online_spot(challenge) {
+            return Ok((spot.location, spot.transform));
+        }
         let location = self.online_key_location_name(challenge)?;
         let (_, table) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
         if let Some(found) = table.find(&location) {
@@ -894,6 +945,10 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// The challenge's world location (an `fe_locations` key) and its world's file; none for the
     /// main world (`IsMainWorldLocation` 0x828a95b8: the invalid key or a missing collection).
     pub(super) fn online_challenge_world(&mut self, challenge: u64) -> Result<Option<(u64, String)>, SelectedLiveError> {
+        // A Skate 3 game's world is its district, lit by the district's render location.
+        if let Some(spot) = Self::skate3_online_spot(challenge) {
+            return Ok(Some((spot.render_location, spot.stream.to_owned())));
+        }
         self.online_data()?;
         let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
         Ok(db
@@ -911,6 +966,9 @@ impl<T, C> SelectedLiveSession<T, C> {
 
     /// The challenge's `challenge_global_data.Location`.
     fn online_key_location_name(&mut self, challenge: u64) -> Result<String, SelectedLiveError> {
+        if let Some(spot) = Self::skate3_online_spot(challenge) {
+            return Ok(spot.location);
+        }
         self.online_data()?;
         let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
         Ok(db
@@ -930,13 +988,23 @@ impl<T, C> SelectedLiveSession<T, C> {
     pub(super) fn online_load_area(&mut self) -> Result<(), SelectedLiveError> {
         let Some(attributes) = self.online.game.as_ref().map(|game| game.attributes.clone()) else { return Ok(()) };
         let (location, transform) = self.online_challenge_location(&attributes)?;
-        let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
-        let name = db
-            .attribute(CHALLENGES, attributes.challenge_key, CHALLENGE_NAME)
-            .and_then(|name| name.text(0))
-            .ok_or_else(|| error(format!("challenge {:016x} has no name", attributes.challenge_key)))?
-            .to_owned();
-        let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts);
+        // A Skate 3 game's area is named by its challenge in Skate 3's bank; the game has no
+        // stream XML or boundary of that name, so the district's focus and edges stand.
+        let name = match Self::skate3_online_spot(attributes.challenge_key) {
+            Some(spot) => spot.name,
+            None => {
+                let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+                db.attribute(CHALLENGES, attributes.challenge_key, CHALLENGE_NAME)
+                    .and_then(|name| name.text(0))
+                    .ok_or_else(|| error(format!("challenge {:016x} has no name", attributes.challenge_key)))?
+                    .to_owned()
+            }
+        };
+        // A Skate 3 game's boundary is Skate 3's (`data\boundary\<name>.xml`, the same format).
+        let mounts = match crate::skate3::linked().filter(|data| data.online_spot(attributes.challenge_key).is_some()) {
+            Some(data) => Arc::clone(&data.mounts),
+            None => Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts),
+        };
         let boundaries = crate::challenge::invisible_boundary::InvisibleBoundaries::load(&mounts, &name);
         trace(format_args!("online area {name} at {location}{}", if boundaries.is_empty() { ", no boundary" } else { "" }));
         if let Some(terrain) = self.inner.terrain.as_mut() {
@@ -977,6 +1045,19 @@ impl<T, C> SelectedLiveSession<T, C> {
             return None;
         }
         self.online.boundaries.clone()
+    }
+
+    /// `SKATE2_TRACE_BOUNDARY`: an entered online game whose boundaries `PlayerUI` does not test
+    /// this frame, and why.
+    pub(super) fn trace_boundary_not_held(&self, held: bool) {
+        let Some(game) = self.online.game.as_ref().filter(|game| game.entered && !held) else { return };
+        eprintln!(
+            "boundary frame {}: not held (entered {}, travelling {}, loaded {})",
+            self.completed_frames,
+            game.entered,
+            self.map_travel.is_some(),
+            self.online.boundaries.is_some(),
+        );
     }
 
     /// `InvisibleBoundaryManager::Update`'s amount for the local skater this frame, at its trigger
@@ -1076,7 +1157,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         // takes no change while a proposal is under way, so none is left to end).
         self.online_reset_proposal()?;
         self.online.changing_location = Some((challenge_type, challenge_key));
-        let title = self.online_challenge_list(challenge_type)?.into_iter().find(|challenge| challenge.key == challenge_key).map(|challenge| challenge.title);
+        let title = self.online_challenge_list_all(challenge_type)?.into_iter().find(|challenge| challenge.key == challenge_key).map(|challenge| challenge.title);
         self.online.event_log.add(EventText::plain("ID_ONLINE_EVENT_CHANGED_SETTINGS"));
         self.online.event_log.add(match title {
             Some(title) => EventText::localized("ID_ONLINE_EVENT_LOCATION_CHANGE", vec![crate::online::catalog::challenge_title(challenge_type).to_owned(), title]),
@@ -1144,6 +1225,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let Some(remote) = game.remotes.get_mut(&user_id) else { return Ok(()) };
         let assets = self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?;
         trace(format_args!("{user_id:016x}'s character building ({} bytes)", data.len()));
+        remote.received_recipe();
         remote.build_character(data, Arc::clone(&assets.mounts), Arc::clone(&assets.vault), assets.cvars.clone()).map_err(error)
     }
 
@@ -1243,8 +1325,12 @@ impl<T, C> SelectedLiveSession<T, C> {
         // Online, a skater the challenge pins still gestures (the retail game; the debug build's
         // GenerateActionGraphIntents 0x825fda28 skips the whole fill while pinned).
         let online = self.online.game.as_ref().is_some_and(|game| game.entered);
+        let diagnostic_pin = diagnostic_pin();
         if let Some(actor) = self.inner.player.as_ref().and_then(|player| player.selected.actor.as_ref()) {
-            actor.try_set_pinned_gestures(online).map_err(|e| error(format!("{e:?}")))?;
+            actor.try_set_pinned_gestures(online || diagnostic_pin.is_some()).map_err(|e| error(format!("{e:?}")))?;
+            if let Some(pinned) = diagnostic_pin {
+                actor.try_set_pinned(pinned).map_err(|e| error(format!("{e:?}")))?;
+            }
         }
         let Some(game) = self.online.game.as_ref() else { return Ok(()) };
         if !game.entered || self.map_travel.is_some() {
@@ -1289,6 +1375,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 match remote_skater::encode_character(&frame) {
                     Ok(data) => {
                         trace(format_args!("sending our character ({} bytes)", data.len()));
+                        game.own_character = Some(data.clone());
                         if let Some(client) = &self.online.client {
                             client.send(ClientMessage::Recipe(data));
                         }
@@ -1349,10 +1436,22 @@ impl<T, C> SelectedLiveSession<T, C> {
         // skater's bones.
         let body_bones = self.inner.player.as_ref().and_then(|player| player.selected.owners.presentation.as_ref()).and_then(|presentation| presentation.animation.body);
         let mut followed_hud = None;
+        let own_character = game.own_character.clone();
+        let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts);
         for remote in game.remotes.values_mut() {
             match remote.finish_character() {
                 Some(Ok(took)) => trace(format_args!("{:016x}'s character built in {:.1} ms", remote.user_id, took.as_secs_f64() * 1000.0)),
-                Some(Err(e)) => trace(format_args!("{:016x}'s character failed: {e}", remote.user_id)),
+                Some(Err(e)) => {
+                    trace(format_args!("{:016x}'s character failed: {e}", remote.user_id));
+                    // PC port: a look this console cannot build (another player's linked Skate 3
+                    // clothing) shows as the local skater's own, once, rather than not at all.
+                    if let Some(own) = own_character.clone().filter(|_| remote.take_stand_in()) {
+                        trace(format_args!("{:016x} stands in with our character", remote.user_id));
+                        if let Err(e) = remote.build_character(own, Arc::clone(&mounts), Arc::clone(&vault), cvars.clone()) {
+                            trace(format_args!("{:016x}'s stand-in failed: {e}", remote.user_id));
+                        }
+                    }
+                }
                 None => {}
             }
             let shown = remote.visible();
@@ -1621,4 +1720,23 @@ impl<T, C> SelectedLiveSession<T, C> {
     pub fn online_set_private(&mut self, private: bool) {
         self.online_game_request(request::CHANGE_PRIVATE_STATUS, u64::from(private));
     }
+}
+
+/// `SKATE2_DIAGNOSTIC_PIN=<from>:<to>`: from the `from`th tick to the `to`th the local skater is
+/// pinned with an online game's gestures (an online round's countdown hold, offline); `Some`
+/// while the diagnostic runs, with whether the pin is on.
+fn diagnostic_pin() -> Option<bool> {
+    use std::sync::{OnceLock, atomic::{AtomicU32, Ordering}};
+    static RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+    static TICK: AtomicU32 = AtomicU32::new(0);
+    let (from, to) = (*RANGE.get_or_init(|| {
+        let value = std::env::var("SKATE2_DIAGNOSTIC_PIN").ok()?;
+        let (from, to) = value.split_once(':')?;
+        Some((from.parse().ok()?, to.parse().ok()?))
+    }))?;
+    let tick = TICK.fetch_add(1, Ordering::Relaxed);
+    if tick == from || tick == to {
+        eprintln!("diagnostic pin {} at tick {tick}", if tick == from { "on" } else { "off" });
+    }
+    Some((from..to).contains(&tick))
 }

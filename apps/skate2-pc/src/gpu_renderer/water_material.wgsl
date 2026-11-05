@@ -38,6 +38,12 @@ fn water_reflection(normal: vec3<f32>, view: vec3<f32>) -> vec3<f32> {
     let direction=reflect(view,normal)*vec3<f32>(-1.,-1.,1.);
     return textureSample(i_environment,cube_sampler,direction).rgb;
 }
+// PC port (user request): in a linked Skate 3 district, under Skate 2's PostFX, the sky the water
+// mirrors and the sun's glint on it keep Skate 3's on-screen brightness, as the sky's sun disc
+// does (animation_time.z; 0 in Skate 2's worlds).
+fn district_mirror_scale() -> f32 {
+    return select(1.,globals.animation_time.z,globals.animation_time.z>0.);
+}
 
 // __PCA_BEGIN__
 // Final FPO remaps the reconstructed RGB to [-1,1] BEFORE toning down.
@@ -65,9 +71,9 @@ fn water_lit(input: WaterIn, normal: vec3<f32>, lm_offset: vec2<f32>, diffuse_uv
         textureSample(i_chromaticity,clamp_sampler,lm_uv),input.lightmap_channel,
         vec4<f32>(4.5,4.5,4.5,1.5),vec4<f32>(0.07,0.09,0.1,0.04),50.,select(1.,csm,dot(normal,light)>0.));
     let reflection_luminosity=0.3*clamp(4.*(masks.b-1.5),0.,1.);
-    let reflected=masks.b*water_reflection(normal,view)*mix(lm.a,1.,reflection_luminosity)*1.5;
+    let reflected=masks.b*water_reflection(normal,view)*mix(lm.a,1.,reflection_luminosity)*1.5*district_mirror_scale();
     let calculated=masks.r*phong_specular(normal,view,light,input.params3.z)
-        *vec3<f32>(18.,15.,10.5)*clamp(lm.a-0.1,0.,1.);
+        *vec3<f32>(18.,15.,10.5)*clamp(lm.a-0.1,0.,1.)*district_mirror_scale();
     let kd=tangent_light(normal,vec3<f32>(0.64,0.64,0.420465),light);
     let tone=fog_bloom_tone(vec4<f32>(lm.rgb*kd*diffuse*diffuse+calculated+reflected,1.)*input.params0.y,input.fog,globals.envattributes2.x);
     return vec4<f32>(tone.rgb,1.);
@@ -114,7 +120,7 @@ fn water_lit(input: WaterIn, normal: vec3<f32>, lm_offset: vec2<f32>, diffuse_uv
     let exponents=vec2<f32>(dot(half_vector,u),dot(half_vector,v))/spread;
     let ward=exp(-2.*dot(exponents,exponents)/(1.+dot(half_vector,normal)))
         /(sqrt(abs(dot(normal,globals.light_direction.xyz)*dot(normal,view)))*12.566371*spread.x*spread.y);
-    let tone=fog_bloom_tone(vec4<f32>(reflected*fresnel+ward*lm*input.params0.rgb,1.)*input.params1.y,input.fog,globals.envattributes2.x);
+    let tone=fog_bloom_tone(vec4<f32>((reflected*fresnel+ward*lm*input.params0.rgb)*district_mirror_scale(),1.)*input.params1.y,input.fog,globals.envattributes2.x);
     return vec4<f32>(tone.rgb,0.);
 }
 // __OCEAN_END__

@@ -35,12 +35,12 @@ pub mod challenge {
     pub const COUNT: u8 = 9;
 
     /// The fewest participants a game of `challenge_type` starts its challenge with: two
-    /// (`GoToStartChallenge` 0x826617a0), or one for Spot Battle and Hall of Meat, which a player
-    /// can play alone for a record (PC port addition).
+    /// (`GoToStartChallenge` 0x826617a0), or one for Spot Battle, Hall of Meat and Death Race,
+    /// which a player can play alone for a record (PC port addition).
     #[must_use]
     pub const fn min_participants(challenge_type: u8) -> usize {
         match challenge_type {
-            OWN_THE_SPOT | HALL_OF_MEAT => 1,
+            OWN_THE_SPOT | HALL_OF_MEAT | DEATH_RACE => 1,
             _ => 2,
         }
     }

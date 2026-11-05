@@ -101,4 +101,17 @@ impl ActorConstruction {
         *flags|=0x4000_0000;
         Ok(())
     }
+
+    /// PC port: a Skate 3 physics shove on this Skate 2 physics skater (TU3 delivers it to the
+    /// target's WipeoutGround entry, 0x82d3b838): the same LivingWorld wipeout, along the shove's
+    /// velocity instead of away from a source point.
+    pub(crate) fn try_shove_wipe_out(&self,velocity:[f32;4])->Result<(),String>{
+        let impulse=crate::reckoning_numeric::try_normalize_safe([velocity[0],velocity[1],velocity[2],0.],[0.;4],
+            &mut crate::reckoning_numeric::HostReckoningNumeric).map_err(|e|format!("shove wipeout direction: {e:?}"))?;
+        let mut prefix=self.prefix().map_err(|e|format!("shove wipeout Actor: {e:?}"))?;
+        prefix.physics_auxiliary.as_mut().ok_or("shove wipeout auxiliary absent")?.living_world_impulse=impulse;
+        let flags=prefix.input_generation_flags.as_mut().ok_or("shove wipeout flags absent")?;
+        *flags|=0x4000_0000;
+        Ok(())
+    }
 }

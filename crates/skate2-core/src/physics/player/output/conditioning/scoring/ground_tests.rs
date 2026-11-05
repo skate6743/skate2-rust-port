@@ -35,6 +35,7 @@ fn frame() -> GroundFrame<'static> {
         dt: 1.0 / 60.0,
         deck_position: super::super::ZERO,
         deck_speed: 4.0,
+        vel_direction: super::super::ZERO,
         switched: false,
         fakie: false,
         is_reverting: false,

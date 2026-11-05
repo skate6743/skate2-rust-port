@@ -9,7 +9,7 @@
 //! (`StreamLostCallback`) is not ported: every pool the port creates has one user at a time.
 
 use std::collections::VecDeque;
-use std::fs::File;
+use skate2_formats::host_path::{self, GameFile};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -415,22 +415,38 @@ impl StreamPools {
 /// through the archive's own table (streamed entries are stored raw).
 pub struct GameStreamFiles {
     root: PathBuf,
+    /// PC port: a linked Skate 3 data folder, whose files are named under [`SKATE3_FILES`].
+    skate3_root: Option<PathBuf>,
     archives: Mutex<Vec<(String, Option<Arc<OpenArchive>>)>>,
 }
 
+/// PC port: the prefix of a path in a linked Skate 3 data folder.
+pub const SKATE3_FILES: &str = "skate3:";
+
 struct OpenArchive {
-    file: Mutex<File>,
+    file: Mutex<GameFile>,
     table: BigArchive,
 }
 
 impl GameStreamFiles {
     #[must_use]
     pub fn new(root: PathBuf) -> Self {
-        Self { root, archives: Mutex::new(Vec::new()) }
+        Self { root, skate3_root: None, archives: Mutex::new(Vec::new()) }
+    }
+
+    /// PC port: these files with a linked Skate 3 data folder's under [`SKATE3_FILES`].
+    #[must_use]
+    pub fn with_skate3(mut self, root: Option<PathBuf>) -> Self {
+        self.skate3_root = root;
+        self
     }
 
     fn local(&self, path: &str) -> PathBuf {
-        skate2_formats::host_path::on_disk(&self.root.join(path.replace('\\', "/")))
+        let (root, path) = match (path.strip_prefix(SKATE3_FILES), self.skate3_root.as_ref()) {
+            (Some(path), Some(root)) => (root, path),
+            _ => (&self.root, path),
+        };
+        skate2_formats::host_path::on_disk(&root.join(path.replace('\\', "/")))
     }
 
     fn archive(&self, path: &str) -> Option<Arc<OpenArchive>> {
@@ -440,7 +456,7 @@ impl GameStreamFiles {
             return archive.clone();
         }
         let archive = MountedBig::open(self.local(path), false).ok().and_then(|mounted| {
-            let file = File::open(mounted.data_path()).ok()?;
+            let file = host_path::open(mounted.data_path()).ok()?;
             Some(Arc::new(OpenArchive { file: Mutex::new(file), table: mounted.archive().clone() }))
         });
         archives.push((key, archive.clone()));
@@ -466,7 +482,7 @@ impl StreamFiles for GameStreamFiles {
         if path.contains('|') {
             self.entry(path).map(|(_, _, size)| size)
         } else {
-            std::fs::metadata(self.local(path)).ok().map(|metadata| metadata.len())
+            host_path::file_len(&self.local(path)).ok()
         }
     }
 
@@ -479,7 +495,7 @@ impl StreamFiles for GameStreamFiles {
             let mut file = lock(&archive.file);
             file.seek(SeekFrom::Start(start + offset)).is_ok() && file.read_exact(buf).is_ok()
         } else {
-            let Ok(mut file) = File::open(self.local(path)) else { return false };
+            let Ok(mut file) = host_path::open(&self.local(path)) else { return false };
             file.seek(SeekFrom::Start(offset)).is_ok() && file.read_exact(buf).is_ok()
         }
     }

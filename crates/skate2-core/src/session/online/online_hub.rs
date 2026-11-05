@@ -11,7 +11,7 @@ use crate::challenge::players::{GM_PROFILE_FREE_SKATE, GM_SINGLE_PLAYER};
 use crate::ui::FeSoundRequest;
 use crate::ui::online_config::OnlineConfig;
 use crate::ui::online_hub::{Action, Controller, HUB_SOUND, HubKind, Lobby, Popup, ScreenCall, Snapshot};
-use crate::ui::online_match::{self, CustomMatch, FreeskateMatch};
+use crate::ui::online_match;
 use crate::ui::pause_menu::PauseMenuInput;
 use crate::ui::profile_name::Prompt;
 use skate2_net::protocol::{ClientMessage, Phase, PlayNowMode, challenge};
@@ -328,15 +328,15 @@ impl<T, C> SelectedLiveSession<T, C> {
                 None => self.open_online_popup(Popup::Notice("ID_ONLINE_MATCHMAKING_NOSERVER")),
             },
             Action::CustomFreeskate => {
-                let locations = self.online_challenge_list(challenge::ONLINE_FREE_SKATE)?;
+                let screen = self.online_freeskate_screen(None)?;
                 self.online.hub.menu = None;
-                self.online.hub.screen = Some(MatchScreen::Freeskate(FreeskateMatch::new(locations)));
+                self.online.hub.screen = Some(MatchScreen::Freeskate(screen));
             }
             Action::QuickMatch => self.online_hub_search(Self::online_quick_match),
             Action::CustomMatch => {
-                let lists = self.online_match_lists()?;
+                let screen = self.online_custom_screen(None)?;
                 self.online.hub.menu = None;
-                self.online.hub.screen = Some(MatchScreen::Custom(CustomMatch::new(lists)));
+                self.online.hub.screen = Some(MatchScreen::Custom(screen));
             }
             // GoToSignIn: the hub closes and the game signs in under its popup, with the nickname
             // the Online options ask first when the file has none.
@@ -352,15 +352,15 @@ impl<T, C> SelectedLiveSession<T, C> {
             Action::StartChallenge => self.online_start_challenge(),
             Action::MatchSetup => {
                 let private = self.online.game.as_ref().is_some_and(|game| game.attributes.private);
-                let lists = self.online_match_lists()?;
+                let screen = self.online_custom_screen(Some(private))?;
                 self.online.hub.menu = None;
-                self.online.hub.screen = Some(MatchScreen::Custom(CustomMatch::host(lists, private)));
+                self.online.hub.screen = Some(MatchScreen::Custom(screen));
             }
             Action::ChangeLocation => {
                 let private = self.online.game.as_ref().is_some_and(|game| game.attributes.private);
-                let locations = self.online_challenge_list(challenge::ONLINE_FREE_SKATE)?;
+                let screen = self.online_freeskate_screen(Some(private))?;
                 self.online.hub.menu = None;
-                self.online.hub.screen = Some(MatchScreen::Freeskate(FreeskateMatch::host(locations, private)));
+                self.online.hub.screen = Some(MatchScreen::Freeskate(screen));
             }
             Action::SetPrivate(private) => {
                 self.online_set_private(private);

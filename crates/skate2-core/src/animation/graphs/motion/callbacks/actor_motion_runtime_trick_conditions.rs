@@ -87,7 +87,8 @@ impl ActorConstruction {
 /// Scalar FMULS/FMADDS length prefix, then the same one-refinement ratio and
 /// XMVectorATan/quadrant graph already used by the camera. Both numeric producers
 /// execute even when movement is below the threshold (including zero Z).
-fn moving_object_in_sector<N: crate::reckoning_numeric::ReckoningNumeric>(
+/// TU3's IsMovingObject::ActivationFunc 0x82ba6038 is the same graph.
+pub(crate) fn moving_object_in_sector<N: crate::reckoning_numeric::ReckoningNumeric>(
     x: f32,
     z: f32,
     start: f32,

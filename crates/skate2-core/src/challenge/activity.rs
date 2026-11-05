@@ -290,7 +290,7 @@ pub(crate) fn generate_location_activity_bbox(radius: f32, position: [f32; 3]) -
 /// challenge's radius.
 fn location_activity_bbox(world: &World, activity: usize) -> Option<OctreeBounds> {
     let name = global_data_attribute(world, activity, LOCATION).and_then(|a| a.text(0))?;
-    let transform = world.locations.get(&hash_value32(name))?;
+    let transform = world.location(hash_value32(name))?;
     let key = world.activities.activities[activity].key;
     let radius = world.db.attribute(class::CHALLENGES, key, RADIUS).and_then(|a| a.f32(0)).unwrap_or(0.0);
     Some(generate_location_activity_bbox(radius, [transform[12], transform[13], transform[14]]))

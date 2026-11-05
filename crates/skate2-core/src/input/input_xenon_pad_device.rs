@@ -8,6 +8,15 @@ use crate::{
     skeleton_collision_numeric::SkeletonCollisionNumeric,
 };
 
+/// PC port: no pad takes the 360 wireless pad's motor tuning that `SetActuator` gives a pad
+/// reporting `XINPUT_CAPS_WIRELESS` (cvar group `Input_Hardware_Vibrataion_360`: `kLowFreqScale`
+/// 1.2, `kLowFreqOffset` -0.02, `kHighFreqScale` 1.05, `kHighFreqOffset` 0.05, "High Wireless
+/// Freq Offset"). It compensates for that pad's motors. A PC pad reporting the flag (an Xbox One or
+/// Series pad without a cable) answers small values, so the +0.05 turned the faint rolling rumble
+/// the events ask for (about 2.5% on concrete) into a steady 7.6% buzz, and nothing into 5%. Every
+/// pad rumbles as the wired 360 pad did, with the events' values unchanged.
+const WIRELESS_360_TUNING: bool = false;
+
 /// Native DWORD status: every nonzero bit pattern, including signed-negative,
 /// is failure. Packet number is carried but never used to deduplicate samples.
 pub struct PadStateResult {
@@ -181,10 +190,7 @@ impl<R: Clone> XenonPadDevice<R> {
         // produce unknown guitar when the platform cannot prove the output byte.
         // Propagate that uncertainty; disconnected samples never consume it.
         self.guitar = caps.subtype.map(|subtype| subtype == 7);
-        // PC port: a still request stays still. On a wireless pad the 360 tuning's high
-        // frequency offset (`kHighFreqOffset`, +0.05) would otherwise hold that motor at 5%
-        // whenever nothing rumbles.
-        if supported && frequency != 0.0 {
+        if WIRELESS_360_TUNING && supported && frequency != 0.0 {
             if let Some(low) = refs
                 .capture_pad_vibration(PadVibrationFloat::LowScale)
                 .map_err(E::Cvar)?

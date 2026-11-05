@@ -92,6 +92,8 @@ pub(crate) struct Inspection {
     world_probes: crate::render_irradiance::WorldProbes,
     /// The resident arenas' emitter waypoint blocks, kept while a map build holds the scene.
     emitter_waypoints: Vec<Arc<skate2_core::world_particles::EmitterWaypointData>>,
+    /// The resident arenas' visual indicator data, kept while a map build holds the scene.
+    visual_indicators: Vec<Arc<skate2_formats::pegasus::VisualIndicatorData>>,
     textures: Option<TextureScene>,
     streaming: Option<crate::city_streaming::CityStreaming>,
     /// The hull loaders' registered presentation collections, as the session last gave them.
@@ -99,6 +101,9 @@ pub(crate) struct Inspection {
     /// The additional world the session holds loaded, as it last gave it.
     additional_world: Option<String>,
     proxy_textures: Option<crate::proxy_texture_world::ProxyTextures>,
+    /// PC port: a linked Skate 3 data folder's district's proxy textures, loaded as its district
+    /// is selected (`CityStreaming::sync_district_proxy`).
+    district_proxy_textures: Option<crate::proxy_texture_world::ProxyTextures>,
     queue: NativeRenderQueue,
     focus: [f32; 3],
     distance: f32,
@@ -147,9 +152,14 @@ pub(crate) struct Inspection {
     texture_cache: BTreeMap<(bool, u64, usize, usize), GpuTexture>,
     material_cache: BTreeMap<MaterialKey, Arc<wgpu::BindGroup>>,
     diagnostic_pipelines: BTreeMap<DiagnosticPipelineKey, Arc<wgpu::RenderPipeline>>,
+    /// PC weather: the rain's world model of the last map build and its receivers' key.
+    rain: Option<(u64, crate::gpu_renderer::rain::LoadingSurface)>,
     pending_gpu: Option<std::sync::mpsc::Receiver<Result<(MapBuild, GpuMap), String>>>,
     retire_gpu: Option<std::sync::mpsc::Sender<RetiredMap>>,
     media_focus:Option<[f32;3]>,
+    /// The position the city last streamed at, which a release in the front end streams at again
+    /// (the scene itself is away while a build holds it).
+    city_focus: Option<[f32; 3]>,
 }
 impl Inspection {
     pub(crate) fn navigation(&self) -> Vec<skate2_core::presentation::PresentationNavigationArena> {
@@ -164,6 +174,7 @@ impl Inspection {
     /// The presented time the last frame advanced the world's animation by.
     pub(crate) fn animation_delta(&self)->f32 { self.animation_clock.last_delta() }
     pub(crate) fn emitter_waypoints(&self)->&[Arc<skate2_core::world_particles::EmitterWaypointData>] { &self.emitter_waypoints }
+    pub(crate) fn visual_indicators(&self) -> &[Arc<skate2_formats::pegasus::VisualIndicatorData>] { &self.visual_indicators }
     /// Resolve the original boot asset from the existing retained texture owner.
     pub(crate) fn vignette_texture(&mut self, renderer: &GpuRenderer) -> RenderResult<GpuTexture> {
         self.postfx_texture(renderer, "vignette_gradient.Texture")
@@ -248,15 +259,18 @@ impl Inspection {
         let mut world_probes = crate::render_irradiance::WorldProbes::default();
         world_probes.sync(&scene);
         let emitter_waypoints = resident_emitter_waypoints(&scene);
+        let visual_indicators = resident_visual_indicators(&scene);
         Ok(Self {
             world_probes,
             emitter_waypoints,
+            visual_indicators,
             scene: Some(scene),
             textures: Some(textures),
             streaming: None,
             hull_presentations: Vec::new(),
             additional_world: None,
             proxy_textures: None,
+            district_proxy_textures: None,
             queue,
             focus,
             distance: 45.0,
@@ -289,9 +303,11 @@ impl Inspection {
             texture_cache: BTreeMap::new(),
             material_cache: BTreeMap::new(),
             diagnostic_pipelines: BTreeMap::new(),
+            rain: None,
             pending_gpu: None,
             retire_gpu: None,
             media_focus:None,
+            city_focus: None,
         })
     }
     /// The live camera: clip-from-world, the `CameraMan` translation the
@@ -330,6 +346,23 @@ impl Inspection {
             return Ok(());
         }
         let loaded = Arc::clone(self.loaded_environment.get_or_insert_with(|| Arc::clone(&self.environment)));
+        let skate3_location = |key: Option<u64>| {
+            key.and_then(|key| skate2_core::skate3::linked().filter(|data| data.districts.iter().any(|district| district.render_location == key)))
+        };
+        // PC port: a linked Skate 3 district's environment names its collections as Skate 2's
+        // do, so the blends take its values afresh on the way in and out.
+        let skate3_transition = skate3_location(self.render_location).is_some() || skate3_location(location).is_some();
+        // PC port: a linked Skate 3 district's location is in Skate 3's database.
+        if let Some(key) = location
+            && let Some(data) = skate3_location(location)
+        {
+            let located = loaded.with_skate3_render_location(&data.db, key)?.map(Arc::new);
+            eprintln!("render location: skate 3 {key:016x}{}", if located.is_some() { "" } else { " (absent: the default)" });
+            self.environment = located.unwrap_or(loaded);
+            self.render_location = location;
+            self.painter.retarget(&self.environment);
+            return Ok(());
+        }
         let vaults = skate2_core::dlc::vaults(mounts);
         if location.is_some() && self.location_vaults.as_ref().is_none_or(|(read, ..)| *read != vaults) {
             let db = crate::vault_database(mounts)?;
@@ -345,6 +378,9 @@ impl Inspection {
             "{key:016x}{}", if located.is_some() { "" } else { " (no render_locations collection: the default)" })));
         self.environment = located.unwrap_or(base);
         self.render_location = location;
+        if skate3_transition {
+            self.painter.retarget(&self.environment);
+        }
         Ok(())
     }
     pub(crate) fn enable_city_streaming(
@@ -426,6 +462,19 @@ impl Inspection {
         self.painter_keys=None;
     }
 
+    /// In the front end, an additional world the game left (the session no longer holds it
+    /// loaded) leaves the retained city as it would at the next game's travel: the city streams
+    /// again at its own focus without it, in the background, so the session's
+    /// `UpdateAdditionalWorldStreamUnload` can unload the stream once none of its collections is
+    /// held. Nothing runs without such a world.
+    pub(crate) fn release_left_additional_world(&mut self, renderer: &GpuRenderer, scene: &mut GpuScene, xml_enabled: bool) -> RenderResult<()> {
+        if self.additional_world.is_some() || self.streaming.as_ref().and_then(|stream| stream.additional_world()).is_none() {
+            return Ok(());
+        }
+        let Some(focus) = self.city_focus else { return Ok(()) };
+        self.update_city_streaming_at(renderer, scene, focus, false, xml_enabled)
+    }
+
     /// Reuse the retained city CPU/GPU loader without changing the view camera.
     pub(crate) fn prepare_teleport(&mut self, renderer: &GpuRenderer, scene: &mut GpuScene,
         position: [f32; 3], disabled: bool, xml_enabled: bool,
@@ -445,6 +494,7 @@ impl Inspection {
     fn update_city_streaming_at(&mut self, renderer: &GpuRenderer, scene: &mut GpuScene,
         position: [f32; 3], disabled: bool, xml_enabled: bool,
     ) -> RenderResult<()> {
+        self.city_focus = Some(position);
         if let Some(pending) = &self.pending_gpu {
             match pending.try_recv() {
                 Ok(result) => {
@@ -473,9 +523,21 @@ impl Inspection {
                 }
             }
         }
+        // PC weather picked over a map built without the rain's world model, or Vanilla over one
+        // built with it: the same draws build again in the background, as a streaming change
+        // would, gathering or freeing it.
+        let rain = crate::weather::current() != crate::weather::Mode::Vanilla;
+        if self.scene.is_some() && scene.map.as_ref().is_some_and(|map| map.rain_gathered != rain) {
+            let queue = std::mem::take(&mut self.queue);
+            let techniques = std::mem::take(&mut self.diagnostic_techniques);
+            return self.spawn_map_build(renderer, queue, techniques);
+        }
         let Some(streaming) = self.streaming.as_mut() else {
             return Ok(());
         };
+        if self.proxy_textures.is_some() {
+            streaming.sync_district_proxy(renderer.texture_uploader(), self.scene.as_ref(), &mut self.district_proxy_textures)?;
+        }
         let Some((queue, techniques)) = streaming.update(
             &mut self.scene,
             &mut self.textures,
@@ -488,6 +550,10 @@ impl Inspection {
         else {
             return Ok(());
         };
+        self.spawn_map_build(renderer, queue, techniques)
+    }
+    /// A map build of the draws on the city GPU builder thread.
+    fn spawn_map_build(&mut self, renderer: &GpuRenderer, queue: NativeRenderQueue, techniques: DiagnosticTechniques) -> RenderResult<()> {
         let mut build = self.take_map_build(renderer, queue, techniques)?;
         let gpu = renderer.resource_builder();
         let (send, receive) = std::sync::mpsc::sync_channel(1);
@@ -649,7 +715,7 @@ impl RenderWindowClient for Inspection {
             exposure: renderer.postfx_exposure(),
             scene_cull: Some(self.environment.scene_cull),
             shadows,
-            animation_time: [self.animation_clock.seconds(), 0., 0., 0.],
+            animation_time: [self.animation_clock.seconds(), 0., self.environment.sky_sun_scale, 0.],
             pca: self.water_animation.globals(),
             traffic_lights: self.traffic_light_status,
             camera_axes: self
@@ -973,9 +1039,20 @@ struct TextureResolver<'a> {
     uploads: usize,
     absent: BTreeMap<&'static str, GpuTexture>,
     cubes: BTreeMap<TextureSource, (TextureIdentity, GpuTexture)>,
+    /// PC port: the draw being bound is a linked Skate 3 district's.
+    skate3: bool,
 }
 
 impl TextureResolver<'_> {
+    /// The table's slot for a material's texture: a linked Skate 3 district's draw looks among
+    /// its own game's textures first, then among Skate 2's (the boot inventory's).
+    fn find(&self, guid: u64) -> Option<(usize, skate2_core::shader_texture_table::ShaderTextureSlot<TextureSource>)> {
+        self.skate3
+            .then(|| self.table.find_from(guid, true))
+            .flatten()
+            .or_else(|| self.table.find(guid))
+    }
+
     /// A sampled channel the material leaves out (some downloadable content world and city
     /// surfaces have no normal or specular map). The original binds nothing for it
     /// (`DispatchParamsHelper` skips a null `cTextureParam`), so the sampler keeps whatever
@@ -989,7 +1066,6 @@ impl TextureResolver<'_> {
     /// port uploads the square image as all six faces (PC); a non-square one stays refused.
     fn as_cube(&mut self, guid: u64) -> RenderResult<Result<(TextureIdentity, GpuTexture), String>> {
         let Some(source) = self
-            .table
             .find(guid)
             .and_then(|(_, slot)| slot.active)
             .or_else(|| {
@@ -1053,10 +1129,22 @@ impl TextureResolver<'_> {
         let (key, bgra): (&'static str, [u8; 4]) = match name {
             "normal" | "normal2" => ("normal", [255, 128, 128, 255]),
             "specular" | "specular2" => ("specular", [0, 0, 0, 255]),
+            // PC port: a linked Skate 3 data folder's materials omit inputs their programs read:
+            // white chromaticity and lightmap, a flat detail normal.
+            "chromaticity" | "lightmap" if self.skate3 => ("white", [255, 255, 255, 255]),
+            "detail" if self.skate3 => ("normal", [255, 128, 128, 255]),
+            // And a black environment cube.
+            "environment" if self.skate3 => ("environment", [0, 0, 0, 255]),
             _ => return Ok(None),
         };
         if !self.absent.contains_key(key) {
-            let texture = self.renderer.upload_native_texture(&solid_texture(key, bgra))?;
+            let mut solid = solid_texture(key, bgra);
+            if key == "environment" {
+                solid.texture_type = skate2_formats::material::TextureType::Cube;
+                let level = solid.linear_levels[0].clone();
+                solid.linear_levels = (0..6).map(|face| skate2_formats::material::LinearTextureLevel { face, ..level.clone() }).collect();
+            }
+            let texture = self.renderer.upload_native_texture(&solid)?;
             self.absent.insert(key, texture);
         }
         Ok(Some((TextureIdentity::Absent(key), self.absent[key].clone())))
@@ -1071,7 +1159,6 @@ impl TextureResolver<'_> {
         guid: u64,
     ) -> RenderResult<Result<(TextureIdentity, GpuTexture), String>> {
         let source = self
-            .table
             .find(guid)
             .and_then(|(_, slot)| slot.active)
             .or_else(|| {
@@ -1140,8 +1227,9 @@ impl TextureResolver<'_> {
     }
 }
 
+
 /// A 1x1 A8R8G8B8 texture of one colour, in the uploader's BGRA byte order.
-fn solid_texture(name: &str, bgra: [u8; 4]) -> skate2_core::texture::NativeTexture {
+pub(crate) fn solid_texture(name: &str, bgra: [u8; 4]) -> skate2_core::texture::NativeTexture {
     skate2_core::texture::NativeTexture {
         dictionary_index: 0,
         guid: 0,
@@ -1242,10 +1330,14 @@ fn environment_material(
         .effect
         .as_ref()
         .and_then(|e| e.attribute_class_id.zip(e.material_variant_id));
-    if effect == EnvironmentEffect::Sky {
-        let Some((params, blended)) =
-            class_variant.and_then(|(class, variant)| lighting.sky_material_params(class, variant))
-        else {
+    if matches!(effect, EnvironmentEffect::Sky | EnvironmentEffect::S3Sky) {
+        let Some((params, blended)) = class_variant.and_then(|(class, variant)| {
+            if effect == EnvironmentEffect::S3Sky {
+                lighting.s3_sky_material_params(class, variant)
+            } else {
+                lighting.sky_material_params(class, variant)
+            }
+        }) else {
             return Ok(Err(format!("{effect:?}: m_params[0..2] unresolved")));
         };
         return Ok(material_binding(effect, identities, &textures, bindings)?
@@ -1291,7 +1383,7 @@ fn environment_material(
         return Ok(material_binding(effect, identities, &textures, bindings)?
             .map(|binding| (binding, instance)));
     }
-    let Some(lightmap_dot) = channels
+    let Some(mut lightmap_dot) = channels
         .iter()
         .rev()
         .find(|c| c.shader_input.starts_with("li"))
@@ -1299,6 +1391,14 @@ fn environment_material(
     else {
         return Ok(Err(format!("{effect:?}: no lightmap selector")));
     };
+    // PC port: Skate 3's decalenvironment programs read `i_embeddedDecal` (the vertex program's
+    // oC4.w) and no lightmap selector, so its lane carries the scalar.
+    if matches!(effect, EnvironmentEffect::S3Decal | EnvironmentEffect::S3DecalTileable) {
+        match find("embeddedDecal").map(|c| &c.value) {
+            Some(PresentationMaterialValue::ScalarConstant(lanes)) => lightmap_dot = *lanes,
+            _ => return Ok(Err(format!("{effect:?}: no embeddedDecal scalar"))),
+        }
+    }
     let mut scalars = [[0.0; 4]; 3];
     for (value, &name) in scalars.iter_mut().zip(effect.scalars()) {
         match find(name).map(|c| &c.value) {
@@ -1313,7 +1413,10 @@ fn environment_material(
     };
     if matches!(
         effect,
-        EnvironmentEffect::TreeAnimate | EnvironmentEffect::VertexAnimate
+        EnvironmentEffect::TreeAnimate
+            | EnvironmentEffect::VertexAnimate
+            | EnvironmentEffect::S3TreeAnimate
+            | EnvironmentEffect::S3VertexAnimate
     ) {
         let Some(params) = class_variant
             .and_then(|(class, variant)| lighting.material_parameter_array(class, variant))
@@ -1413,6 +1516,16 @@ fn material_binding(
     )
 }
 
+/// Every resident arena's visual indicator data, as `Presentation::RegArena` hands it to
+/// `VIPresentation::AddStreamedSplineInstance`.
+fn resident_visual_indicators(scene: &PresentationScene) -> Vec<Arc<skate2_formats::pegasus::VisualIndicatorData>> {
+    scene
+        .resident_collections()
+        .flat_map(|collection| collection.arenas.iter())
+        .flat_map(|arena| arena.visual_indicators.iter().cloned())
+        .collect()
+}
+
 fn resident_emitter_waypoints(scene: &PresentationScene) -> Vec<Arc<skate2_core::world_particles::EmitterWaypointData>> {
     scene
         .resident_collections()
@@ -1434,9 +1547,14 @@ struct MapBuild {
     texture_cache: BTreeMap<(bool, u64, usize, usize), GpuTexture>,
     material_cache: BTreeMap<MaterialKey, Arc<wgpu::BindGroup>>,
     diagnostic_pipelines: BTreeMap<DiagnosticPipelineKey, Arc<wgpu::RenderPipeline>>,
+    rain: Option<(u64, crate::gpu_renderer::rain::LoadingSurface)>,
     clip: [f32; 16],
     view_position: [f32; 3],
     frame: FrameEnvironment,
+    /// PC port: the linked Skate 3 district's collections (`CityStreaming::skate3_collections`).
+    skate3_collections: BTreeSet<u64>,
+    /// PC port: its proxy world's textures.
+    skate3_proxy_textures: BTreeSet<u64>,
 }
 impl Inspection {
     fn take_map_build(
@@ -1447,14 +1565,10 @@ impl Inspection {
     ) -> RenderResult<MapBuild> {
         let proxy_textures = self
             .proxy_textures
-            .as_ref()
-            .map(|proxy| {
-                proxy
-                    .entries()
-                    .map(|(guid, texture)| (guid, texture.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .iter()
+            .chain(&self.district_proxy_textures)
+            .flat_map(|proxy| proxy.entries().map(|(guid, texture)| (guid, texture.clone())))
+            .collect();
         let (clip, view_position) = self
             .external_view
             .unwrap_or_else(|| self.camera(renderer.dimensions()));
@@ -1470,15 +1584,19 @@ impl Inspection {
             environment: Arc::clone(&self.environment),
             environment_resources: self.environment_resources.take(),
             mesh_cache: std::mem::take(&mut self.mesh_cache),
+            rain: self.rain.take(),
             texture_cache: std::mem::take(&mut self.texture_cache),
             material_cache: std::mem::take(&mut self.material_cache),
             diagnostic_pipelines: std::mem::take(&mut self.diagnostic_pipelines),
+            skate3_collections: self.streaming.as_ref().map(crate::city_streaming::CityStreaming::skate3_collections).unwrap_or_default(),
+            skate3_proxy_textures: self.district_proxy_textures.iter().flat_map(|proxy| proxy.entries().map(|(guid, _)| guid)).collect(),
         })
     }
     fn install_map_build(&mut self, build: MapBuild) {
         if let Some(scene) = &build.scene {
             self.world_probes.sync(scene);
             self.emitter_waypoints = resident_emitter_waypoints(scene);
+            self.visual_indicators = resident_visual_indicators(scene);
         }
         self.scene = build.scene;
         self.textures = build.textures;
@@ -1486,6 +1604,7 @@ impl Inspection {
         self.diagnostic_techniques = build.diagnostic_techniques;
         self.environment_resources = build.environment_resources;
         self.mesh_cache = build.mesh_cache;
+        self.rain = build.rain;
         self.texture_cache = build.texture_cache;
         self.material_cache = build.material_cache;
         self.diagnostic_pipelines = build.diagnostic_pipelines;
@@ -1503,13 +1622,17 @@ impl MapBuild {
         // Project the currently retained inventory through the original
         // shader table's low/high selection. This is not a replacement for
         // native Presentation registration or its retained arena lifetime.
+        // PC port: each texture under its own game's IDs and low-resolution bit
+        // (`shader_texture_table::low_resolution_bit`), by where it was loaded: a linked Skate 3
+        // district's proxy, Pres or Tex collections.
         let mut texture_table = ShaderTextureTable::new();
         for guid in self.proxy_textures.keys() {
             texture_table
-                .add_texture(*guid, TextureSource::Proxy(*guid))
+                .add_texture_from(*guid, TextureSource::Proxy(*guid), self.skate3_proxy_textures.contains(guid))
                 .map_err(|e| format!("PROXY shader texture table: {e:?}"))?;
         }
         for (collection_index, collection) in scene.resident_collections().enumerate() {
+            let skate3 = self.skate3_collections.contains(&collection.id);
             for (arena_index, arena) in collection.arenas.iter().enumerate() {
                 for (texture_index, texture) in arena.textures.iter().enumerate() {
                     let handle = ResidentTextureHandle {
@@ -1518,14 +1641,15 @@ impl MapBuild {
                         texture_index,
                     };
                     texture_table
-                        .add_texture(texture.guid, TextureSource::Presentation(handle))
+                        .add_texture_from(texture.guid, TextureSource::Presentation(handle), skate3)
                         .map_err(|e| format!("presentation shader texture table: {e:?}"))?;
                 }
             }
         }
         for (guid, handle) in textures.resident_texture_index() {
+            let skate3 = textures.collections.get(handle.collection_index).is_some_and(|collection| self.skate3_collections.contains(&collection.id));
             texture_table
-                .add_texture(guid, TextureSource::High(handle))
+                .add_texture_from(guid, TextureSource::High(handle), skate3)
                 .map_err(|error| format!("resident shader texture table: {error:?}"))?;
         }
         let mut resolver = TextureResolver {
@@ -1540,6 +1664,7 @@ impl MapBuild {
             uploads: 0,
             absent: BTreeMap::new(),
             cubes: BTreeMap::new(),
+            skate3: false,
         };
         let mut bindings = MaterialBindings {
             renderer,
@@ -1556,11 +1681,20 @@ impl MapBuild {
         // One retained draw per submission, in the queue's stable sort order.
         let mut map = renderer.map_builder(self.queue.submissions.len());
         let mut shadow_models = BTreeMap::new();
+        // PC weather: the rain's receivers, from the same draws, only while a weather is picked.
+        // Their world model is made again only when they change.
+        let gather_rain = crate::weather::current() != crate::weather::Mode::Vanilla;
+        let mut rain_receivers = Vec::new();
+        let mut rain_key = std::collections::hash_map::DefaultHasher::new();
+        let mut rain_cube = None;
+        let mut rain_seen = BTreeSet::new();
         for submission in &self.queue.submissions {
             let source = submission.scene;
             let collection = scene
                 .resident_collection(source.collection)
                 .ok_or("draw collection owner absent")?;
+            let skate3 = self.skate3_collections.contains(&collection.id);
+            resolver.skate3 = skate3;
             let arena = &collection.arenas[source.arena];
             // `WorldPresentation::AddRenderInstance` 0x827e4f00: a new-format
             // instance (`GetRenderInstanceType` 0x827d0a28: first mesh-table
@@ -1605,6 +1739,35 @@ impl MapBuild {
                     .bone_names
                     .first()
                     .is_some_and(|name| name.starts_with("skybox"));
+            if gather_rain
+                && !is_sky
+                && first_order != Some(self.environment.proxy_draw_order)
+                && !matches!(submission.manifest_name.as_str(), "sky" | "skybox" | "proxyworld")
+                && rain_seen.insert((collection.id, source.arena, source.instance, source.mesh))
+            {
+                let name = submission.manifest_name.as_str();
+                let decal = name.starts_with("decal") || name.starts_with("zbias");
+                let cutout = name.starts_with("transparent") || name.starts_with("alphatest") || name.starts_with("tree");
+                let blended = name.starts_with("transparent") || matches!(name, "glare" | "godrayspotlight");
+                let wettable = !decal && !cutout && !blended && !matches!(name, "water" | "flowingwater" | "ocean");
+                if !decal && !blended {
+                    let id = rain_seen.len() as u64;
+                    // A map instance's transform never changes, so its identity alone keys it.
+                    std::hash::Hash::hash(&(collection.id, source.arena, source.instance, source.mesh, wettable, cutout), &mut rain_key);
+                    rain_receivers.push((&mesh.geometry, transform, id, wettable, !cutout));
+                }
+                if rain_cube.is_none() {
+                    for channel in material.channels.iter().rev().filter(|c| c.shader_input == "environment") {
+                        if let PresentationMaterialValue::Raster { guid, .. } = &channel.value
+                            && let Ok((_, texture)) = resolver.resolve(*guid)?
+                        {
+                            std::hash::Hash::hash(guid, &mut rain_key);
+                            rain_cube = Some(texture);
+                            break;
+                        }
+                    }
+                }
+            }
             let shadow = if first_order == Some(self.environment.proxy_draw_order) {
                 None
             } else {
@@ -1647,9 +1810,14 @@ impl MapBuild {
             map.set_shadow_geometry(shadow);
             // Ported original effects (`default` technique) with every input
             // they read; anything else keeps the diagnostic path below.
-            if let Some(effect) = EnvironmentEffect::from_manifest(&submission.manifest_name)
-                .filter(|_| submission.technique_name == "default")
-            {
+            // PC port: a linked Skate 3 data folder's district draws Skate 3's world programs
+            // (`skate2_core::skate3`).
+            let family = if skate3 {
+                EnvironmentEffect::from_skate3_manifest(&submission.manifest_name)
+            } else {
+                EnvironmentEffect::from_manifest(&submission.manifest_name)
+            };
+            if let Some(effect) = family.filter(|_| submission.technique_name == "default") {
                 // cModelInstance::Resolve 0x82853f90: the videoscreen fx's default technique
                 // samples PostFX's main render target.
                 let main_target = (submission.manifest_name == "videoscreen")
@@ -1662,8 +1830,8 @@ impl MapBuild {
                     &mut resolver,
                     &mut bindings,
                 )? {
-                    Ok((binding, instance)) if effect == EnvironmentEffect::Sky => map
-                        .push_sky(gpu, binding, instance)
+                    Ok((binding, instance)) if matches!(effect, EnvironmentEffect::Sky | EnvironmentEffect::S3Sky) => map
+                        .push_sky(gpu, effect, binding, instance)
                         .map_err(|error| format!("{effect:?}: {error}")),
                     Ok((binding, instance)) if effect == EnvironmentEffect::GodraySpotlight => map
                         .push_environment_transform(
@@ -1706,13 +1874,15 @@ impl MapBuild {
                 .or_default() += 1;
             // The technique's source alpha test and pass rasterizer state
             // (CULLMODE, DEPTHBIAS, SLOPESCALEDEPTHBIAS).
-            let technique = *self
-                .diagnostic_techniques
-                .get(&(
-                    submission.manifest_name.clone(),
-                    submission.technique_name.clone(),
-                ))
-                .ok_or("diagnostic draw technique absent from its loaded manifest")?;
+            // PC port: a linked Skate 3 district's effect that Skate 2 has no manifest for has no
+            // technique to draw with here: left out, counted.
+            let Some(&technique) = self.diagnostic_techniques.get(&(
+                submission.manifest_name.clone(),
+                submission.technique_name.clone(),
+            )) else {
+                *missing.entry(format!("{}: no loaded technique", submission.manifest_name)).or_default() += 1;
+                continue;
+            };
             let mut pipeline = |fragment: DiagnosticFragment| {
                 Arc::clone(
                     self.diagnostic_pipelines
@@ -1826,6 +1996,25 @@ impl MapBuild {
             }),
         );
         map.set_view(self.clip, self.view_position, self.frame);
+        map.rain_location = scene.location_name.clone();
+        map.rain_gathered = gather_rain;
+        if gather_rain {
+            std::hash::Hash::hash(&scene.location_name, &mut rain_key);
+            let key = std::hash::Hasher::finish(&rain_key);
+            match &self.rain {
+                Some((previous, surface)) if *previous == key => map.rain_surface = Arc::clone(surface),
+                _ => {
+                    let mut world = crate::weather_world::World::default();
+                    for (geometry, transform, id, wettable, solid) in rain_receivers {
+                        world.add_receiver_mesh(geometry, transform, id, wettable, solid);
+                    }
+                    crate::gpu_renderer::rain::prepare(renderer, world, rain_cube, &map.rain_surface)?;
+                    self.rain = Some((key, Arc::clone(&map.rain_surface)));
+                }
+            }
+        } else {
+            self.rain = None;
+        }
         Ok(map)
     }
 }

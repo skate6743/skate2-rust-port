@@ -41,7 +41,15 @@ fn warped_scene(uv: vec2<f32>) -> vec4<f32> {
     let colour = textureSample(scene, clamp_sampler, sample_uv);
     // PC brightness lift for world/sky only. The original warp,
     // vignette and noise constants stay separate; HUD draws after this pass.
-    return vec4<f32>(colour.rgb * parameters.display_adjustment.x, colour.a);
+    var rgb = colour.rgb * parameters.display_adjustment.x;
+    // PC weather: rain greys the image (z, zero otherwise).
+    let rain = clamp(parameters.display_adjustment.z, 0.0, 1.0);
+    if rain > 0.0 {
+        let luminance = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        rgb = mix(rgb, vec3<f32>(luminance), rain * 0.5);
+        rgb *= 1.0 - rain * 0.1;
+    }
+    return vec4<f32>(rgb, colour.a);
 }
 // PC Resolution Scale above 100%: four warped samples a quarter of a target pixel from its
 // centre (`step`), a box over the larger scene: at 200% exactly the target pixel's 2x2 texels.

@@ -99,6 +99,8 @@ pub(super) struct PauseMovie {
     selected: Option<usize>,
     /// `OnIntroDone`'s `SetScreenState` set the linked screen up.
     configured: bool,
+    /// The rows the picker holds (`SetNumOptions`).
+    configured_rows: usize,
     /// The intro's `IntroComplete` since the last take.
     intro_complete: bool,
     /// The outro's `OutroComplete` since the last take.
@@ -114,7 +116,7 @@ impl PauseMovie {
         root.playback.stop();
         root.visible = false;
         Ok(Self { root, popup:None,popup_selection:None, requested_visible: false, pending: false,
-            rows: Vec::new(), target: 0, selected: None, configured: false,
+            rows: Vec::new(), target: 0, selected: None, configured: false, configured_rows: 0,
             intro_complete: false, outro_complete: false, sounds: Vec::new(), layout: HubLayout::default() })
     }
 
@@ -137,11 +139,23 @@ impl PauseMovie {
                 self.root.goto(assets, "outro")?;
             }
         }
+        // The hub's options can change while it shows (a challenge ending into the lobby):
+        // `SetScreenState` sets the picker's rows again.
+        if visible && !self.pending && self.configured && self.rows.len() != self.configured_rows {
+            self.configure(assets)?;
+            self.selected = None;
+        }
         if visible && !self.pending && self.configured && self.selected != Some(selected) {
             self.select(assets, selected)?;
             self.selected = Some(selected);
         }
         self.callbacks(assets)
+    }
+
+    /// The shown hub's picker holds a different number of rows than `count`: its next update
+    /// sets the screen up again.
+    pub fn rows_change(&self, count: usize) -> bool {
+        self.configured && !self.pending && count != self.configured_rows
     }
 
     /// The state waits for its screen.
@@ -228,6 +242,7 @@ impl PauseMovie {
 
     fn configure(&mut self, assets: &Assets) -> RenderResult<()> {
         let count = self.rows.len();
+        self.configured_rows = count;
         if let Some(challenge) = &self.layout.challenge {
             return configure_challenge(&mut self.root, assets, count, challenge, self.layout.cash.as_deref());
         }
@@ -287,6 +302,10 @@ fn add_items(info: &mut Clip, assets: &Assets, count: usize) -> RenderResult<()>
         .map_or(0., |r| r.bottom - r.top);
     for i in 0..8 { picker.named(&[&format!("dummy{i}")])?.visible = false; }
     let group = picker.named(&["mItemGroup"])?;
+    // SetNumOptions removes the previous options before attaching the new count.
+    group.children.retain(|_, child| !child.entry.name.as_deref().is_some_and(|name| {
+        name.strip_prefix("item").and_then(|n| n.parse::<usize>().ok()).is_some_and(|n| n >= count)
+    }));
     // SetSkin on mHub.mMenu addresses an absent instance in the shipped
     // movie. The real picker retains its LIGHT_ON_DARK default.
     for i in 0..count {

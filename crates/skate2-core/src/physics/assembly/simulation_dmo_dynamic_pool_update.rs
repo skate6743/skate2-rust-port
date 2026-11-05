@@ -58,6 +58,7 @@ use skate2_formats::collision::{
 use std::{fmt, sync::Arc};
 
 /// One `ClusteredMeshData` slot of the DMO collection.
+#[derive(Clone)]
 pub(crate) struct DmoMeshSlot {
     owner: SimulationDmoAssemblyHandle,
     backing: MeshArenaOwner,
@@ -86,6 +87,22 @@ impl MeshArenaOwner {
 impl DmoMeshSlot {
     pub(crate) fn owner(&self) -> &SimulationDmoAssemblyHandle {
         &self.owner
+    }
+    #[cfg(all(test,feature = "skate3-runtime"))]
+    pub(crate) fn skate3_probe_lines(&self) -> Result<Vec<([f32;4],[f32;4])>,String> {
+        let (minimum,maximum)=self.kd_bounds.as_ref().map_err(|e|e.to_string())?;
+        let (minimum,maximum)=transform_collision_aabb(*minimum,*maximum,self.forward);
+        let mut lines=Vec::new();
+        for axis in 0..3 { for a in 1..5 { for b in 1..5 {
+            let mut start=[0.;4];let mut end=[0.;4];
+            for i in 0..3 {
+                let t=if i==(axis+1)%3 {a as f32/5.} else {b as f32/5.};
+                start[i]=(maximum[i]-minimum[i]).mul_add(t,minimum[i]);end[i]=start[i];
+            }
+            start[axis]=minimum[axis]-0.25;end[axis]=maximum[axis]+0.25;
+            lines.push((start,end));
+        }}}
+        Ok(lines)
     }
 }
 
@@ -382,6 +399,18 @@ impl SimulationDmoAssemblyPool {
             .filter_map(|member| member.content.source().map(|(_, publication)| publication))
     }
 
+    /// `publications` with each one's owning entity ID, in the same pool order.
+    pub(crate) fn entity_publications(
+        &self,
+    ) -> impl Iterator<Item = (Option<u32>, &PreparedSerialisedAssembly)> {
+        self.members.iter().filter_map(|member| {
+            member
+                .content
+                .source()
+                .map(|(candidate, publication)| (candidate.entity_id(), publication))
+        })
+    }
+
     /// The DMO line collection: every published mesh with its forward and
     /// inverse Part transforms and KD bounds (`BF_Dmo` line batches).
     pub(crate) fn try_line_query<N>(
@@ -395,24 +424,11 @@ impl SimulationDmoAssemblyPool {
     where
         N: AssemblyGroundNumeric + ReckoningNumeric,
     {
-        let meshes = self.meshes.iter().enumerate().map(|(index, slot)| {
-            let mesh = slot.mesh();
-            CollisionLineCollectionMesh {
-                occurrence: CollisionMeshOccurrence {
-                    mesh: &mesh.clustered_mesh,
-                    bytes: &mesh.object_bytes,
-                    forward: &slot.forward,
-                    inverse: &slot.inverse,
-                    owner: Some(slot.owner.clone()),
-                    slot: index,
-                },
-                local_bounds: &slot.kd_bounds,
-            }
-        });
-        let mut result = CollisionMeshLineNearest::new();
-        try_publish_collection_line(meshes, input, &mut result, numeric)?;
-        Ok(result)
+        DmoMeshSlot::try_snapshot_line(&self.meshes, input, numeric)
     }
+
+    #[cfg(feature = "skate3-runtime")]
+    pub(crate) fn skate3_grab_meshes(&self) -> Vec<DmoMeshSlot> { self.meshes.clone() }
 
     /// `DynamicPool::Remove` 0x827c9300..93e4: every mesh the assembly owns,
     /// each replaced by the last slot and the same index rechecked.
@@ -439,6 +455,27 @@ fn transform_point(transform: &[f32; 16], point: [f32; 3]) -> [f32; 3] {
 }
 
 impl DmoMeshSlot {
+    pub(crate) fn try_snapshot_line<N: AssemblyGroundNumeric + ReckoningNumeric>(
+        slots: &[Self], input: CollisionLineInput, numeric: &mut N,
+    ) -> Result<CollisionMeshLineNearest<SimulationDmoAssemblyHandle>, CollisionLineCollectionError<N::Error>> {
+        let meshes = slots.iter().enumerate().map(|(index, slot)| {
+            let mesh = slot.mesh();
+            CollisionLineCollectionMesh {
+                occurrence: CollisionMeshOccurrence {
+                    mesh: &mesh.clustered_mesh,
+                    bytes: &mesh.object_bytes,
+                    forward: &slot.forward,
+                    inverse: &slot.inverse,
+                    owner: Some(slot.owner.clone()),
+                    slot: index,
+                },
+                local_bounds: &slot.kd_bounds,
+            }
+        });
+        let mut result = CollisionMeshLineNearest::new();
+        try_publish_collection_line(meshes, input, &mut result, numeric)?;
+        Ok(result)
+    }
     fn mesh(&self) -> &CollisionMesh {
         &self.backing.arena().meshes[self.mesh_index]
     }

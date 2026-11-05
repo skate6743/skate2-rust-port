@@ -1,7 +1,7 @@
 //! MoveObject82d923d0..2f18. Raw VMX/FMA graph, native PID histories and
 //! deferred manager force route; no independent DMO body or movement solver.
 use super::pushing_position::graph;
-use super::{GrabDescriptor, InputCvarReferences, OffBoardPushing, VectorPid, read_floats};
+use super::{GrabDescriptor, InputCvarReferences, PushingCore, VectorPid, read_floats};
 use crate::{
     input_cvar_runtime::pushing::{PushingBool as B, PushingFloat as F},
     physical_player_grab_spline::{PlayerGrabSpline, manager::GrabMessageKind},
@@ -38,7 +38,15 @@ impl VectorPid {
     }
 }
 
-impl OffBoardPushing {
+/// The animation's object move controls (`MoveObjectZ`, `MoveObjectX`, `MoveObjectRot`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MoveControls {
+    pub(crate) z: f32,
+    pub(crate) x: f32,
+    pub(crate) rotation: f32,
+}
+
+impl PushingCore {
     pub(crate) fn try_move_object(
         &mut self,
         processed: &SkeletonProcessedContact,
@@ -46,6 +54,31 @@ impl OffBoardPushing {
         refs: &InputCvarReferences,
         num: &mut GrindNum<'_>,
     ) -> Result<(), GrindError> {
+        let fields = processed.animation_attribute_fields();
+        let controls = MoveControls {
+            z: need(fields.move_object_z, "MoveObjectZ")?,
+            x: need(fields.move_object_x, "MoveObjectX")?,
+            rotation: need(fields.move_object_rotation, "MoveObjectRot")?,
+        };
+        let ground_y = need(
+            processed.prior_output().ground_position_all_states(),
+            "ground position all states+1f0",
+        )?
+        .xyz[1];
+        let (descriptor, message) = self.try_move_object_with(controls, ground_y, refs, num)?;
+        grab_owner.defer_message(descriptor, message)
+    }
+
+    /// The same MoveObject over plain inputs: the grabbed spline's descriptor and the force
+    /// message for it. TU3's PhysState_OffBoard_Pushing::MoveObject (`0x82d45318`) is this
+    /// function with the pushing cvars at their defaults.
+    pub(crate) fn try_move_object_with(
+        &mut self,
+        controls: MoveControls,
+        ground_y: f32,
+        refs: &InputCvarReferences,
+        num: &mut GrindNum<'_>,
+    ) -> Result<(GrabDescriptor, GrabMessageKind), GrindError> {
         let attrs = need(self.attribs.as_ref(), "Pushing attributes")?;
         let scalar = |key| -> Result<f32, GrindError> {
             Ok(read_floats::<1>(attrs, key).map_err(error)?[0])
@@ -62,15 +95,13 @@ impl OffBoardPushing {
         let relative_body = sub(spline.body_position, hands_position);
         let lateral = neg(need(self.spline_dir, "Pushing spline direction")?);
         let max_rotation = need(self.max_rot_speed, "Pushing maximum rotation")?;
-        let controls = processed.animation_attribute_fields();
-        let move_z = need(controls.move_object_z, "MoveObjectZ")?;
-        let move_x = need(controls.move_object_x, "MoveObjectX")?;
+        let move_z = controls.z;
+        let move_x = controls.x;
         let lever = num.dot(lateral, relative_body)?;
         let sign = fsel(lever, 1.0, -1.0);
         let unsigned_lever = lever * sign;
         let rotation_from_push = curve(0xe4ff_0185_da44_cdbd, unsigned_lever)? * sign;
-        let rotation_input =
-            need(controls.move_object_rotation, "MoveObjectRot")? + rotation_from_push * move_z;
+        let rotation_input = controls.rotation + rotation_from_push * move_z;
         // Source clamps ONLY the upper end here, via fsel(1-value,value,1).
         let rotation_input = fsel(1.0 - rotation_input, rotation_input, 1.0);
         let rotation_speed =
@@ -195,12 +226,13 @@ impl OffBoardPushing {
             ),
         ));
         need(self.pid_object_vel.as_mut(), "Pushing velocity PID")?.output = force;
+        if std::env::var_os("SKATE2_TRACE_PUSHING_MOVE").is_some() {
+            eprintln!(
+                "pushing move: target {velocity:?} object {:?} desired accel {desired_acceleration:?} accel {acceleration:?} force {force:?} mass {mass} mass scale {mass_scale} blend {force_blend}",
+                spline.velocity
+            );
+        }
 
-        let ground_y = need(
-            processed.prior_output().ground_position_all_states(),
-            "ground position all states+1f0",
-        )?
-        .xyz[1];
         let body_height = ground_y - spline.body_position[1];
         let height_scale = scalar(0xfde8_07d9_b85a_6ac2)?;
         let force_position = [0.0, body_height * height_scale, 0.0, 0.0];
@@ -236,7 +268,7 @@ impl OffBoardPushing {
             force,
             need(self.force_mass_scale, "Pushing force mass scale")?,
         );
-        grab_owner.defer_message(
+        Ok((
             GrabDescriptor {
                 object_type: spline.descriptor_type,
                 object_id: spline.descriptor_object,
@@ -246,6 +278,6 @@ impl OffBoardPushing {
                 position: force_position.into(),
                 torque: torque.into(),
             },
-        )
+        ))
     }
 }

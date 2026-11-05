@@ -49,6 +49,9 @@ pub(crate) mod animation_phase1;
 pub(crate) mod animation_start;
 #[path = "../animation/runtime/actor_animation_body_session.rs"]
 pub(crate) mod body_session;
+#[cfg(feature = "skate3-runtime")]
+#[path = "../animation/runtime/actor_skate3_gestures.rs"]
+pub(crate) mod skate3_gestures;
 #[path = "actor_breadcrumb_postupdate.rs"]
 pub(crate) mod breadcrumb_postupdate;
 #[path = "actor_breadcrumb_manager.rs"]

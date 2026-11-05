@@ -924,6 +924,9 @@ impl SelectedLivingWorldDmo {
         ground: &crate::static_ground_pool::StaticGroundPool,
         mut simulation_random: Option<&mut crate::native_skater_random::SimulationCommandRandom>,
     ) -> Result<(), SelectedLivingWorldDmoError> {
+        // No pedestrian keeps a nav tile the MeshStore removed since the last frame.
+        world.grind_services.living_world().lock().map_err(|_| SelectedLivingWorldDmoError::LivingWorldLock)?
+            .release_removed_nav_tiles().map_err(SelectedLivingWorldDmoError::Pedestrians)?;
         let Some(vault) = self.registered_vault().map(Arc::clone) else {
             return Ok(());
         };
