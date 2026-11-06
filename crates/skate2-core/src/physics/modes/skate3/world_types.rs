@@ -424,6 +424,8 @@ pub struct GameplayOutput {
     /// This frame's heavy landing (Wipeout request 6) as TU3 Update5 82DB71C8 publishes it:
     /// kind 1 left footplant, 2 right footplant, 0 both feet; and the landing speed.
     pub heavy_landing: Option<(i32, f32)>,
+    /// This frame's Skitching FillPhysOut values beyond the PhysOut record.
+    pub skitch: Option<crate::skate3_native::physics::skitching::Output>,
 }
 
 /// Corrections produced by the source solver for a host-owned moving body.

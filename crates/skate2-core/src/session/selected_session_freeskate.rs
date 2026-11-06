@@ -86,8 +86,9 @@ impl<T, C> SelectedLiveSession<T, C> {
         if locations.is_empty() {
             return Err(error("free skate has no unlocked valid location"));
         }
-        // PC port: a linked Skate 3 data folder's districts (`crate::skate3`) are Area choices
-        // after San Vanelona, each with its teleports, titled in Skate 3's English.
+        // PC port: a linked Skate 3 data folder's districts (`crate::skate3`) are District choices
+        // after San Vanelona, each with its teleports, titled in Skate 3's English and named
+        // "Skate 3 <district>".
         let mut areas = Vec::new();
         if let Some(data) = crate::skate3::linked() {
             areas.push(freeskate_option::Area { label: "#San Vanelona".into(), locations: locations.clone() });
@@ -102,7 +103,8 @@ impl<T, C> SelectedLiveSession<T, C> {
                         image: crate::skate3::LOCATION_IMAGE.to_owned(),
                     })
                     .collect();
-                areas.push(freeskate_option::Area { label: format!("#{}", district.spec.title), locations });
+                let name = district.spec.title.trim_end_matches(" District");
+                areas.push(freeskate_option::Area { label: format!("#Skate 3 {name}"), locations });
             }
         }
         let menu = self.main_menu.as_mut().ok_or_else(|| error("main menu absent"))?;

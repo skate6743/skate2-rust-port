@@ -155,7 +155,8 @@ pub(super) fn finish(physics:&mut Skate3PhysicsState,skater:&mut Skate3Controlle
         skate3_core::player::state::PhysicalStateId::PhysicsGround
         | skate3_core::player::state::PhysicalStateId::GroundAnimation
         | skate3_core::player::state::PhysicalStateId::SlideGround
-        | skate3_core::player::state::PhysicalStateId::RevertGround);
+        | skate3_core::player::state::PhysicalStateId::RevertGround
+        | skate3_core::player::state::PhysicalStateId::Skitching);
     let deck_rates = physics.board.bodies()[BodyId::Deck.index()].rates;
     let deck_speed = deck_rates.linear_velocity.x.hypot(deck_rates.linear_velocity.z);
     if teleported {
@@ -257,6 +258,9 @@ pub(super) fn finish(physics:&mut Skate3PhysicsState,skater:&mut Skate3Controlle
         }
         skate3_core::player::state::PhysicalStateId::SlideGround => {
             super::slide_state::update(physics, skater)?
+        }
+        skate3_core::player::state::PhysicalStateId::Skitching => {
+            super::skitching::update(physics, skater)?
         }
         skate3_core::player::state::PhysicalStateId::WipeoutGround => {
             super::wipeout_states::advance(physics, skater)?

@@ -17,7 +17,7 @@ The per-state update dispatch is the `match` in `physics/frame.rs`.
 | 101 | SlideGround (powerslide) | `physics/slide_state.rs`, `physics/slide_state/*` | vtable 0x823285B4; UpdateSkateboard 0x82D3A900 |
 | 102 | RevertGround | `physics/revert_state.rs` | vtable 0x82327330; Enter 0x82D43488, Update 0x82D43518, Post 0x82D4C070, Fill 0x82D43B10 |
 | 103 | GroundAnimation (animated pops) | `physics/ground_animation.rs`, `physics/ground_animation/*` | 0x82D33BF8 / 0x82D33DB8 / 0x82D33C70 / 0x82D34150; board 0x82D33E30; skeleton 0x82D33E00 |
-| 104 | Skitching | not ported | |
+| 104 | Skitching | `physics/skitching.rs`, `physics/skitching/*`; entry check `physics/ground_grab.rs` | vtable 0x82327398; Enter 0x82D47278, Reset 0x82D47318, Update 0x82D477C0, UpdateSkateboard 0x82D4AC38, CheckForExit 0x82D4AFB8, FillPhysOut 0x82D4C078; entry from PhysicsGround's CheckForGrabbableObject 0x82D39BB8 / ConsiderGrabSplineQueryResults 0x82D39D98 |
 | 105 | FollowPath | not ported | |
 | 200 | PhysicsAir | `physics/air_phase.rs`, `physics/air_phase/*` | 0x82D34388 / 0x82D346C0 / 0x82D346A0; board 0x82D34AB0 |
 | 201 | KnownAir (locked trajectory, big air) | `physics/known_air.rs`, `physics/known_air/*` | 0x82D352D0 / 0x82D35C58 / 0x82D35920 / 0x82D36590; Fill 0x82D36880 |

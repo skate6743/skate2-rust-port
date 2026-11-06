@@ -51,6 +51,16 @@ impl ProxyWorldOwner {
             StreamKind::Presentation,
         )?;
         let space = CollectionSpace::parse(&mounts.read_path(&paths.collection_space)?)?;
+        // SKATE2_TRACE_DISTRICT_PROXY: each proxy's hull on the ground, to set against the high
+        // tiles that hide it.
+        if std::env::var_os("SKATE2_TRACE_DISTRICT_PROXY").is_some() {
+            for row in &space.collections {
+                eprintln!(
+                    "{stream} proxy {:016x}: x {:.0}..{:.0} z {:.0}..{:.0}",
+                    row.id, row.hull_min[0], row.hull_max[0], row.hull_min[2], row.hull_max[2]
+                );
+            }
+        }
         let manager = ProxyWorldManager::from_collection_space(&space);
         eprintln!(
             "{stream} world: {} collections in load order",
@@ -85,6 +95,11 @@ impl ProxyWorldOwner {
     pub(crate) fn add_high_collection(&mut self, high: u64, x: i32, z: i32) -> RenderResult<()> {
         let result = self.world.add_high_collection(high, u32::from_ne_bytes(x.to_ne_bytes()), u32::from_ne_bytes(z.to_ne_bytes()));
         self.record(result)
+    }
+
+    /// The proxy a high collection hides (`GetProxyCollection`), for diagnostics.
+    pub(crate) fn proxy_of(&self, high: u64) -> Option<u64> {
+        self.world.manager().proxy_collection(high)
     }
 
     pub(crate) fn high_deregistered(&mut self, high: u64) -> RenderResult<()> {

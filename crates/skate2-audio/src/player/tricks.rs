@@ -243,6 +243,12 @@ impl Tricks {
         self.board_flip = Some(ctx.aems.create_object("Class_Flips", data));
     }
 
+    /// PC port: Skate 3 data linked or unlinked while the game runs: its flip sounds are read
+    /// again at the next Skate 3-only trick.
+    pub fn skate3_link_changed(&mut self) {
+        self.skate3_bank_failed = false;
+    }
+
     /// PC port: Skate 3's flip sounds ([`SKATE3_FILES`]), read from the linked Skate 3 data the
     /// first time a Skate 3-only trick flips.
     fn skate3_bank(&mut self, ctx: &mut SfxCtx<'_>) -> bool {

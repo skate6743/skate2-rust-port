@@ -632,6 +632,7 @@ impl Skate3Player {
             hold_interactable(&mut self.interactable_hold, &mut output.gameplay.interactable_object,
                 self.skater.player_input.processed.flags_2476 & (1 << 22) != 0);
             self.output=std::sync::Arc::new(output);
+            send_skitch_messages(world, &mut self.skater.skitch_messages)?;
             if let (Some(cvars), Some(vault)) = (self.host_cvars.as_ref(), self.host_vault.as_ref()) {
                 let processed = &self.skater.player_input.processed;
                 let record = processed.grab_records_1888_2176[0];
@@ -661,6 +662,11 @@ impl Skate3Player {
                     // Skeleton+0x3E00: Enter seeds the follow with it, and UpdateOffBoardPushing
                     // clamps the follow near it.
                     centre_of_mass: self.skater.animated_skeleton.board_frames.com_frame[3],
+                    effective_animation: processed.effective_anim_transform_192.map(|row| row.map(f32::from_bits)),
+                    pose_error: processed.collision_pose_error_736.map(f32::from_bits),
+                    flags_2484: processed.flags_2484,
+                    candidates: (self.skater.offboard_grab.flags_12836 & 0x40 != 0)
+                        .then(|| self.skater.offboard_grab.validated().to_vec()),
                 };
                 let shoulders = [part("LEFTARM"), part("RIGHTARM")];
                 self.pushing.tick_or_disable(world, vault, cvars, &inputs);
@@ -904,10 +910,10 @@ impl Skate3Player {
     /// A strike on a pedestrian this tick (`ProcessOutput`'s intents, read by 0x8275f0d8).
     pub(crate) fn take_shove_hit(&mut self) -> Option<super::shove_probe::ShoveHit> { self.skater.shove.hit.take() }
     /// This tick's solver contacts with host bodies: the host body, whether the skater's side was
-    /// its board, and the normal on the host body's side.
-    pub(crate) fn take_host_contacts(&mut self) -> Vec<(crate::simulation_rigid_body_pool::SimulationRigidBodyObservation, bool, [f32; 3])> {
+    /// its board, the normal on the host body's side and the contact point.
+    pub(crate) fn take_host_contacts(&mut self) -> Vec<(crate::simulation_rigid_body_pool::SimulationRigidBodyObservation, bool, [f32; 3], [f32; 3])> {
         std::mem::take(&mut self.skater.host_contacts).into_iter()
-            .filter_map(|contact| Some((self.host_bodies.body(contact.id)?, contact.board, contact.normal)))
+            .filter_map(|contact| Some((self.host_bodies.body(contact.id)?, contact.board, contact.normal, contact.point)))
             .collect()
     }
     pub(crate) fn completed_teleport(&self) -> Option<[f32; 16]> {
@@ -1562,6 +1568,36 @@ impl Skate3Player {
 
 }
 
+/// Skitching's grab manager calls (TU3 Update 0x82D47900..5C), handled by the Skate 2 world in
+/// its deferred message pass: contact forces reach a dynamic object, the notifications a vehicle.
+fn send_skitch_messages(world: &PhysicalAssemblyWorld, messages: &mut Vec<super::skitching::Message>) -> Result<(), String> {
+    use crate::physical_player_grab_spline::manager::{GrabMessage, GrabMessageKind};
+    use super::skitching::MessageKind;
+    let Some(manager) = world.grab_query_manager().cloned() else {
+        messages.clear();
+        return Ok(());
+    };
+    for message in messages.drain(..) {
+        let descriptor = crate::physical_player_assembly::remaining_states::GrabDescriptor {
+            object_type: message.descriptor.kind as i32,
+            object_id: message.descriptor.id as i32,
+        };
+        let kind = match message.kind {
+            MessageKind::ApplyForce { force, position, torque } => GrabMessageKind::ApplyForce {
+                force: SkeletonRootVector::known(force),
+                position: SkeletonRootVector::known(position),
+                torque: SkeletonRootVector::known(torque),
+            },
+            MessageKind::NotifyGrabbing => GrabMessageKind::NotifyGrabbing,
+            MessageKind::NotifyLocalPlayer => GrabMessageKind::NotifyLocalPlayer,
+        };
+        manager
+            .defer_message(GrabMessage { descriptor, kind })
+            .map_err(|e| format!("Skitching grab message: {e:?}"))?;
+    }
+    Ok(())
+}
+
     fn export_frame(physics: &super::Skate3PhysicsState, skater: &super::Skate3ControllerState, camera: &crate::skate3_native::camera::CameraRuntime, hips_body: usize) -> FrameOutput {
         let deck = physics.board.part_transforms()[BodyId::Deck.index()];
         let board_transform = [
@@ -1659,6 +1695,7 @@ impl Skate3Player {
                     };
                     (kind, skater.wipeout.state.values[6])
                 }),
+                skitch: skater.skitch_output,
             },
             tick: physics.ticks,
             physical: *physical,

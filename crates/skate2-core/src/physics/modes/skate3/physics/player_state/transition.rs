@@ -30,6 +30,7 @@ impl PhysicalStateCalls for Calls {
                         | PhysicalStateId::WipeoutGround
                         | PhysicalStateId::Teleporting
                         | PhysicalStateId::LandingOnDeck
+                        | PhysicalStateId::Skitching
                 )
         );
     }
@@ -52,6 +53,7 @@ impl PhysicalStateCalls for Calls {
                         | PhysicalStateId::WipeoutGround
                         | PhysicalStateId::Teleporting
                         | PhysicalStateId::LandingOnDeck
+                        | PhysicalStateId::Skitching
                 )
         );
     }
@@ -173,6 +175,7 @@ pub(super) fn set(
         PhysicalStateId::OffBoardPushing => super::super::biped_ground::exit(skater),
         PhysicalStateId::GroundAnimation => super::super::ground_animation::exit(physics, skater)?,
         PhysicalStateId::LandingOnDeck => super::super::landing_on_deck::exit(physics, skater)?,
+        PhysicalStateId::Skitching => {} //Exit vtable slot 3 is empty.
         PhysicalStateId::SlideGround => super::super::slide_state::exit(physics, skater)?,
         PhysicalStateId::WipeoutGround => super::super::wipeout_states::exit(physics, skater),
         PhysicalStateId::Sleeping | PhysicalStateId::Teleporting => {} //82B61BB8.
@@ -199,6 +202,7 @@ pub(super) fn set(
         }
         PhysicalStateId::GroundAnimation => super::super::ground_animation::enter(physics, skater),
         PhysicalStateId::LandingOnDeck => super::super::landing_on_deck::enter(physics, skater),
+        PhysicalStateId::Skitching => super::super::skitching::enter(physics, skater),
         PhysicalStateId::SlideGround => super::super::slide_state::enter(physics, skater),
         PhysicalStateId::WipeoutGround => super::super::wipeout_states::enter(physics, skater),
         PhysicalStateId::Teleporting => {

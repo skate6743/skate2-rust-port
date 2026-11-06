@@ -421,11 +421,20 @@ pub struct Sk8EmitterSystem {
     next_status_id: u32,
     freed: VecDeque<VolumeStatus>,
     /// PC port: the camera is in a linked Skate 3 district, which stands where the city's
-    /// volumes were placed. TU3 loads only the district's own emitter files there
-    /// (`reverb_downtown.ems` and the like, not ported), so none of the city's volumes holds the
-    /// camera: its reverb is the district's painted one.
+    /// volumes were placed. TU3 loads only the district's own emitter files there, so none of the
+    /// city's volumes holds the camera; the district's reverb volumes do.
     skate3_district: bool,
+    /// PC port: the district's `reverb_<district>.ems` asked for, and its volumes with the Skate 3
+    /// attributes their keys name, once read.
+    district_file: Option<String>,
+    district: Option<(Vec<EmitterVolume>, Arc<Vault>)>,
+    district_tree: VolumeTree,
+    /// PC port: the volume statuses are the district's, read through its attributes.
+    statuses_skate3: bool,
 }
+
+/// PC port: the `VolumeRef::file` of a district reverb volume.
+const DISTRICT_FILE: usize = usize::MAX;
 
 impl Default for Sk8EmitterSystem {
     fn default() -> Self {
@@ -470,12 +479,45 @@ impl Sk8EmitterSystem {
             next_status_id: 1,
             freed: VecDeque::new(),
             skate3_district: false,
+            district_file: None,
+            district: None,
+            district_tree: VolumeTree::default(),
+            statuses_skate3: false,
         }
     }
 
     /// PC port: whether the camera is in a linked Skate 3 district (`skate3_district`).
     pub fn set_skate3_district(&mut self, district: bool) {
         self.skate3_district = district;
+    }
+
+    /// PC port: the district reverb file last asked for.
+    #[must_use]
+    pub fn skate3_district_file(&self) -> Option<&str> {
+        self.district_file.as_deref()
+    }
+
+    /// PC port: a district's `reverb_<district>.ems` (none outside one) and, when it was read,
+    /// its bytes and the Skate 3 attributes their keys name; its volumes go in a tree of their
+    /// own, cubes of their largest size as `AddEmitterVolume` makes them.
+    pub fn set_skate3_district_volumes(&mut self, file: Option<String>, loaded: Option<(Vec<u8>, Arc<Vault>)>) {
+        self.district_file = file;
+        self.district_tree = VolumeTree::default();
+        self.district = loaded.map(|(bytes, vault)| (parse_data_file(&bytes), vault));
+        if let Some((volumes, _)) = &self.district {
+            for (index, volume) in volumes.iter().enumerate() {
+                let extent = volume.size[0].max(volume.size[1]).max(volume.size[2]);
+                let min = volume.pos.map(|p| p - extent);
+                let max = volume.pos.map(|p| p + extent);
+                self.district_tree.insert(VolumeRef { file: DISTRICT_FILE, index }, min, max);
+            }
+        }
+    }
+
+    /// PC port: the attributes the volume statuses' keys name when they are a district's.
+    #[must_use]
+    pub fn statuses_vault(&self) -> Option<Arc<Vault>> {
+        self.district.as_ref().filter(|_| self.statuses_skate3).map(|(_, vault)| Arc::clone(vault))
     }
 
     /// The emitter steps of `AudioSystem::Initialize` 0x82509c18 after `emitter_utility.abk`
@@ -518,6 +560,9 @@ impl Sk8EmitterSystem {
     }
 
     fn volume(&self, volume: VolumeRef) -> Option<&EmitterVolume> {
+        if volume.file == DISTRICT_FILE {
+            return self.district.as_ref()?.0.get(volume.index);
+        }
         self.data_files.get(volume.file)?.as_ref()?.1.get(volume.index)
     }
 
@@ -594,12 +639,37 @@ impl Sk8EmitterSystem {
             for status in &mut self.volume_statuses {
                 status.touched = false;
             }
-            if !self.skate3_district {
-                self.search_oct_tree(camera, io);
+            // PC port: in a district the statuses are its own volumes', read through Skate 3's
+            // attributes; on the way in or out the other set's go first, through their own.
+            let district = self.district.as_ref().filter(|_| self.skate3_district).map(|(_, vault)| Arc::clone(vault));
+            if self.statuses_skate3 != district.is_some() {
+                match self.statuses_vault() {
+                    Some(vault) => {
+                        let mut own = EmitterIo { core: &mut *io.core, aems: &mut *io.aems, map: &mut *io.map, vault: &vault, rng: &mut *io.rng };
+                        self.remove_untouched(states, &mut own);
+                    }
+                    None => self.remove_untouched(states, io),
+                }
+                self.statuses_skate3 = district.is_some();
             }
-            self.remove_untouched(states, io);
-            self.update_volume_list(states, io);
-            self.update_music_volumes(io.vault);
+            if let Some(vault) = district {
+                let mut own = EmitterIo { core: &mut *io.core, aems: &mut *io.aems, map: &mut *io.map, vault: &vault, rng: &mut *io.rng };
+                let min = [camera[0] - 0.5, camera[1] - 0.5, camera[2] - 0.5];
+                let max = [camera[0] + 0.5, camera[1] + 0.5, camera[2] + 0.5];
+                for volume in self.district_tree.collisions(min, max) {
+                    self.check_volume(volume, camera, &mut own);
+                }
+                self.remove_untouched(states, &mut own);
+                self.update_volume_list(states, &mut own);
+                self.update_music_volumes(&vault);
+            } else {
+                if !self.skate3_district {
+                    self.search_oct_tree(camera, io);
+                }
+                self.remove_untouched(states, io);
+                self.update_volume_list(states, io);
+                self.update_music_volumes(io.vault);
+            }
         }
         self.update_emitter_swap_status(io);
     }

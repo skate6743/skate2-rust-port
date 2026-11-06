@@ -4,6 +4,7 @@
 //! telemetry and the single player results are Skate 3's alone and play no part here.
 
 use super::{
+    attrib_lua::ObjectKind,
     binding::{get_int_or, get_string, get_string_or},
     hud::{CentralMessage, ModifiedCentral},
     lua::{Lua, LuaResult, NativeCall, NativeFn, Value},
@@ -20,9 +21,34 @@ fn no(_: &mut Lua<World>, _: &mut World, _: &NativeCall) -> R {
     Ok(vec![Value::Boolean(false)])
 }
 
+/// `Objectives.ActivateChallengeStartObjectives(group)` (`0x82c61158`): the group's objectives of
+/// Skate 3's challenge start mode become active.
+fn activate_challenge_start_objectives(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
+    if let Some(group) = world.pointers.object(call.arg(0), ObjectKind::ObjectiveGroup) {
+        super::objectives::activate_challenge_start_objectives(world, group);
+    }
+    Ok(Vec::new())
+}
+
 /// `HUD2.eMessageColour.Green` and `HUD2.eTeamMessageType.Winning`.
 const GREEN: i32 = 2;
 const WINNING: i32 = 2;
+
+/// The colour Skate 3's own central HUD gives a message: its `hudcentral` `ShowMessage` shows
+/// colour 0 off-white and 1 red, and any other (Green) through `ShowCelebratory`, white text.
+const fn skate3_colour(colour: i32) -> i32 {
+    if colour == GREEN { 0 } else { colour }
+}
+
+/// A central message's colour as the main activity's game shows it: Skate 3's own for a game
+/// that runs Skate 3's graph (`crate::skate3`), else as asked.
+pub(super) fn central_colour(world: &World, colour: i32) -> i32 {
+    let skate3 = world.activities.main.is_some_and(|main| {
+        let key = world.activities.activities[main].key;
+        crate::skate3::linked().is_some_and(|data| data.runs_own_graph(key))
+    });
+    if skate3 { skate3_colour(colour) } else { colour }
+}
 
 /// The central message, as `HUD2.ShowCentralMessage` shows it.
 fn central_message(world: &mut World, message: CentralMessage) {
@@ -42,7 +68,7 @@ fn custom_args(custom: &str) -> [String; 4] {
 fn show_custom_central_message(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let message = CentralMessage {
         hal_id: get_string(call, 0).unwrap_or_default(),
-        colour: get_int_or(call, 1, 0),
+        colour: skate3_colour(get_int_or(call, 1, 0)),
         args: custom_args(&get_string_or(call, 2, "")),
         audio_hook: get_int_or(call, 3, 0),
     };
@@ -55,7 +81,7 @@ fn show_custom_central_message(_: &mut Lua<World>, world: &mut World, call: &Nat
 fn show_team_central_message(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let message = CentralMessage {
         hal_id: get_string(call, 0).unwrap_or_default(),
-        colour: if get_int_or(call, 2, 0) == WINNING { GREEN } else { 0 },
+        colour: skate3_colour(if get_int_or(call, 2, 0) == WINNING { GREEN } else { 0 }),
         args: [get_string_or(call, 3, ""), get_string_or(call, 4, ""), get_string_or(call, 5, ""), get_string_or(call, 6, "")],
         audio_hook: get_int_or(call, 7, 0),
     };
@@ -68,7 +94,7 @@ fn show_team_central_message(_: &mut Lua<World>, world: &mut World, call: &Nativ
 fn show_custom_team_central_message(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let message = CentralMessage {
         hal_id: get_string(call, 0).unwrap_or_default(),
-        colour: if get_int_or(call, 2, 0) == WINNING { GREEN } else { 0 },
+        colour: skate3_colour(if get_int_or(call, 2, 0) == WINNING { GREEN } else { 0 }),
         args: custom_args(&get_string_or(call, 3, "")),
         audio_hook: 0,
     };
@@ -113,7 +139,8 @@ pub(super) fn multiplier_active(world: &World, activity: &super::activity::Activ
 }
 
 /// The natives, by module and name.
-const NATIVES: [(&str, &str, NativeFn<World>); 20] = [
+const NATIVES: [(&str, &str, NativeFn<World>); 21] = [
+    ("Objectives", "ActivateChallengeStartObjectives", activate_challenge_start_objectives),
     ("HUD2", "ShowCustomCentralMessage", show_custom_central_message),
     ("HUD2", "ShowTeamCentralMessage", show_team_central_message),
     ("HUD2", "ShowCustomTeamCentralMessage", show_custom_team_central_message),

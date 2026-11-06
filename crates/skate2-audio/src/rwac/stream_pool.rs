@@ -416,7 +416,7 @@ impl StreamPools {
 pub struct GameStreamFiles {
     root: PathBuf,
     /// PC port: a linked Skate 3 data folder, whose files are named under [`SKATE3_FILES`].
-    skate3_root: Option<PathBuf>,
+    skate3_root: Mutex<Option<PathBuf>>,
     archives: Mutex<Vec<(String, Option<Arc<OpenArchive>>)>>,
 }
 
@@ -431,18 +431,26 @@ struct OpenArchive {
 impl GameStreamFiles {
     #[must_use]
     pub fn new(root: PathBuf) -> Self {
-        Self { root, skate3_root: None, archives: Mutex::new(Vec::new()) }
+        Self { root, skate3_root: Mutex::new(None), archives: Mutex::new(Vec::new()) }
     }
 
     /// PC port: these files with a linked Skate 3 data folder's under [`SKATE3_FILES`].
     #[must_use]
-    pub fn with_skate3(mut self, root: Option<PathBuf>) -> Self {
-        self.skate3_root = root;
+    pub fn with_skate3(self, root: Option<PathBuf>) -> Self {
+        self.set_skate3(root);
         self
     }
 
+    /// PC port: the Skate 3 data folder linked (or unlinked) while the game runs. The archives
+    /// opened under [`SKATE3_FILES`], or found missing there, are looked up again.
+    pub fn set_skate3(&self, root: Option<PathBuf>) {
+        *lock(&self.skate3_root) = root;
+        lock(&self.archives).retain(|(name, _)| !name.starts_with(SKATE3_FILES));
+    }
+
     fn local(&self, path: &str) -> PathBuf {
-        let (root, path) = match (path.strip_prefix(SKATE3_FILES), self.skate3_root.as_ref()) {
+        let skate3_root = lock(&self.skate3_root);
+        let (root, path) = match (path.strip_prefix(SKATE3_FILES), skate3_root.as_ref()) {
             (Some(path), Some(root)) => (root, path),
             _ => (&self.root, path),
         };

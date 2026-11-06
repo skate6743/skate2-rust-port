@@ -951,7 +951,8 @@ impl Skate3Data {
     }
 
     /// A Skate 3 record `db` lacks, made in it with each of its values (through its parents and
-    /// layout) that Skate 2's class reads alike, Skate 3's definitions joining where the class
+    /// layout) that Skate 2's class reads alike (an objective's activation mode in Skate 2's
+    /// numbering, [`skate2_activation_mode`]), Skate 3's definitions joining where the class
     /// lacks them; and, `depth` deep, the records those values name.
     fn import_record(&self, db: &mut AttribDb, class: u64, key: u64, depth: u32) {
         let source = &*self.db;
@@ -966,7 +967,15 @@ impl Skate3Data {
             if !db.defines_alike(class, source, class, field) {
                 continue;
             }
-            if let Some(index) = source.copy_value(class, key, field, &mut synthesis) {
+            let copied = if class == class::CHALLENGE_OBJECTIVE && field == ACTIVATION_MODE {
+                source.attribute(class, key, field).and_then(|value| {
+                    let mode = skate2_activation_mode(value.i32(0)?).to_be_bytes();
+                    Some(if value.is_inline() { synthesis.word(mode) } else { synthesis.value(&mode, &[]) })
+                })
+            } else {
+                source.copy_value(class, key, field, &mut synthesis)
+            };
+            if let Some(index) = copied {
                 made.push((field, index));
                 named.extend(self.named_records(class, key, field));
             }
@@ -1371,15 +1380,42 @@ pub fn is_linked() -> bool {
     IS_LINKED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// How many times the host linked or unlinked Skate 3 data: a holder of what it read compares it
+/// to read the data again.
+static LINK_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[must_use]
+pub fn link_generation() -> u64 {
+    LINK_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// The host linked (or unlinked) Skate 3 data.
 pub fn set_linked(data: Option<Arc<Skate3Data>>) {
     IS_LINKED.store(data.is_some(), std::sync::atomic::Ordering::Relaxed);
     *LINKED.write().unwrap_or_else(PoisonError::into_inner) = data;
+    LINK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
 /// The pack row the Downloadable Content screen lists for linked Skate 3 data.
 pub const PACK_TITLE: &str = "Skate 3";
 pub const PACK_DESCRIPTION: &str = "Port Carverton's University, Downtown and Industrial districts with their challenge map teleports, and Skate 3's clothing in Edit Skater's Merchandise.";
+
+/// `challenge_objective` `ActivationMode` (`eTriggerActivationMode`).
+const ACTIVATION_MODE: u64 = crate::challenge::objectives::field::ACTIVATION_MODE;
+
+/// A Skate 3 objective's activation mode in Skate 2's numbering. Skate 3 put a mode of its own at
+/// 1, the objectives `Objectives.ActivateChallengeStartObjectives` (TU3 0x82c61158) activates, so
+/// its 2 to 5 are Skate 2's 1 to 4: TU3's `cChallengeObjective::TriggerEnterMsg` (0x82c74290)
+/// tests 2 and 3, `TriggerExitMsg` (0x82c74450) 2, `WipeoutMsg` (0x82c71bd8) and `OnWipeoutOver`
+/// (0x82c6d890) 4, and `OnSequenceBegin` (0x82c6da68) and `OnSequenceComplete` (0x82c6db50) 5,
+/// where Skate 2's test 1, 2, 1, 3 and 4. Skate 3's own mode becomes
+/// [`crate::challenge::objectives::CHALLENGE_START_MODE`], which no Skate 2 objective has.
+const fn skate2_activation_mode(mode: i32) -> i32 {
+    match mode {
+        0 => 0,
+        1 => crate::challenge::objectives::CHALLENGE_START_MODE,
+        mode => mode - 1,
+    }
+}
 
 #[cfg(test)]
 mod tests {

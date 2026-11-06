@@ -198,7 +198,15 @@ impl Pipelines {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("character, hair, CAS and livingworld_stamp GPU programs"),
             source: wgpu::ShaderSource::Wgsl(
-                format!("{SKINNING}{SHADER}{}{}", surface::SHADER, cas::SHADER).into(),
+                // SKATE2_CHARACTER_LIGHT_VIEW (diagnostic): the CAS and defaultcharacter programs show
+                // 1 = (self shadow, world shadow, N.L); CAS 2 = the key light, 3 = ambient plus rim;
+                // defaultcharacter 4 = (inside the world map, its uncovered channel, height test),
+                // 5 = (world map u, v, height).
+                format!("{SKINNING}{SHADER}{}{}", surface::SHADER, cas::SHADER.replace(
+                    "const CHARACTER_LIGHT_VIEW:u32=0u;",
+                    &format!("const CHARACTER_LIGHT_VIEW:u32={}u;", std::env::var("SKATE2_CHARACTER_LIGHT_VIEW")
+                        .ok().and_then(|view| view.parse::<u32>().ok()).unwrap_or(0)),
+                )).into(),
             ),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -629,6 +637,7 @@ fn plain_colour(input:PlainOutput)->vec4<f32>{
     let parameters=palette.living_world[4];
     let world=vec4<f32>(input.relative+stamp.camera_lod.xyz,1.);
     let gain=(parameters.x*parameters.z)*clamp(world_shadow_value(world)+parameters.w,0.,1.);
+    if CHARACTER_LIGHT_VIEW==1u {return vec4<f32>(1.,world_shadow_value(world),parameters.w,object.color.a);}
     let x=(colour*(gain*input.fog.a)+input.fog.xyz)*parameters.y;
     let low=clamp(vec3<f32>(1.)-x,vec3<f32>(0.),vec3<f32>(1.));
     let mapped=(max(x*.25+vec3<f32>(.75),vec3<f32>(1.))-low*low)*.5;
@@ -655,6 +664,7 @@ fn stamp_colour(input:Output)->vec4<f32>{
     let rim=normalize(light*vec3<f32>(-1.,.2,-1.)-view);
     let world=vec4<f32>(input.relative+stamp.camera_lod.xyz,1.);
     let world_shadow=world_shadow_value(world);let shadow=csm_shadow(world)*world_shadow;
+    if CHARACTER_LIGHT_VIEW==1u {return vec4<f32>(csm_shadow(world),world_shadow,stamp.camera_lod.w,object.color.a);}
     let facing=1.-clamp(dot(n,view),0.,1.);
     let key_fresnel=pow(facing,stamp.material[1].w);let rim_fresnel=pow(facing,stamp.material[0].z);
     let key_diffuse=clamp(dot(n,light),0.,1.)*stamp.material[1].xyz*shadow;

@@ -111,7 +111,10 @@ impl PedestrianRender{
                         Ok(crate::gpu_renderer::character::stamp::Inputs{material,irradiance:visual.irradiance,
                             attributes:self.environment.frame_character_attributes(frame)?,
                             light:frame.light_direction,csm:frame.shadows.globals(),camera:camera.camera,
-                            material_lod:visual.material_lod(camera.camera,placement.position)?})
+                            // Skate 2's program blends to its far colour (diffuse*.3*saturate(world
+                            // shadow+.1)) over i_material_lod; Skate 3's, which a district's look
+                            // follows, binds no material LOD.
+                            material_lod:if frame.skate3_district {0.}else{visual.material_lod(camera.camera,placement.position)?}})
                     };
                     let (mut object,parameters)=if let Some(retained)=previous.remove(&key){retained}else{
                         let material=mesh.material.and_then(|i|lod.arena.materials.get(i))
@@ -181,6 +184,13 @@ impl PedestrianRender{
                     };
                     pose.living_world.as_mut().expect("parameters")[4][0]=parameters.gain();
                     parameters.set_plain_factors(&mut pose);
+                    if trace && part_index == 0 && mesh_index == 0 {
+                        let distance=(0..3).map(|i|(placement.position[i]-camera.camera[i]).powi(2)).sum::<f32>().sqrt();
+                        let (kind,rows)=match parameters {Parameters::Plain(r)=>("plain",r[..8].to_vec()),
+                            Parameters::Stamp(r)=>("stamp",r.to_vec()),Parameters::Surface(r)=>("surface",r.to_vec())};
+                        std::eprintln!("pedestrian program id={} lod={selected_lod} distance={distance:.1} kind={kind} district={} m0={:?} m5={:?} last={:?}",
+                            visual.entity_id,frame.skate3_district,rows[0],rows[5],rows.last());
+                    }
                     renderer.update_character_object(&mut object,&pose)?;
                     renderer.set_character_shadow_bounds(&mut object,placement.position,placement.world_bounds)?;
                     renderer.update_character_stamp(&object,&stamp_inputs(parameters.lighting())?)?;

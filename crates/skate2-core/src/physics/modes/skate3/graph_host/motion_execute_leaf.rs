@@ -485,6 +485,24 @@ pub(super) fn execute(
                             _ => unreachable!(),
                         }
                     }
+                    crate::skate3_native::graph_host::motion_stock_gameplay::Operation::EnterSkitchingBehaviour => {
+                        let Instance::EnterSkitching(state) = instance else {
+                            return Err("EnterSkitchingBehaviour instance was not allocated".into());
+                        };
+                        super::super::motion_skitching::enter(state, phase, &mut host.animation, host.skitch_physical, &host.skitching)?;
+                    }
+                    crate::skate3_native::graph_host::motion_stock_gameplay::Operation::SkitchingBehaviour => {
+                        let Instance::Skitching(state) = instance else {
+                            return Err("SkitchingBehaviour instance was not allocated".into());
+                        };
+                        super::super::motion_skitching::holding(state, phase, &mut host.animation, host.skitch_physical, &host.skitching)?;
+                    }
+                    crate::skate3_native::graph_host::motion_stock_gameplay::Operation::SkitchShimmyingBehaviour { direction } => {
+                        let Instance::SkitchShimmying(speed) = instance else {
+                            return Err("SkitchShimmyingBehaviour instance was not allocated".into());
+                        };
+                        super::super::motion_skitching::shimmy(speed, direction, phase, &mut host.animation, host.skitch_physical, &host.skitching)?;
+                    }
                     other => {
                         return Err(format!(
                             "MotionGraph stock gameplay producer {other:?} is not implemented"

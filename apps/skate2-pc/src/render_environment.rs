@@ -312,6 +312,9 @@ pub(crate) struct EnvironmentLighting {
     /// False in a linked Skate 3 district: its painted colour cube, exposure and bloom regions do
     /// not apply and the PostFX stays the Skate 2 world's (PC port, user request).
     pub(crate) painted_postfx: bool,
+    /// True in a linked Skate 3 district. Skate 3's `livingworld_stamp` program has no
+    /// `i_material_lod`, so its pedestrians keep their full lighting at every distance.
+    pub(crate) skate3_district: bool,
     /// The Skate 3 sky's sun term scale (`S3_SKY_PS` reads it as `animation_time.z`; 0 leaves the
     /// sun as authored).
     pub(crate) sky_sun_scale: f32,
@@ -764,6 +767,7 @@ impl EnvironmentLighting {
                 use_worldpainter,
                 luminance_scale: 1.0,
                 painted_postfx: true,
+                skate3_district: false,
                 sky_sun_scale: 0.0,
                 default_irradiance,
                 sun_vector,
@@ -902,7 +906,9 @@ impl EnvironmentLighting {
     /// collection in Skate 3's database (`db`, files in `mounts`), which lights it as Skate 3
     /// does: the sun vector, default SH probe, probe and shadow flags, `g_envattributes`, and the
     /// fog, sky, bloom, auto-exposure and colour cube collections and references, Skate 3's values
-    /// over Skate 2's for the keys both share, as are its world materials' `m_params`. Skate 3's
+    /// over Skate 2's for the keys both share, as are its world materials' `m_params`. PC port
+    /// (user request): the characters keep Skate 2's `material_character` values and
+    /// `g_charattributes`, which Skate 2's character programs are set for. Skate 3's
     /// locations declare no sun-map flag, and the district has no WorldPainter data of its own
     /// (San Vanelona's would paint it), so the location's references stand. `None` without the
     /// collection.
@@ -950,14 +956,9 @@ impl EnvironmentLighting {
                 }
             }
         }
-        // The character attributes and the view-light terms Skate 3's skaters are lit with
-        // (`material_charattributes/default`, `rendering/default`), as Skate 3 reads them.
-        if let Some(attributes) = db.attribute(string_hash64("material_charattributes"), DEFAULT_COLLECTION_KEY, string_hash64("g_charattributes")) {
-            let values: Vec<[f32; 4]> = (0..attributes.len()).filter_map(|index| attribute_floats::<4>(&attributes, index)).collect();
-            if !values.is_empty() {
-                environment.character_attributes = values;
-            }
-        }
+        // The view-light terms Skate 3's world is lit with (`rendering/default`), as Skate 3 reads
+        // them. The characters keep Skate 2's `g_charattributes`: Skate 3's shadow bias and
+        // softening (0.02 against 0.8) leave hard self-shadow edges under Skate 2's programs.
         let rendering = string_hash64("rendering");
         let rendering_floats = |attribute: u64| db.attribute(rendering, DEFAULT_COLLECTION_KEY, attribute);
         if let Some(direction) = rendering_floats(0xd900_aef7_ea4d_75a2).and_then(|value| attribute_floats::<4>(&value, 0)) {
@@ -988,6 +989,7 @@ impl EnvironmentLighting {
         // on-screen brightness and does not flood the camera.
         environment.use_worldpainter = flag("use_worldpainter").unwrap_or(false);
         environment.painted_postfx = false;
+        environment.skate3_district = true;
         environment.sky_sun_scale = 1.0 / SKATE3_LUMINANCE_SCALE;
         // PC port (user request): the auto-exposure reads a district a little darker than it
         // is, so the map comes out a touch brighter.
@@ -1171,6 +1173,7 @@ mod tests {
             use_worldpainter: true,
             luminance_scale: 1.0,
             painted_postfx: true,
+            skate3_district: false,
             sky_sun_scale: 0.0,
             default_irradiance:[[0.;4];9],
             envattributes,

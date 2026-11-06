@@ -29,6 +29,11 @@ const WORLD_GRAB_Z: u64 = 0x5e35_db02_be69_7a58;
 const WORLD_GRAB_Y: u64 = 0x02f0_3da5_1050_c8b3;
 /// The DMO grab spline kind (`GrabSpline` descriptor type 2).
 const DMO: u32 = 2;
+/// The off-board pushing collection's grab box half dimensions and offset (layout 0 and 32), and
+/// the pushing collection's repush delay, which Update reads.
+const BOX_DIMENSIONS: u64 = 0xa03e_a2ac_5576_e738;
+const BOX_OFFSET: u64 = 0xfe50_188a_8336_fdf9;
+const REPUSH_DELAY: u64 = 0xf081_ca3e_c9e5_1bfb;
 
 /// What the Skate 3 physics gives the pushing state each tick.
 pub(super) struct Inputs {
@@ -52,6 +57,13 @@ pub(super) struct Inputs {
     pub height_above_ground: f32,
     /// The skeleton's centre of mass (Skeleton+0x3E00).
     pub centre_of_mass: [f32; 4],
+    /// ProcessedPhysIn+192 (the effective animation transform, the grab box's frame), +736 (the
+    /// collision pose error) and +2484 (bit 26 is timed).
+    pub effective_animation: [[f32; 4]; 4],
+    pub pose_error: [f32; 4],
+    pub flags_2484: u32,
+    /// The grab owner's validated splines, when its query results are ready (owner +12836 bit 6).
+    pub candidates: Option<Vec<skate3_core::player::offboard::grab_scene::Record>>,
 }
 
 /// SetLeft/RightHandIKTargetPosition's targets and blend for the next skeleton update.
@@ -198,6 +210,7 @@ impl Pushing {
             self.accumulator = inputs.centre_of_mass;
         }
         let mut accumulator = self.accumulator;
+        let trace_tick = self.ticks % 15 == 0;
         let core = self.core(vault, cvars)?;
         if entering {
             // Enter: Reset, then with the world-grab intent and a published DMO grab record the
@@ -231,23 +244,105 @@ impl Pushing {
             turn: 0.0,
             push: crate::skate3_native::physics::Push { motion: [0.0; 4], turn: 0.0, follow: accumulator },
         };
-        if core.grab_object != Some(true) {
-            self.follow = Some(idle);
-            return Ok(());
+        let read = |attrs: Option<&crate::attribute_runtime::AttributeRuntimeInstance>, key| {
+            let attrs = attrs.ok_or("Skate 3 pushing: no attributes")?;
+            crate::physical_player_assembly::remaining_states::read_floats::<4>(attrs, key)
+                .map_err(|e| format!("Skate 3 pushing attribute {key:016x}: {e:?}"))
+        };
+        // Update 0x82D44A28..AA8: a collision pose error (ProcessedPhysIn+736) past 0.2 m is an
+        // emergency exit, with the repush delay.
+        let error = inputs.pose_error;
+        if error[0] * error[0] + error[1] * error[1] + error[2] * error[2] > f32::from_bits(0x3d23_d70b) {
+            core.delay_until_repushable = Some(read(core.attribs.as_ref(), REPUSH_DELAY)?[0]);
+            core.emergency_exit = Some(true);
         }
-        if !inputs.world_grab {
-            core.grab_object = Some(false);
-            self.follow = Some(idle);
-            return Ok(());
-        }
-        // Update: the spline refreshed from the live object, its hand targets and blend, then
-        // MoveObject's force for the world.
+        // 0x82D44AAC..AE0: how long ProcessedPhysIn+2484 bit 26 has been set.
+        core.time_in_partial_ragdoll = Some(if inputs.flags_2484 & 0x0400_0000 != 0 {
+            core.time_in_partial_ragdoll.unwrap_or(0.0) + f32::from_bits(0x3c88_8889)
+        } else {
+            0.0
+        });
+        // 0x82D44BF8..C28: the grab box on the effective animation transform, pitch off.
+        let bounds = crate::physical_player_grab_spline::geometry::GrabBox::from_player(
+            inputs.effective_animation,
+            read(core.attribs_off_board.as_ref(), BOX_OFFSET)?,
+            read(core.attribs_off_board.as_ref(), BOX_DIMENSIONS)?,
+            false,
+            &mut num,
+        )
+        .map_err(grind)?;
+        // 0x82D44C3C..D38: the held spline, live from its object, and whether the retained one
+        // can still be gripped where the hands are (CanGrabSplineAtPoint).
         let id = core.grab_spline_desc.map_or(0, |descriptor| descriptor.object_id as u32);
-        if let Some(spline) = refresh(world, id, &mut num)? {
+        let current = if core.grab_spline.is_some() {
+            refresh(world, id, &mut num)?.filter(GrabSpline::has_spline_and_body)
+        } else {
+            None
+        };
+        let still_grabbable = match (&current, core.grab_spline.as_ref()) {
+            (Some(_), Some(retained)) => core.try_is_spline_grabbable(retained, &bounds, true, &mut num).map_err(grind)?,
+            _ => false,
+        };
+        // 0x82D44DE4..E14: the intent released, the bit-26 time past 0.4 s or an emergency exit
+        // lets go; a spline no longer grippable gives way to the best other one in reach.
+        let releasing = !inputs.world_grab
+            || core.time_in_partial_ragdoll.unwrap_or(0.0) > f32::from_bits(0x3ecc_cccd)
+            || core.emergency_exit == Some(true);
+        if releasing {
+            core.grab_object = Some(false);
+        } else if let Some(spline) = current.filter(|_| still_grabbable) {
             core.grab_spline = Some(spline);
             core.try_update_spline_with(false, &mut send, &mut raw, inputs.effective_x, &mut num).map_err(grind)?;
             core.try_compute_target_hand_ik(&mut raw, inputs.effective_x, &mut num).map_err(grind)?;
             core.try_update_target_hand_ik_blend(&mut num).map_err(grind)?;
+            core.grab_object = Some(true);
+        } else {
+            core.time_grabbing_this_spline = Some(0.0);
+            // sub_82D4D150 with the held spline excluded, then CanGrabSpline from the reach base.
+            let held = core.grab_spline_desc;
+            let candidate = match (&inputs.candidates, core.reach_base) {
+                (Some(records), Some(reach)) => {
+                    let others: Vec<_> = records
+                        .iter()
+                        .filter(|record| {
+                            let key = record.descriptor();
+                            held.is_none_or(|held| (held.object_type as u32, held.object_id as u32) != (key.kind, key.id))
+                        })
+                        .cloned()
+                        .collect();
+                    skate3_core::player::offboard::grab_scene::best_spline(&others, reach)
+                }
+                _ => None,
+            };
+            let candidate = match candidate.filter(|record| record.descriptor().kind == DMO) {
+                Some(record) => refresh(world, record.descriptor().id, &mut num)?,
+                None => None,
+            };
+            let accepted = match &candidate {
+                Some(spline) => {
+                    core.try_is_spline_grabbable(spline, &bounds, false, &mut num).map_err(grind)?
+                        // 0x82D44F58..68 tests the OLD retained spline's data and body.
+                        && core.grab_spline.as_ref().is_some_and(GrabSpline::has_spline_and_body)
+                }
+                None => false,
+            };
+            if let (true, Some(spline)) = (accepted, candidate) {
+                let was_grabbing = core.grab_object == Some(true);
+                core.grab_spline = Some(spline);
+                core.try_update_spline_with(true, &mut send, &mut raw, inputs.effective_x, &mut num).map_err(grind)?;
+                core.approximate_skeleton_speed = Some([0.0; 4]);
+                core.try_compute_target_hand_ik(&mut raw, inputs.effective_x, &mut num).map_err(grind)?;
+                if was_grabbing {
+                    core.try_start_target_hand_ik_blend(&mut num).map_err(grind)?;
+                }
+                core.grab_object = Some(true);
+            } else {
+                core.grab_object = Some(false);
+            }
+        }
+        if core.grab_object != Some(true) {
+            self.follow = Some(idle);
+            return Ok(());
         }
         core.try_calculate_skeleton_position(inputs.effective, inputs.state_timer, inputs.height_above_ground, cvars, &mut num)
             .map_err(grind)?;
@@ -295,9 +390,12 @@ impl Pushing {
         core.ik_blend_value = Some(blend);
         let hands = core.hand_left_target.zip(core.hand_right_target).map(|(left, right)| HandTargets { left, right, blend });
         // 82d45090..45180: the follow position moves toward the push normal's point kDistComToBoard
-        // (0.65) behind the hands, 0.72 above the effective root, by the object's speed this tick
-        // within 0.1; Skeleton::UpdateOffBoardPushing then places the COM within 0.3 of its
-        // current one plus the skeleton motion.
+        // (0.65) behind the hands, 0.72 above the effective animation transform's position
+        // (ProcessedPhysIn+0xF0, the y the vrlimi at 0x82d4514c puts in), by the object's speed
+        // this tick within 0.1; Skeleton::UpdateOffBoardPushing then places the COM within 0.3 of
+        // its current one plus the skeleton motion. That transform is the skeleton's
+        // animation-to-world, read here from the frame's effective root: the processed record's
+        // copy is the same each tick but holds zeros on a tick whose input phase reset it.
         let follow = match (
             core.current_spline_hands_transform,
             core.target_push_normal,
@@ -306,7 +404,17 @@ impl Pushing {
         ) {
             (Some(hands), Some(normal), Some(speed), Some(motion)) => {
                 let mut target: [f32; 4] = std::array::from_fn(|i| normal[i].mul_add(0.65, hands[3][i]));
-                target[1] = inputs.ground_y + 0.72;
+                target[1] = inputs.ground_y + f32::from_bits(0x3f38_51ec);
+                if trace_tick {
+                    crate::diagnostics::test_log::event(
+                        "skate3_pushing_follow",
+                        format_args!(
+                            "anim_root={:?} effective_root_y={} com={:?} hands={:?} target={:?} follow={:?} motion={:?}",
+                            inputs.effective_animation[3], inputs.ground_y, inputs.centre_of_mass, hands[3], target,
+                            accumulator, motion
+                        ),
+                    );
+                }
                 let expected = speed.map(|v| v * f32::from_bits(0x3c88_8889));
                 let to_target: [f32; 4] = std::array::from_fn(|i| target[i] - accumulator[i]);
                 let step = clamp_within(to_target, expected, 0.1);

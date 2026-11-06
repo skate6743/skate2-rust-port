@@ -125,6 +125,8 @@ pub(crate) struct HostContact {
     pub(crate) id: u64,
     pub(crate) board: bool,
     pub(crate) normal: [f32; 3],
+    /// The contact point in world space.
+    pub(crate) point: [f32; 3],
 }
 
 fn collect(physics: &Skate3PhysicsState, skater: &Skate3ControllerState) -> (Vec<SkeletonContactReport>, Vec<HostContact>) {
@@ -161,7 +163,8 @@ fn collect(physics: &Skate3PhysicsState, skater: &Skate3ControllerState) -> (Vec
             let CollisionBody::Attached(index) = other else { continue };
             let Some((_, solid)) = physics.world_proxies.solids.iter().find(|(i, _)| *i == index) else { continue };
             let sign = if side_a { -1.0 } else { 1.0 };
-            host_contacts.push(HostContact { id: solid.id, board, normal: std::array::from_fn(|i| f32::from_bits(spy[i]) * sign) });
+            host_contacts.push(HostContact { id: solid.id, board, normal: std::array::from_fn(|i| f32::from_bits(spy[i]) * sign),
+                point: std::array::from_fn(|i| f32::from_bits(spy[12 + i])) });
         }
         //82768418 rejects the same logical Body and equal nonnull Body+32
         //owners. Board82C067F4 and Skeleton82BE4620 both store this actor.

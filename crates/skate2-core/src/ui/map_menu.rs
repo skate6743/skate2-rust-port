@@ -9,24 +9,54 @@ pub enum MapCategory {
     #[default]
     Root = 0,
     Locations = 10,
+    /// The downloaded content, here holding only a linked Skate 3 data folder's districts (PC
+    /// port, as on the career's map); its downloaded spawn points are not ported.
+    Downloaded = 11,
     Landmarks = 19,
     Plazas = 21,
     Skateparks = 22,
     SpawnPoints = 23,
+    /// PC port: a linked Skate 3 district's teleports, in `crate::skate3::DISTRICTS` order.
+    Skate3University = 26,
+    Skate3Downtown = 27,
+    Skate3Industrial = 28,
 }
 
 impl MapCategory {
-    /// gStuffCategoryHAL82fdb2f0 and GetCategoryHAL8261cb48.
+    /// PC port: the Skate 3 districts' categories, in `crate::skate3::DISTRICTS` order.
+    pub const SKATE3_DISTRICTS: [Self; 3] = [Self::Skate3University, Self::Skate3Downtown, Self::Skate3Industrial];
+
+    /// gStuffCategoryHAL82fdb2f0 and GetCategoryHAL8261cb48. A Skate 3 district is named by its
+    /// title and count, as the career's map names it (`stuff_menu`'s `category_hal`).
     #[must_use]
     pub const fn localization_key(self) -> &'static str {
         match self {
             Self::Root => "ID_CHALLENGE_MAP_STUFF",
             Self::Locations => "ID_STUFFMENU_CATEGORY_LOCATIONS",
+            Self::Downloaded => "ID_STUFFMENU_CATEGORY_DOWNLOADED",
             Self::Landmarks => "ID_STUFFMENU_CATEGORY_LANDMARKS",
             Self::Plazas => "ID_STUFFMENU_CATEGORY_LANDMARK_PLAZAS",
             Self::Skateparks => "ID_STUFFMENU_CATEGORY_LANDMARK_PARKS",
             Self::SpawnPoints => "ID_STUFFMENU_CATEGORY_SPAWNPOINTS",
+            Self::Skate3University => "#University District (%d)",
+            Self::Skate3Downtown => "#Downtown District (%d)",
+            Self::Skate3Industrial => "#Industrial District (%d)",
         }
+    }
+
+    /// FEStuffMenu gSubCategory82079860's free-skate categories; the downloaded content holds
+    /// the Skate 3 districts.
+    const fn sub_categories(self) -> &'static [Self] {
+        match self {
+            Self::Root => &[Self::Locations, Self::Downloaded],
+            Self::Locations => &[Self::Landmarks, Self::Plazas, Self::Skateparks, Self::SpawnPoints],
+            Self::Downloaded => &[Self::Skate3University, Self::Skate3Downtown, Self::Skate3Industrial],
+            _ => &[],
+        }
+    }
+
+    const fn is_skate3(self) -> bool {
+        matches!(self, Self::Skate3University | Self::Skate3Downtown | Self::Skate3Industrial)
     }
 }
 
@@ -72,6 +102,23 @@ pub struct MapMenuRow<'a> {
 }
 
 impl MapMenuSnapshot {
+    /// GetNumSubMenuItems8261c8c0: the locations count Skate 2's destinations, the downloaded
+    /// content its Skate 3 districts with teleports (as the career's map counts them), and any
+    /// other category its destinations.
+    #[must_use]
+    pub fn count(category: MapCategory, locations: &[MapLocation]) -> usize {
+        match category {
+            MapCategory::Root | MapCategory::Locations => {
+                locations.iter().filter(|location| !location.category.is_skate3()).count()
+            }
+            MapCategory::Downloaded => MapCategory::SKATE3_DISTRICTS
+                .iter()
+                .filter(|&&district| locations.iter().any(|location| location.category == district))
+                .count(),
+            category => locations.iter().filter(|location| location.category == category).count(),
+        }
+    }
+
     /// FEStuffMenu gSubCategory82079860 / FilterCategory82629430. Empty
     /// categories are omitted, and authored destination order is retained.
     #[must_use]
@@ -84,26 +131,12 @@ impl MapMenuSnapshot {
                 count: 0,
             }];
         }
-        let categories: &[MapCategory] = match self.category {
-            MapCategory::Root => &[MapCategory::Locations],
-            MapCategory::Locations => &[
-                MapCategory::Landmarks,
-                MapCategory::Plazas,
-                MapCategory::Skateparks,
-                MapCategory::SpawnPoints,
-            ],
-            _ => &[],
-        };
+        let categories = self.category.sub_categories();
         if !categories.is_empty() {
             return categories
                 .iter()
                 .filter_map(|&category| {
-                    let count = locations
-                        .iter()
-                        .filter(|location| {
-                            category == MapCategory::Locations || location.category == category
-                        })
-                        .count();
+                    let count = Self::count(category, locations);
                     (count != 0).then_some(MapMenuRow {
                         localization_key: category.localization_key(),
                         location_key: None,
@@ -139,12 +172,19 @@ pub struct MapMenuController {
     state: MapMenuSnapshot,
     history: Vec<(MapCategory, usize)>,
     location_selection: usize,
+    /// The `FE_SOUND_*` globals the menu pickers played, in order.
+    sounds: Vec<&'static str>,
 }
 
 impl MapMenuController {
     #[must_use]
     pub fn snapshot(&self) -> MapMenuSnapshot {
         self.state.clone()
+    }
+
+    /// The `FE_SOUND_*` globals played since the last call, in order.
+    pub fn take_sounds(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.sounds)
     }
 
     /// OnEnter826539e8 / OnLoaded826879b8 activate the Stuff region.
@@ -163,6 +203,9 @@ impl MapMenuController {
     /// ReceiveInput8266b420 and OnMenuSelect826828f0: select a category,
     /// select an FELocation, then confirm its Teleport option. The runtime
     /// owns travel completion, pause release and streaming synchronization.
+    /// As on the career's map, the menu pickers sound `core_nav_up` / `core_nav_down` when their
+    /// value changes and `core_a_button` before `OnMenuSelect`; going back a level sounds
+    /// `core_b_button`.
     pub fn update(&mut self, input: PauseMenuInput, locations: &[MapLocation]) -> MapMenuAction {
         if !self.state.visible {
             return MapMenuAction::None;
@@ -173,6 +216,7 @@ impl MapMenuController {
             } else if let Some((category, selected)) = self.history.pop() {
                 self.state.category = category;
                 self.state.selected = selected;
+                self.sounds.push("FE_SOUND_CORE_B_BUTTON");
             } else {
                 self.close();
                 return MapMenuAction::Close;
@@ -188,13 +232,18 @@ impl MapMenuController {
             .into_iter()
             .flatten()
         {
+            let before = self.state.selected;
             self.state.selected = if forward {
                 (self.state.selected + 1).min(rows.len() - 1)
             } else {
                 self.state.selected.saturating_sub(1)
             };
+            if self.state.selected != before {
+                self.sounds.push(if forward { "FE_SOUND_CORE_NAV_DOWN" } else { "FE_SOUND_CORE_NAV_UP" });
+            }
         }
         if input.select {
+            self.sounds.push("FE_SOUND_CORE_A_BUTTON");
             let row = rows[self.state.selected];
             if let Some(key) = self.state.info_location {
                 return MapMenuAction::Teleport(key);
@@ -211,5 +260,86 @@ impl MapMenuController {
             }
         }
         MapMenuAction::None
+    }
+}
+
+/// PC port: a linked Skate 3 data folder's districts' teleports (`crate::skate3`), each under its
+/// district's category and titled in Skate 3's English, as the career's map lists them. None
+/// draws a map icon: its place is in its district's world, not on this map.
+#[must_use]
+pub fn skate3_locations() -> Vec<MapLocation> {
+    let Some(data) = crate::skate3::linked() else { return Vec::new() };
+    let mut locations = Vec::new();
+    for district in &data.districts {
+        let Some(index) = crate::skate3::DISTRICTS.iter().position(|spec| spec.key == district.spec.key) else {
+            continue;
+        };
+        let category = MapCategory::SKATE3_DISTRICTS[index];
+        locations.extend(district.spots.iter().map(|spot| MapLocation {
+            key: spot.key,
+            localization_key: format!("#{}", spot.title),
+            category,
+            world_position: [0.0; 2],
+            image: crate::skate3::LOCATION_IMAGE.to_owned(),
+            icon: String::new(),
+        }));
+    }
+    locations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn location(key: u64, category: MapCategory) -> MapLocation {
+        MapLocation {
+            key,
+            localization_key: format!("#{key}"),
+            category,
+            world_position: [0.0; 2],
+            image: String::new(),
+            icon: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_district_titles_are_the_skate3_districts() {
+        for (category, spec) in MapCategory::SKATE3_DISTRICTS.into_iter().zip(crate::skate3::DISTRICTS) {
+            assert_eq!(category.localization_key(), format!("#{} (%d)", spec.title));
+        }
+    }
+
+    #[test]
+    fn the_downloaded_content_lists_the_districts_with_teleports() {
+        let locations = [
+            location(1, MapCategory::Landmarks),
+            location(2, MapCategory::Skate3University),
+            location(3, MapCategory::Skate3University),
+            location(4, MapCategory::Skate3Industrial),
+        ];
+        let mut snapshot = MapMenuSnapshot::default();
+        let root: Vec<_> = snapshot.rows(&locations).iter().map(|row| (row.category, row.count)).collect();
+        assert_eq!(root, [(MapCategory::Locations, 1), (MapCategory::Downloaded, 2)]);
+        snapshot.category = MapCategory::Downloaded;
+        let districts: Vec<_> = snapshot.rows(&locations).iter().map(|row| (row.category, row.count)).collect();
+        assert_eq!(districts, [(MapCategory::Skate3University, 2), (MapCategory::Skate3Industrial, 1)]);
+        snapshot.category = MapCategory::Skate3University;
+        let teleports: Vec<_> = snapshot.rows(&locations).iter().map(|row| row.location_key).collect();
+        assert_eq!(teleports, [Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn the_pickers_sound_as_on_the_careers_map() {
+        let locations = [location(1, MapCategory::Landmarks), location(2, MapCategory::Plazas)];
+        let mut menu = MapMenuController::default();
+        menu.open();
+        let press = |menu: &mut MapMenuController, input: PauseMenuInput| menu.update(input, &locations);
+        press(&mut menu, PauseMenuInput { select: true, ..Default::default() });
+        press(&mut menu, PauseMenuInput { down: true, ..Default::default() });
+        press(&mut menu, PauseMenuInput { down: true, ..Default::default() });
+        press(&mut menu, PauseMenuInput { cancel: true, ..Default::default() });
+        assert_eq!(menu.take_sounds(), ["FE_SOUND_CORE_A_BUTTON", "FE_SOUND_CORE_NAV_DOWN", "FE_SOUND_CORE_B_BUTTON"]);
+        assert_eq!(press(&mut menu, PauseMenuInput { cancel: true, ..Default::default() }), MapMenuAction::Close);
+        assert!(menu.take_sounds().is_empty());
     }
 }

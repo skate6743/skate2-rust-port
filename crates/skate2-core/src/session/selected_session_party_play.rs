@@ -218,6 +218,13 @@ impl<T, C> SelectedLiveSession<T, C> {
                 }));
             }
         }
+        if std::env::var_os("SKATE2_DIAGNOSTIC_PARTY_PLAY_LIST").is_some() {
+            let all = world.unlockables.is_unlocked(crate::challenge::unlockables::category::LOCATIONS, crate::challenge::unlockables::string_hash("all_locations_unlock"), true);
+            eprintln!("diagnostic party play: all locations unlocked {all}, {} dlc unlocks", db.dlc_unlocks().len());
+            for (game, list) in Game::ALL.iter().zip(&locations) {
+                eprintln!("diagnostic party play {game:?}: {:?}", list.iter().map(|location| location.title.as_str()).collect::<Vec<_>>());
+            }
+        }
         let menu = self.main_menu.as_mut().ok_or_else(|| error("main menu absent"))?;
         menu.party_play = Some(party_play::Controller::new(characters, locations));
         Ok(())

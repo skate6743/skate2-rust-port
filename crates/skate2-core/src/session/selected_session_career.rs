@@ -3722,6 +3722,110 @@ impl<T, C> SelectedLiveSession<T, C> {
         if on_board { self.teleport_local_player(transform) } else { self.online_sync_teleport(transform) }.is_ok()
     }
 
+    /// Diagnostics: the local skater on its board `gap` metres behind the nearest vehicle's
+    /// rearmost grab handle, facing the vehicle's heading. Describes the pick, None without one.
+    pub fn diagnostic_teleport_behind_vehicle(&mut self, gap: f32) -> Option<String> {
+        let (transform, description) = {
+            let actor = self.inner.player.as_ref().and_then(|player| player.selected.actor.as_deref())?;
+            let world = &self.inner.world.as_ref()?.world;
+            let skater = super::local_skater_position(Some(world), actor).ok()?;
+            let owner = std::sync::Arc::clone(world.lock().ok()?.grind_services.living_world());
+            let living = owner.lock().ok()?;
+            let vehicles = living.grind_vehicle_entities.as_deref()?;
+            let mut best: Option<(f32, [f32; 3], [f32; 3], f32, u32)> = None;
+            for id in vehicles.ids() {
+                let Some(vehicle) = vehicles.get(id) else { continue };
+                let f = vehicle.core.target_transform;
+                let length = f[2][0].hypot(f[2][2]);
+                if !(length > 0.0) {
+                    continue;
+                }
+                let forward = [f[2][0] / length, 0.0, f[2][2] / length];
+                let point = |p: [f32; 4]| -> [f32; 3] {
+                    std::array::from_fn(|i| p[0] * f[0][i] + p[1] * f[1][i] + p[2] * f[2][i] + f[3][i])
+                };
+                let mut rear: Option<(f32, [f32; 3])> = None;
+                for spline in vehicle.grab_splines.values() {
+                    let points = &spline.grab().spline_points;
+                    let (Some(&first), Some(&last)) = (points.first(), points.last()) else { continue };
+                    let (a, b) = (point(first), point(last));
+                    let middle: [f32; 3] = std::array::from_fn(|i| (a[i] + b[i]) * 0.5);
+                    let along = (middle[0] - f[3][0]) * forward[0] + (middle[2] - f[3][2]) * forward[2];
+                    if rear.is_none_or(|(old, _)| along < old) {
+                        rear = Some((along, middle));
+                    }
+                }
+                let Some((_, middle)) = rear else { continue };
+                let distance = (middle[0] - skater[0]).hypot(middle[2] - skater[2]);
+                if best.is_none_or(|old| distance < old.0) {
+                    best = Some((distance, middle, forward, f[3][1], id));
+                }
+            }
+            let (_, middle, forward, ground, id) = best?;
+            let mut transform = [0.0; 16];
+            transform[0] = forward[2];
+            transform[2] = -forward[0];
+            transform[5] = 1.0;
+            transform[8] = forward[0];
+            transform[10] = forward[2];
+            transform[12] = middle[0] - forward[0] * gap;
+            transform[13] = ground;
+            transform[14] = middle[2] - forward[2] * gap;
+            transform[15] = 1.0;
+            (transform, format!("vehicle {id} handle {middle:?} forward {forward:?} gap {gap}"))
+        };
+        self.teleport_local_player(transform).ok()?;
+        Some(description)
+    }
+
+    /// Diagnostics: the local skater off its board `gap` metres short of the nearest prop's
+    /// nearest grab spline point, facing it, on the prop's level. Describes the pick, None without
+    /// one.
+    pub fn diagnostic_teleport_to_prop(&mut self, gap: f32) -> Option<String> {
+        let (transform, description) = {
+            let actor = self.inner.player.as_ref().and_then(|player| player.selected.actor.as_deref())?;
+            let world = &self.inner.world.as_ref()?.world;
+            let skater = super::local_skater_position(Some(world), actor).ok()?;
+            let owner = std::sync::Arc::clone(world.lock().ok()?.grind_services.living_world());
+            let living = owner.lock().ok()?;
+            let objects = living.dmo_objects.as_deref()?;
+            let (_, id, position) = objects
+                .ids()
+                .into_iter()
+                .filter_map(|id| {
+                    let object = objects.object(id)?;
+                    let m = object.transform;
+                    object
+                        .grab_splines
+                        .values()
+                        .flat_map(|spline| spline.grab().spline_points.clone())
+                        .map(|p| {
+                            let world: [f32; 3] =
+                                std::array::from_fn(|i| p[0] * m[i] + p[1] * m[4 + i] + p[2] * m[8 + i] + m[12 + i]);
+                            ((world[0] - skater[0]).hypot(world[2] - skater[2]), id, [world[0], m[13], world[2]])
+                        })
+                        .min_by(|a, b| a.0.total_cmp(&b.0))
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0))?;
+            let (dx, dz) = (position[0] - skater[0], position[2] - skater[2]);
+            let length = dx.hypot(dz);
+            let forward = if length > 0.0 { [dx / length, dz / length] } else { [0.0, 1.0] };
+            let mut transform = [0.0; 16];
+            transform[0] = forward[1];
+            transform[2] = -forward[0];
+            transform[5] = 1.0;
+            transform[8] = forward[0];
+            transform[10] = forward[1];
+            transform[12] = position[0] - forward[0] * gap;
+            transform[13] = position[1];
+            transform[14] = position[2] - forward[1] * gap;
+            transform[15] = 1.0;
+            (transform, format!("prop {id} at {position:?} forward {forward:?} gap {gap}"))
+        };
+        self.online_sync_teleport(transform).ok()?;
+        Some(description)
+    }
+
     /// Diagnostics: visit an authored location without bypassing global activity/trigger updates.
     pub fn diagnostic_teleport_named_location(&mut self, name: &str) -> bool {
         let Some(career) = self.career.as_ref() else { return false };

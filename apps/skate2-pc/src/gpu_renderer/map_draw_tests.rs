@@ -722,6 +722,7 @@ fn ported_effects_validate_and_draw_on_an_available_adapter() {
             shadows: ShadowCascades::default(),
             world_shadow: None,
             scene_cull: None,
+            skate3_district: false,
         },
     );
     let (camera, camera_binding) = pipelines.create_camera(&device);

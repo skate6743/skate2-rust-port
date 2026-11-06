@@ -96,6 +96,33 @@ pub(crate) fn request_cull(
     Ok(())
 }
 
+/// PC port (Skate 3 physics): the first of the Skate 3 skater's solver contacts on this car's
+/// collision Body (its Part 0), as the island contact the native reads: the skater's side's
+/// velocity relative to the car, the contact point and the skater's Body.
+fn skate3_vehicle_contact(
+    world: &PhysicalAssemblyWorld,
+    handle: &crate::simulation_dmo_assembly_part_session::dynamic_pool::SimulationDmoAssemblyHandle,
+    contacts: &[crate::pedestrian_collision::contacts::Skate3PedestrianContact],
+    car_velocity: [f32; 4],
+) -> Result<
+    Option<([f32; 3], [f32; 3], Option<crate::simulation_assembly_backend::constraint_session::physical_island::SimulationIslandBodyHandle>)>,
+    VehicleFrameError,
+> {
+    if contacts.is_empty() {
+        return Ok(None);
+    }
+    let Some(body) = world.try_vehicle_grab_part(handle).map_err(error)?.and_then(|part| part.body) else {
+        return Ok(None);
+    };
+    Ok(contacts.iter().find(|contact| contact.body == body).map(|contact| {
+        (
+            std::array::from_fn(|i| contact.velocity[i] - car_velocity[i]),
+            contact.point,
+            Some(contact.other.clone()),
+        )
+    }))
+}
+
 impl LivingWorldGrindServices {
     /// World.Update3 -> ResolveContactSpyList827b3a90 ->
     /// cLivingWorldCollisionBody.GetContacts82e50e60 -> Vehicle.OnEntityCollision
@@ -116,8 +143,8 @@ impl LivingWorldGrindServices {
             let Some(handle) = collision.attached_assembly_handle().cloned() else {
                 continue;
             };
-            let first = world
-                .try_get_island_collisions(&SimulationIslandBodyHandle::Vehicle(handle))
+            let island = world
+                .try_get_island_collisions(&SimulationIslandBodyHandle::Vehicle(handle.clone()))
                 .map_err(error)?
                 .first()
                 .map(|c| {
@@ -127,6 +154,13 @@ impl LivingWorldGrindServices {
                         c.other_body().cloned(),
                     )
                 });
+            // PC port (Skate 3 physics): that skater is the Skate 3 solver's, whose contacts with
+            // this car's Body the world records apart from the island's; its first is the car's.
+            let island_missing = island.is_none();
+            let first = match island {
+                Some(contact) => Some(contact),
+                None => skate3_vehicle_contact(world, &handle, &self.skate3_contacts, vehicle.core.velocity)?,
+            };
             let Some((relative, position, other)) = first else {
                 continue;
             };
@@ -175,6 +209,11 @@ impl LivingWorldGrindServices {
                 > 0.
             {
                 vehicle.motion.force_stopping = true;
+            }
+            // SKATE2_TRACE_VEHICLE_SKATER: each car the skater touches, and whether it stops.
+            if std::env::var_os("SKATE2_TRACE_VEHICLE_SKATER").is_some() {
+                eprintln!("vehicle {id} touches skater: skate3={} delta={delta:?} force_stopping={}",
+                    island_missing, vehicle.motion.force_stopping);
             }
         }
         Ok(())

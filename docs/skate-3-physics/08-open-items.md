@@ -6,9 +6,10 @@ What is not ported, not verified, or knowingly different. TU3 addresses.
 
 | Item | TU3 | Note |
 |---|---|---|
-| Skitching (104), FollowPath (105), Sleeping (700) states | | `physics/frame.rs` returns an error if one is ever selected; the port never selects them |
+| FollowPath (105), Sleeping (700) states | | `physics/frame.rs` returns an error if one is ever selected; the port never selects them |
+| Skitching's debug cvars | kSkitch* cvars | read at their TU3 defaults; the retail game has no console to change them |
 | `Skeleton::UpdateRootTransformsOffBoard` (pushing-only root update with the push turn) | 0x82BE1058 | the pushing follow carries the BipedGround biped to the clamped COM and turns it instead (`skate3_player.rs` → `skater.pushing_follow`) |
-| Pushing: emergency exit, partial ragdoll and collision response while holding a prop; grabbable re-check | PhysState_OffBoard_Pushing (vtable 0x82327364) | the gameplay part (grab, move by forces, follow, hand IK) is ported |
+| Pushing: collision response while holding a prop | PhysState_OffBoard_Pushing (vtable 0x82327364) | the grab, its per-tick upkeep (re-check, re-grab, emergency exit), moving by forces, follow and hand IK are ported |
 | Skate 3 per-district emitter volumes (`reverb_<district>.ems`, `sfx_`, `music_`, `speakers_`, `crowds_`) | SFXObj_Reverb::UpdateParams 0x824de548 takes them first | Skate 2's city volumes are switched off in districts; districts use Skate 3's painted reverb layer and the default key |
 | Darkcatch effect values driven by the jitter mixer (effects whose "use attributes" flag is 0) | SFXObj_Jitter at AudioSystem+0x2D4, 0x824EF458 | those effects stay at plugin defaults (DistortionClip 100 = bypass, IIR gain 1 = flat) |
 | Reverb mixer inputs | UpdateNicotine 0x824df468 has 7 inputs | the port keeps Skate 2's 4-input mix data |

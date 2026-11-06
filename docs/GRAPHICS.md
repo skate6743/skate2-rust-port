@@ -477,10 +477,18 @@ review yet.
     clamp(((target - avgLum)*damping + 1)*exposure, min, max). The blends are 5
     s for exposure (key 0x2b00cf9bb190ce8d) and 2 s for bloom.
   - Bloom, and the colour cube (eColorCube keys are already sampled but unused).
-- **Shadows still missing.** The world-shadow pass (`m_pWorldShadowMap`,
-  `CalculateWorldShadow`) and character self-shadowing need the character
-  lighting port. DMOs, pedestrians and other skaters cast once they are
-  rendered (vehicles never cast).
+- **World shadow casters.** The sky entity never casts (`SkyPresEntity`, ctor 0x827d436c, leaves
+  its shadow-visible island count zero); the port knows it by its first mesh's `sky` effect, as
+  its first bone name need not start with `skybox`. Cast from the dome, the map covered every
+  receiver from hundreds of metres up. A linked Skate 3 district's proxies, whose pass order is
+  Skate 3's own, are known by their `proxyworld` effect.
+  `WorldShadowView::Render` 0x82829ef8 draws with the
+  `WorldShadow` effect (CULLMODE FRONT, stencil 255). The port had used the characters' `shadow`
+  technique cull (BACK), which keeps the sun-facing faces: the ground covered every texel, so
+  `CalculateWorldShadow` (lit only where uncovered and below the stored height) read 0 on every
+  character, DMO and pedestrian. Skaters lost their sun term and far pedestrians dropped to
+  0.03 of their diffuse. `SKATE2_WORLD_CASTER_CULL=back` restores the old cull for comparison;
+  `SKATE2_CHARACTER_LIGHT_VIEW` shows the terms on the skater.
 - **Deck AO.** `PostFX::RenderAOBoxes` 0x828465b0 (`gpu_renderer/deck_ao.rs`): after the
   uber or visual FX pass, a box (0.2 x 0.2 x 0.6 of the deck matrix, `GetDeckMatrix`: the
   `skateboard_root` pose, hips and root) under each skater the game state draws multiplies the
@@ -522,6 +530,19 @@ review yet.
   scene's central 16:9 view (the original's view), box-filtered to 1152x640 with four
   bilinear taps a texel.
 - **Exposure fixed** at the Vault 1.0 (no auto-exposure).
+- **Softer bloom.** The base-bloom copy (`82130038`) scales the glow by 0.65 before the
+  uber, visual-FX, cinematic and stereo composites add it, so a low sun does not flood the
+  view. The scene, the exposure and the colour grade are unchanged.
+- **Pedestrians in Skate 3 districts.** Skate 2's `livingworld_stamp` pixel program blends
+  toward a far colour, `diffuse*0.3*saturate(worldShadow+0.1)`, over `i_material_lod`
+  (`rendering` LOD distance 15: from 10.5 m to 15 m). Skate 3's program binds no material
+  LOD, so in a linked Skate 3 district the pedestrians take material LOD 0 and keep their
+  full lighting at every distance.
+- **Characters in Skate 3 districts.** A linked district's `material_character` values (key
+  light, ambient and rim) replace Skate 2's with the rest of its materials, so skaters are lit
+  for the district's own lights. The characters keep Skate 2's `g_charattributes`: Skate 3's
+  shadow bias and softening (0.02 against 0.8) leave hard self-shadow edges under Skate 2's
+  programs.
 - **No stencil attachment.** The hair and ghost passes' STENCILPASS REPLACE
   255 writes are dropped; nothing reads the stencil yet.
 - **Depth bias precision.** The constant is exact for depths of 0.5 and up
@@ -537,6 +558,11 @@ review yet.
     HUD, movies and fades draw on the window afterwards. A frame without a final blit renders at
     100%, and a scale the GPU cannot allocate falls back to 100% until the setting changes. At
     100% every target and the blit are as before;
+  - Brightness (Display Settings, 75% to 150% in steps of 1, saved in the display chunk,
+    version 9; earlier saves read as 100%): `Blit_ToDeviceRT` multiplies the scene by the
+    percentage, over the lift it gives the scene without PostFX (1.22 x 1.15 x 1.10), before
+    the HUD, movies and fades draw. At 100% the blit is as before. Edit Skater's room, drawn
+    without the final blit, is not affected;
   - 4x MSAA (`SKATE2_NO_MSAA` gives 1x); the character programs interpolate their
     attributes at the centroid, so an edge pixel whose centre lies off the triangle does not
     sample past the surface (UVs, normals, the shadow lookup's world position);

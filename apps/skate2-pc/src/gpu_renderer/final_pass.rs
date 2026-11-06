@@ -16,7 +16,8 @@ pub(crate) struct FisheyeParameters {
     pub(crate) warp: [f32; 4],
     pub(crate) vignette: [f32; 4],
     pub(crate) widescreen: bool,
-    /// PC presentation adjustment, separate from original tuning.
+    /// PC presentation adjustment, separate from original tuning: the lift without PostFX and
+    /// Display Settings' Brightness.
     pub(crate) brightness: f32,
     /// PC: the scene is larger than the target (Resolution Scale above 100%), so each target
     /// pixel averages it rather than taking one sample. The renderer sets it from the sizes.
@@ -32,6 +33,8 @@ impl FisheyeParameters {
         // (October 2), a further +15% (October 6), then +10% (October 12).
         // Applied once before the later HUD/fade/FPS passes.
         if !settings.postfx { self.brightness *= 1.22 * 1.15 * 1.10; }
+        // Display Settings' Brightness, over either: at 100% the scene is as before.
+        self.brightness *= f32::from(settings.brightness) / 100.;
         self
     }
     /// The warp's factor `y + x r^4` (r the UV radius) at the middle of each screen edge
@@ -481,6 +484,10 @@ mod tests {
             }
         }
         assert_eq!(base.brightness, 1.); // retained source values never compound
+        for (brightness, postfx, expected) in [(75, true, 0.75), (150, true, 1.5), (150, false, 1.22 * 1.15 * 1.10 * 1.5)] {
+            let actual = base.for_display(skate2_core::ui::options::PcDisplaySettings { postfx, brightness, ..Default::default() });
+            assert_eq!(actual.brightness, expected);
+        }
     }
     /// Uses wgpu's production Naga validation and backend compilation for
     /// both native branches, without consuming the shared gameplay RNG.

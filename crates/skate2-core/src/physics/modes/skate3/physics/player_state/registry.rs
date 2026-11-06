@@ -42,6 +42,7 @@ impl StateRegistry {
                     | PhysicalStateId::WipeoutGround
                     | PhysicalStateId::Teleporting
                     | PhysicalStateId::LandingOnDeck
+                    | PhysicalStateId::Skitching
             );
         StateCapability {
             id,
@@ -83,7 +84,8 @@ impl StateRegistry {
                         | PhysicalStateId::SlideGround
                         | PhysicalStateId::WipeoutGround
                         | PhysicalStateId::Teleporting
-                        | PhysicalStateId::LandingOnDeck,
+                        | PhysicalStateId::LandingOnDeck
+                        | PhysicalStateId::Skitching,
                     PhysicalStateId::PhysicsGround
                         | PhysicalStateId::PhysicsAir
                     | PhysicalStateId::PhysicsAirSecondary
@@ -97,6 +99,7 @@ impl StateRegistry {
                         | PhysicalStateId::WipeoutGround
                         | PhysicalStateId::Teleporting
                         | PhysicalStateId::LandingOnDeck
+                        | PhysicalStateId::Skitching
                 )
         )
     }

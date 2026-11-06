@@ -714,6 +714,7 @@ impl RenderWindowClient for Inspection {
         self.frame_environment = FrameEnvironment {
             exposure: renderer.postfx_exposure(),
             scene_cull: Some(self.environment.scene_cull),
+            skate3_district: self.environment.skate3_district,
             shadows,
             animation_time: [self.animation_clock.seconds(), 0., self.environment.sky_sun_scale, 0.],
             pca: self.water_animation.globals(),
@@ -1730,10 +1731,18 @@ impl MapBuild {
             // register this entity in WorldShadowView. Proxies stay scene-only.
             let first = model.meshes.first().ok_or("shadow model has no meshes")?;
             let first_material = first.material.or(arena.meshes[first.mesh_index].material);
-            let first_order = first_material
+            let first_binding = first_material
                 .and_then(|i| arena.materials[i].effect.as_ref())
-                .and_then(|effect| effect.binding.as_ref())
-                .map(|binding| binding.draw_order);
+                .and_then(|effect| effect.binding.as_ref());
+            let first_order = first_binding.map(|binding| binding.draw_order);
+            // The sky entity (SkyPresEntity, ctor 0x827d436c) leaves its shadow-visible island
+            // count zero, so it never casts: its meshes draw the `sky` effect, while its first bone
+            // name need not start with `skybox`. Cast from the dome, every receiver under it read
+            // as shadowed. PC port: a linked Skate 3 district's proxies take Skate 3's own pass
+            // order, which Skate 2's misses, and are known by their first mesh's effect.
+            let first_manifest = first_binding.map(|binding| binding.manifest_name.as_str());
+            let sky_effect = first_manifest == Some("sky");
+            let skate3_proxy = skate3 && first_manifest == Some("proxyworld");
             let is_sky = new_format
                 && model
                     .bone_names
@@ -1768,7 +1777,7 @@ impl MapBuild {
                     }
                 }
             }
-            let shadow = if first_order == Some(self.environment.proxy_draw_order) {
+            let shadow = if first_order == Some(self.environment.proxy_draw_order) || skate3_proxy {
                 None
             } else {
                 let key = (collection.id, source.arena, source.model);
@@ -1804,7 +1813,7 @@ impl MapBuild {
                     areas: Arc::clone(areas),
                     range: offset..end,
                     cull_islands: new_format && !is_sky,
-                    casts: !is_sky,
+                    casts: !is_sky && !sky_effect,
                 })
             };
             map.set_shadow_geometry(shadow);

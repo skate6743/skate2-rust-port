@@ -237,6 +237,18 @@ impl PhysicalPlayerPhysOut {
         offboard.is_hiding_board = physical.off_board.hiding_board_321 != 0;
         offboard.is_dropping_board = physical.off_board.dropping_board_322 != 0;
         offboard.is_retrieving_board = physical.off_board.retrieving_board_323 != 0;
+        // Skitching FillPhysOut 0x82D4C078: the camera reads the grab position, the HUD and
+        // animation consumers the rest.
+        let skitch = frame.gameplay.skitch.unwrap_or_default();
+        let ground = self.concrete.ground.as_deref_mut().expect("checked");
+        ground.skitch_spline_height = skitch.spline_height;
+        ground.skitch_contact_speed = skitch.contact_speed;
+        ground.skitch_parametric_pos = skitch.parametric_position;
+        ground.skitch_delay_until_reskitchable = skitch.delay_until_reskitchable;
+        let animation = self.concrete.animation.as_deref_mut().expect("checked");
+        animation.skitch_crouch = skitch.crouch;
+        animation.skitch_hand_speed = skitch.hand_speed;
+        animation.skitch_grip_hand = skitch.grip_hand;
         self.try_publish_skate3_gameplay(frame)?;
         Ok(Skate3Publication { output: std::sync::Arc::clone(self.occurrence()) })
     }

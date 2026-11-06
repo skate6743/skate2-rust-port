@@ -26,6 +26,8 @@ pub(super) fn advance(physics: &mut Skate3PhysicsState, skater: &mut Skate3Contr
                 | PhysicalStateId::Teleporting
                 | PhysicalStateId::LandingOnDeck
                 | PhysicalStateId::Nonspecific
+                // Skitching vtable 0x82327398 slot 6 is the same 0x82D34DA8.
+                | PhysicalStateId::Skitching
         )
     {
         return Err("PreState requires the selected state's actual PredictFutureOfDeck".into());

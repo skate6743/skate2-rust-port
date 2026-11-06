@@ -35,7 +35,6 @@ pub(crate) struct GroundUpdateTargets<'a> {
     pub board_correction_pending: &'a mut bool,
     ///Applies to SkeletonDrives hook432 body and Skeleton16112 together.
     pub move_future_deck: &'a mut dyn FnMut(Vector3) -> Result<(), String>,
-    pub offboard_grab: &'a mut super::super::biped_ground::grab_runtime::Owner,
 }
 impl GroundState {
     pub fn update(
@@ -152,8 +151,7 @@ impl GroundState {
         }
         *targets.board_correction_pending = true;
         self.state.finish_update(p.timestep_2604);
-        //82D37F10 calls82D749D0 on the same PlayerGrabSpline owner as offboard.
-        targets.offboard_grab.invalidate();
+        //82D37F04/82D37F10 (CheckForGrabbableObject or InvalidateQuery) follow in ground_phase.
         Ok(outcome)
     }
 }

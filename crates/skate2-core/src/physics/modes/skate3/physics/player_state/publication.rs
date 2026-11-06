@@ -34,6 +34,7 @@ pub(super) fn publish(physics: &mut Skate3PhysicsState, skater: &mut Skate3Contr
                 | PhysicalStateId::WipeoutGround
                 | PhysicalStateId::Teleporting
                 | PhysicalStateId::LandingOnDeck
+                | PhysicalStateId::Skitching
         )
     {
         return Err(format!(
@@ -72,6 +73,7 @@ pub(super) fn publish(physics: &mut Skate3PhysicsState, skater: &mut Skate3Contr
         .ok_or("State output requires actual board toolkit")?;
     let output = (state == PhysicalStateId::PhysicsGround)
         .then(|| skater.ground.output(p, &skater.animation_input, toolkit));
+    let effective_y = toolkit.effective[3][1];
     let player = &mut skater.player_input.player;
     skater.player_state.state_count = player.state_count_1312;
     skater.player_state.update_count = player.update_count_1316;
@@ -187,6 +189,11 @@ pub(super) fn publish(physics: &mut Skate3PhysicsState, skater: &mut Skate3Contr
         physical.state.counter_36 = output.word_36;
         physical.state.skitch_value_40 = output.word_40;
     }
+    let skitch_output = if state == PhysicalStateId::Skitching {
+        Some(super::super::skitching::fill(&skater.skitching, effective_y, physical)?)
+    } else {
+        None
+    };
     if let Some(output) = &output {
         physical.state.skitch_value_40 = output.state_28.grab_spline_object_id;
         physical.state.signed_ground_step_84 = u8::from(output.state_28.flag_84);
@@ -262,6 +269,7 @@ pub(super) fn publish(physics: &mut Skate3PhysicsState, skater: &mut Skate3Contr
     physical.filtered_state_0 = filtered.category as u32;
     skater.player_state.filtered_output = Some(filtered);
     skater.player_state.ground_output = output;
+    skater.skitch_output = skitch_output;
     if state == PhysicalStateId::WipeoutGround {
         super::wipeout_output::publish(skater);
     }

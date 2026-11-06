@@ -1,9 +1,13 @@
 use super::{Provider, Query, Record, Registry, closest_point, math::*, qualify};
-///82760508 mode4, actual provider enumeration, cap32 BEFORE distance sort.
+///82760508: mode bit 2 asks LWVehicleMan (82C35B98, vehicle splines), then bit 4
+///LWDynamicObjectMan (DMO splines); actual provider enumeration, cap32 BEFORE distance sort.
+///The off-board grab asks mode4, PhysicsGround's CheckForGrabbableObject82D39BB8 0xFF.
 pub fn query(registry: &Registry, q: &Query) -> Result<Vec<Record>, &'static str> {
-    if q.mode != 4 {
-        return Err("This offboard provider implements native bounded mode4 only");
-    }
+    let kinds: &[u32] = match q.mode {
+        4 => &[2],
+        0xFF => &[1, 2],
+        _ => return Err("This grab provider implements native bounded modes 4 and 0xFF only"),
+    };
     if q.capacity > 32 {
         return Err("Native grab query buffer capacity is32");
     }
@@ -19,11 +23,14 @@ pub fn query(registry: &Registry, q: &Query) -> Result<Vec<Record>, &'static str
     let radius = length(q.bounds.extents);
     let center = q.bounds.frame[3];
     let mut out = Vec::with_capacity(32);
+    for &kind in kinds {
     for object in &registry.objects {
         if object.disabled || !object.assembly_ready || object.assembly.is_none() {
             continue;
         }
         match object.provider {
+            //Only LivingWorld's vehicle manager provides vehicle splines.
+            Provider::Dmo { .. } if kind != 2 => continue,
             Provider::Dmo {
                 selection_variant,
                 matching_group,
@@ -47,7 +54,7 @@ pub fn query(registry: &Registry, q: &Query) -> Result<Vec<Record>, &'static str
             }
         }
         for spline in &object.splines {
-            if spline.descriptor.kind != 2
+            if spline.descriptor.kind != kind
                 || spline.geometry.points.len() < 2
                 || spline.geometry.approach_vectors.is_empty()
             {
@@ -71,6 +78,7 @@ pub fn query(registry: &Registry, q: &Query) -> Result<Vec<Record>, &'static str
                 out.push(record);
             }
         }
+    }
     }
     //82761C58 stores squared closest-segment distance at184. Since count<=32,
     //82762178 always dispatches stable insertion sort827629D8 (strict shifts).

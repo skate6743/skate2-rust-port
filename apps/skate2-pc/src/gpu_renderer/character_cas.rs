@@ -94,6 +94,7 @@ impl GpuRenderer {
     }
 }
 pub(super) const SHADER: &str = r"
+const CHARACTER_LIGHT_VIEW:u32=0u;
 @group(3) @binding(10) var cas_decal:texture_2d<f32>;
 @group(3) @binding(11) var cas_decal2:texture_2d<f32>;
 @vertex fn vs_cas(@location(0) p:vec3<f32>,@location(1) uv:vec2<f32>,
@@ -169,6 +170,9 @@ fn cas_colour(input:Output)->vec4<f32>{
  let key_spec=pow(clamp(dot(view,reflect(-light,n)),0.,1.),stamp.material[2].w)*shadow;
  let rim_spec=pow(clamp(dot(view,reflect(-rim,n)),0.,1.),stamp.material[3].w);
  let spec=clamp((key_spec*stamp.material[2].xyz*key_fresnel+rim_spec*stamp.material[3].xyz*rim_fresnel)*spec_mask,vec3<f32>(0.),vec3<f32>(1.));
+ if CHARACTER_LIGHT_VIEW==1u {return vec4<f32>(self_shadow,world_shadow,clamp(dot(n,light),0.,1.),object.color.a);}
+ if CHARACTER_LIGHT_VIEW==2u {return vec4<f32>(sqrt(clamp(key_diffuse*.25,vec3<f32>(0.),vec3<f32>(1.))),object.color.a);}
+ if CHARACTER_LIGHT_VIEW==3u {return vec4<f32>(sqrt(clamp(ambient+rim_diffuse,vec3<f32>(0.),vec3<f32>(1.))),object.color.a);}
  let lit=colour.xyz*(key_diffuse+ambient+rim_diffuse)+spec;
  return vec4<f32>(cas_tone(lit*stamp.material[0].y,input.fog),object.color.a);
 }

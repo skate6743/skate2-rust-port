@@ -23,17 +23,23 @@ pub struct PcDisplaySettings {
     /// The Field of View row's percent, from `FIELD_OF_VIEWS`: each percent away from
     /// `VANILLA_FIELD_OF_VIEW` (the original's) moves the camera's angle by two percent.
     pub field_of_view: u8,
+    /// The Brightness row's percent, from `BRIGHTNESSES`: the scene on screen (not the HUD) as a
+    /// multiple of the game's own (`VANILLA_BRIGHTNESS`), with or without PostFX.
+    pub brightness: u8,
 }
 impl Default for PcDisplaySettings {
     fn default() -> Self {
         Self { postfx: true, fisheye: true, frame_rate_cap: FrameRateCap::RefreshRate, fps_counter: false, fullscreen: false,
-            resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW }
+            resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS }
     }
 }
 /// The fields of view Gameplay Settings offers, in percent of the shot's: a little narrower than
 /// the original's, mostly wider.
 pub const FIELD_OF_VIEWS: std::ops::RangeInclusive<u8> = 90..=130;
 pub const VANILLA_FIELD_OF_VIEW: u8 = 100;
+/// The brightnesses Display Settings offers, in percent of the game's own.
+pub const BRIGHTNESSES: std::ops::RangeInclusive<u8> = 75..=150;
+pub const VANILLA_BRIGHTNESS: u8 = 100;
 /// The resolution scales Display Settings offers, in percent.
 pub const RESOLUTION_SCALES: std::ops::RangeInclusive<u8> = 50..=200;
 pub const RESOLUTION_SCALE_STEP: u8 = 10;
@@ -687,9 +693,10 @@ impl SkaterProfile {
                 // Half and On read as Unlimited, 60 and Refresh Rate. Versions before 4 have no
                 // frame rate counter, which reads as off, before 5 no fullscreen: windowed, before
                 // 6 no resolution scale: 100%, before 7 no VSync, which the Refresh Rate cap
-                // alone meant, and before 8 no field of view: the original's.
+                // alone meant, before 8 no field of view: the original's, and before 9 no
+                // brightness: the game's own.
                 let version = read32(&leaf, 4)?;
-                if !matches!(version, 1..=8) { return Err(ProfileError("unsupported PC display settings version")); }
+                if !matches!(version, 1..=9) { return Err(ProfileError("unsupported PC display settings version")); }
                 let mut r = Reader { bytes: &leaf[16..], pos: 0 };
                 let mut boolean = || match r.tuple()? {
                     [0] => Ok(false), [1] => Ok(true),
@@ -700,8 +707,8 @@ impl SkaterProfile {
                     match (version, r.tuple()?) {
                         (_, [0]) => FrameRateCap::Unlimited,
                         (_, [1]) => FrameRateCap::Fps60,
-                        (3..=8, [2]) => FrameRateCap::Fps120,
-                        (2, [2]) | (3..=8, [3]) => FrameRateCap::RefreshRate,
+                        (3..=9, [2]) => FrameRateCap::Fps120,
+                        (2, [2]) | (3..=9, [3]) => FrameRateCap::RefreshRate,
                         _ => return Err(ProfileError("invalid PC frame rate cap")),
                     }
                 };
@@ -731,22 +738,29 @@ impl SkaterProfile {
                         _ => return Err(ProfileError("invalid PC field of view")),
                     }
                 } else { VANILLA_FIELD_OF_VIEW };
-                return Ok(PcDisplaySettings { postfx, fisheye, frame_rate_cap, fps_counter, fullscreen, resolution_scale, vsync, field_of_view });
+                let brightness = if version >= 9 {
+                    match r.tuple()? {
+                        [percent] if BRIGHTNESSES.contains(percent) => *percent,
+                        _ => return Err(ProfileError("invalid PC brightness")),
+                    }
+                } else { VANILLA_BRIGHTNESS };
+                return Ok(PcDisplaySettings { postfx, fisheye, frame_rate_cap, fps_counter, fullscreen, resolution_scale, vsync, field_of_view,
+                    brightness });
             }
         }
         Ok(PcDisplaySettings::default())
     }
     pub fn set_display_settings(&mut self, settings: PcDisplaySettings) -> Result<()> {
         let id = name_hash("SK82_PC::DisplaySettings");
-        let leaf = leaf_chunk(id, 8, &[vec![u8::from(settings.postfx)], vec![u8::from(settings.fisheye)],
+        let leaf = leaf_chunk(id, 9, &[vec![u8::from(settings.postfx)], vec![u8::from(settings.fisheye)],
             vec![settings.frame_rate_cap as u8], vec![u8::from(settings.fps_counter)], vec![u8::from(settings.fullscreen)],
-            vec![settings.resolution_scale], vec![u8::from(settings.vsync)], vec![settings.field_of_view]]);
+            vec![settings.resolution_scale], vec![u8::from(settings.vsync)], vec![settings.field_of_view], vec![settings.brightness]]);
         for chunk in self.chunks.iter_mut().skip(1) {
             if read32(chunk, 0)? != name_hash("SK82_PC") { continue; }
             let mut children = split_chunks(&chunk[16..])?;
             if let Some(old) = children.iter_mut().find(|c| read32(c, 0).ok() == Some(id)) {
                 // Validate the version before modifying an existing extension.
-                if !matches!(read32(old, 4)?, 1..=8) { return Err(ProfileError("unsupported PC display settings version")); }
+                if !matches!(read32(old, 4)?, 1..=9) { return Err(ProfileError("unsupported PC display settings version")); }
                 *old = leaf;
             } else { children.push(leaf); }
             *chunk = nested_chunk(name_hash("SK82_PC"), &children.concat());
@@ -1178,7 +1192,8 @@ mod display_tests {
         profile.chunks.push(unknown.clone());
         for (postfx, frame_rate_cap) in [(false, FrameRateCap::Unlimited), (true, FrameRateCap::Fps60), (false, FrameRateCap::Fps120)] { for fisheye in [true, false] {
             let expected = PcDisplaySettings { postfx, fisheye, frame_rate_cap, fps_counter: fisheye, fullscreen: postfx,
-                resolution_scale: if fisheye { 200 } else { 50 }, vsync: !postfx, field_of_view: if fisheye { 130 } else { 90 } };
+                resolution_scale: if fisheye { 200 } else { 50 }, vsync: !postfx, field_of_view: if fisheye { 130 } else { 90 },
+                brightness: if fisheye { 150 } else { 75 } };
             profile.set_display_settings(expected).unwrap();
             profile.set_cac_record(&record).unwrap();
             profile = SkaterProfile::parse(&profile.encode().unwrap()).unwrap();
@@ -1215,17 +1230,17 @@ mod display_tests {
         };
         assert_eq!(saved(1, &[vec![0], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { postfx: false, fisheye: true, frame_rate_cap: FrameRateCap::RefreshRate, fps_counter: false, fullscreen: false,
-                resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW });
+                resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS });
         for (vsync, frame_rate_cap) in [(0, FrameRateCap::Unlimited), (1, FrameRateCap::Fps60), (2, FrameRateCap::RefreshRate)] {
             assert_eq!(saved(2, &[vec![1], vec![1], vec![vsync]]).display_settings().unwrap().frame_rate_cap, frame_rate_cap);
         }
         assert!(saved(2, &[vec![1], vec![1], vec![3]]).display_settings().is_err());
         assert_eq!(saved(3, &[vec![1], vec![0], vec![2]]).display_settings().unwrap(),
             PcDisplaySettings { postfx: true, fisheye: false, frame_rate_cap: FrameRateCap::Fps120, fps_counter: false, fullscreen: false,
-                resolution_scale: 100, vsync: false, field_of_view: VANILLA_FIELD_OF_VIEW });
+                resolution_scale: 100, vsync: false, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS });
         assert_eq!(saved(4, &[vec![1], vec![0], vec![2], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { postfx: true, fisheye: false, frame_rate_cap: FrameRateCap::Fps120, fps_counter: true, fullscreen: false,
-                resolution_scale: 100, vsync: false, field_of_view: VANILLA_FIELD_OF_VIEW });
+                resolution_scale: 100, vsync: false, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS });
         assert_eq!(saved(5, &[vec![1], vec![1], vec![3], vec![0], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { fullscreen: true, ..PcDisplaySettings::default() });
         assert_eq!(saved(6, &[vec![1], vec![1], vec![3], vec![0], vec![1], vec![140]]).display_settings().unwrap(),
@@ -1242,6 +1257,12 @@ mod display_tests {
             PcDisplaySettings { field_of_view: 118, ..PcDisplaySettings::default() });
         for percent in [0, 89, 131, 255] {
             assert!(saved(8, &[vec![1], vec![1], vec![3], vec![0], vec![0], vec![100], vec![1], vec![percent]]).display_settings().is_err());
+        }
+        // From version 9 the brightness is its own, within BRIGHTNESSES.
+        assert_eq!(saved(9, &[vec![1], vec![1], vec![2], vec![0], vec![0], vec![100], vec![1], vec![100], vec![135]]).display_settings().unwrap(),
+            PcDisplaySettings { frame_rate_cap: FrameRateCap::Fps120, brightness: 135, ..PcDisplaySettings::default() });
+        for percent in [0, 74, 151, 255] {
+            assert!(saved(9, &[vec![1], vec![1], vec![3], vec![0], vec![0], vec![100], vec![1], vec![100], vec![percent]]).display_settings().is_err());
         }
         assert_eq!(saved(7, &[vec![1], vec![1], vec![2], vec![0], vec![0], vec![100], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { frame_rate_cap: FrameRateCap::Fps120, ..PcDisplaySettings::default() });

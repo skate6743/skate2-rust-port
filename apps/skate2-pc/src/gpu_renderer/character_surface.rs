@@ -66,6 +66,18 @@ fn surface_colour(input:Output,hair:bool,hair_ropa:bool)->vec4<f32>{
     // the original diffuse alpha. Ordinary hair squares all four lanes.
     let specular_mask=select(colour.a,sample.a,hair_ropa);
     let spec=clamp((key_spec*stamp.material[2].xyz*key_fresnel+rim_spec*stamp.material[3].xyz*rim_fresnel)*specular_mask,vec3<f32>(0.),vec3<f32>(1.));
+    if CHARACTER_LIGHT_VIEW>=4u && CHARACTER_LIGHT_VIEW<=6u {
+        let p=vec2<f32>(dot(world_shadow.rows[0],world),dot(world_shadow.rows[1],world));
+        let depth=dot(world_shadow.rows[2],world);
+        let moments=textureSample(shadow_world,world_sampler,p*vec2<f32>(.5,-.5)+vec2<f32>(.5)).xy;
+        if CHARACTER_LIGHT_VIEW==6u {
+            let above=(world_shadow.rows[2].w-moments.x)/(-world_shadow.rows[2].y)-world.y;
+            return vec4<f32>(clamp(above/5.,0.,1.),clamp(above/50.,0.,1.),clamp(above/500.,0.,1.),object.color.a);
+        }
+        if CHARACTER_LIGHT_VIEW==4u {return vec4<f32>(select(0.,1.,max(abs(p.x),abs(p.y))<.99),moments.y,select(0.,1.,moments.x>=depth),object.color.a);}
+        return vec4<f32>(p*.5+vec2<f32>(.5),clamp(depth,0.,1.),object.color.a);
+    }
+    if CHARACTER_LIGHT_VIEW==1u {return vec4<f32>(select(csm_shadow(world),1.,hair),world_shadow_value(world),clamp(dot(n,light),0.,1.),object.color.a);}
     let lit=colour.xyz*(key_diffuse+ambient+rim_diffuse)+spec;
     let x=(lit*(stamp.material[0].y*input.fog.a)+input.fog.xyz)*stamp.attributes[2].z;
     let low=clamp(vec3<f32>(1.)-x,vec3<f32>(0.),vec3<f32>(1.));

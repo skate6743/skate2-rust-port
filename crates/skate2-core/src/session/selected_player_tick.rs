@@ -986,8 +986,9 @@ impl SelectedPlayerTick {
             // TU3's island records the skater's contacts on each pedestrian Body too; the
             // pedestrians' OnEntityCollision reads them in this tick's ResolveContactSpyList.
             let contacts: Vec<_> = player.take_host_contacts().into_iter()
-                .map(|(body, board, normal)| crate::pedestrian_collision::contacts::Skate3PedestrianContact {
-                    body, normal,
+                .map(|(body, board, normal, point)| crate::pedestrian_collision::contacts::Skate3PedestrianContact {
+                    body, normal, point,
+                    velocity: if board { player.output().board_velocity } else { player.output().root_velocity },
                     other: crate::simulation_assembly_backend::constraint_session::physical_island::SimulationIslandBodyHandle::Skater(
                         if board { skaters[local_skater].board.clone() } else { skaters[local_skater].skeleton.clone() }),
                 })

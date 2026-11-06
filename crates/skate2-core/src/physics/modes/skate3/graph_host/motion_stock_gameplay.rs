@@ -96,7 +96,8 @@ pub enum Operation {
     FingerFlipOut { grab_intent: String },
     EnterSkitchingBehaviour,
     SkitchingBehaviour,
-    SkitchShimmyingBehaviour,
+    /// Ctor 0x82BCAF40: "direction" right is 2, left 1, otherwise 0.
+    SkitchShimmyingBehaviour { direction: u8 },
     SetManualAngle { attribute: AttributeName },
     HippyJumpAntic,
     LandOnBoard,
@@ -160,7 +161,13 @@ impl Operation {
             },
             "EnterSkitchingBehaviour" => Self::EnterSkitchingBehaviour,
             "SkitchingBehaviour" => Self::SkitchingBehaviour,
-            "SkitchShimmyingBehaviour" => Self::SkitchShimmyingBehaviour,
+            "SkitchShimmyingBehaviour" => Self::SkitchShimmyingBehaviour {
+                direction: match a.text("direction") {
+                    Some("right") => 2,
+                    Some("left") => 1,
+                    _ => 0,
+                },
+            },
             "SetManualAngle" => Self::SetManualAngle {
                 // Factory82BC9678/84 uses literal8231D5C8, no authored override.
                 attribute: encode(b"manual_angle"),

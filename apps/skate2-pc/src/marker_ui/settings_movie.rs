@@ -18,7 +18,7 @@ use skate2_core::{
     stick_settings::DEADZONES,
     ui::{
         apt_timeline::{DisplayEntry, PlacementIdentity},
-        options::{FIELD_OF_VIEWS, FrameRateCap, Labelled, Page, Row, Snapshot},
+        options::{BRIGHTNESSES, FIELD_OF_VIEWS, FrameRateCap, Labelled, Page, Row, Snapshot},
         edit_skater::EditSkaterRow,
     },
 };
@@ -59,6 +59,23 @@ const SLIDER_UNDER_OPTION_GAP: f32 = 34.;
 /// the option rows' pitch under the option's: the knob draws its `mTitle` at 7, an option row at
 /// 19.85.
 const MORPH_UNDER_OPTION_GAP: f32 = 19.85 - 7.;
+/// The same under a selector row's 58 (Brightness's knob under Fullscreen): a selector draws its
+/// `mTitle` at 17. The Stick Settings pages keep their own spacing.
+const MORPH_UNDER_SELECTOR_GAP: f32 = 17. - 7.;
+/// The tallest list that clears the bottom bar from `dummy0`: seven selector rows (Display
+/// Settings before its Brightness knob).
+const LONGEST_LIST: f32 = 7. * 58.;
+
+/// A row's height in the list: `GetHeight` of an option (002272) or a selector (001868), the
+/// slider prototype's `mHeight`, or Edit Skater's morph knob's.
+fn row_height(kind: &str) -> f32 {
+    match kind {
+        "option" => 36.,
+        "slider" => 72.,
+        "morph" => 45.,
+        _ => 58.,
+    }
+}
 
 impl SettingsMovie {
     pub fn new(assets: &Assets) -> RenderResult<Self> {
@@ -208,10 +225,13 @@ impl SettingsMovie {
             .iter()
             .map(|&row| options_row(assets, &state, row))
             .collect::<RenderResult<Vec<_>>>()?;
-        // PC port: the Field of View row adds X, which puts it back to the original's.
-        let on_field_of_view = state.rows().get(state.selected) == Some(&Row::FieldOfView);
-        let was_on_field_of_view = previous.page == state.page && previous.rows().get(previous.selected) == Some(&Row::FieldOfView);
-        if previous.page != state.page || on_field_of_view != was_on_field_of_view {
+        // PC port: the Field of View and Brightness rows add X, which puts them back to the game's own.
+        let on_knob = |snapshot: &Snapshot| {
+            snapshot.rows().get(snapshot.selected).is_some_and(|row| matches!(row, Row::FieldOfView | Row::Brightness))
+        };
+        let knob = on_knob(&state);
+        let was_knob = previous.page == state.page && on_knob(previous);
+        if previous.page != state.page || knob != was_knob {
             if previous.page != state.page {
                 let title = state.title();
                 let title = if title.starts_with("ID_") { assets.localize(title)? } else { title.into() };
@@ -220,7 +240,7 @@ impl SettingsMovie {
             // GetButtonHelpTextA 0x82644128 names A only over `option` rows.
             let help: &[(&str, &str)] = if rows.first().is_some_and(|row| row.kind == "option") {
                 &[("B", "ID_COMMON_BACK"), ("A", "ID_COMMON_SELECT")]
-            } else if on_field_of_view {
+            } else if knob {
                 &[("B", "ID_COMMON_BACK"), ("X", "#Reset to Default")]
             } else {
                 &[("B", "ID_COMMON_BACK")]
@@ -243,14 +263,20 @@ impl SettingsMovie {
             // subsequent y = previous.y + previous.GetHeight(), no CAC gap.
             let mut matrix = child(&mut self.root, "dummy0")?.entry.matrix;
             // PC port: a slider or morph row straight under a one-line option row (Field of View's
-            // knob under Weather Settings) would sit on it; it moves down and the list starts higher
-            // by the same amount, so its foot stays where it was.
+            // knob under Weather Settings) would sit on it, and a knob under a selector row
+            // (Brightness's under Fullscreen) close under its value; it moves down and the list starts
+            // higher by the same amount, so its foot stays where it was.
             let gap = |index: usize| match rows[index].kind.as_str() {
                 "slider" if index > 0 && rows[index - 1].kind == "option" => SLIDER_UNDER_OPTION_GAP,
                 "morph" if index > 0 && rows[index - 1].kind == "option" => MORPH_UNDER_OPTION_GAP,
+                "morph" if index > 0 && rows[index - 1].kind == "selector" && !state.stick_page() => MORPH_UNDER_SELECTOR_GAP,
                 _ => 0.,
             };
             matrix.ty -= (0..rows.len()).map(gap).sum::<f32>();
+            // PC port: a list taller than seven selector rows (Display Settings with its Brightness
+            // knob) would reach under the bottom bar; it starts higher by the difference, so its foot
+            // stays where seven selectors' does.
+            matrix.ty -= (rows.iter().map(|row| row_height(&row.kind)).sum::<f32>() - LONGEST_LIST).max(0.);
             self.root.children.retain(|_, c| {
                 c.entry
                     .name
@@ -258,12 +284,12 @@ impl SettingsMovie {
                     .is_some_and(|n| n.starts_with("dummy"))
             });
             for (index, row) in rows.iter().enumerate() {
-                let (asset, character, height) = match row.kind.as_str() {
-                    "option" => (20, export(assets, 20, "HighlightOptionComponent")?, 36.), // GetHeight002272
-                    "slider" => (21, export(assets, 21, "HighlightSliderComponent")?, 72.), // prototype mHeight
+                let (asset, character) = match row.kind.as_str() {
+                    "option" => (20, export(assets, 20, "HighlightOptionComponent")?),
+                    "slider" => (21, export(assets, 21, "HighlightSliderComponent")?),
                     // PC port: the stick deadzones take Edit Skater's morph knob.
-                    "morph" => (16, edit_skater_movie::MORPH, 45.),
-                    _ => (18, export(assets, 18, "HighlightSelectorComponent")?, 58.), // GetHeight001868
+                    "morph" => (16, edit_skater_movie::MORPH),
+                    _ => (18, export(assets, 18, "HighlightSelectorComponent")?),
                 };
                 matrix.ty += gap(index);
                 let mut clip = Clip::new(assets, asset, character)?;
@@ -288,7 +314,7 @@ impl SettingsMovie {
                         clip,
                     },
                 );
-                matrix.ty += height;
+                matrix.ty += row_height(&row.kind);
             }
             if state.stick_page() {
                 self.attach_stick_preview(assets)?;
@@ -381,11 +407,16 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
         Row::RainVolume => Some(i32::from(state.modes.rain_volume)),
         _ => None,
     };
-    if row == Row::FieldOfView {
+    if matches!(row, Row::FieldOfView | Row::Brightness) {
         // Its percent after its title and its knob along the morph line, whose ends are the ends
-        // of its range: the original's a quarter of the way along.
-        let percent = state.values.field_of_view;
-        let (low, high) = (i32::from(*FIELD_OF_VIEWS.start()), i32::from(*FIELD_OF_VIEWS.end()));
+        // of its range: the game's own a quarter (Field of View) or a third (Brightness) of the way
+        // along.
+        let (percent, range) = if row == Row::Brightness {
+            (state.values.brightness, BRIGHTNESSES)
+        } else {
+            (state.values.field_of_view, FIELD_OF_VIEWS)
+        };
+        let (low, high) = (i32::from(*range.start()), i32::from(*range.end()));
         let value = (i32::from(percent) - low) * 100 / (high - low);
         return Ok(EditSkaterRow { kind: row.kind().into(), title: format!("{title} {percent}%"), value, ..Default::default() });
     }
@@ -576,9 +607,11 @@ mod tests {
                 state.selected = 0;
                 movie.update(&assets, state, main.as_mut()).unwrap();
                 tick(&mut movie, &mut main, &assets, 90);
+                // Display Settings starts higher by its Brightness knob's gap under Fullscreen and by
+                // the 45 its knob reaches past seven selector rows (`LONGEST_LIST`).
                 assert_eq!(
                     child(&mut movie.root, "mItem1").unwrap().entry.matrix.ty,
-                    anchor.ty + 58.
+                    anchor.ty - MORPH_UNDER_SELECTOR_GAP - 45. + 58.
                 );
                 for selected in [0, 1, 0] {
                     state.selected = selected;

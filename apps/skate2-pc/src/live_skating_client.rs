@@ -1356,6 +1356,7 @@ impl LiveSkatingClient {
                 reverb_key: front_end.reverb_key,
                 ambience_key: front_end.ambience_key,
                 skate3_district: false,
+                skate3_district_name: None,
                 emitter_key: front_end.emitter_key,
                 out_of_boundary_amount: None,
                 fade_amount: None,
@@ -1376,6 +1377,7 @@ impl LiveSkatingClient {
             reverb_key: frame.reverb_key,
             ambience_key: frame.ambience_key,
             skate3_district: self.session.audio_skate3_district(),
+            skate3_district_name: self.session.audio_skate3_district_name(),
             emitter_key: frame.emitter_key,
             out_of_boundary_amount: frame.out_of_boundary_amount,
             fade_amount: frame.fade_amount,
@@ -2195,9 +2197,11 @@ impl LiveSkatingClient {
                         }).unwrap_or(0);
                     }
                 }
-                // SKATE2_DIAGNOSTIC_OPTIONS_PAGE=physics|weather: after the presses that open Options,
-                // the rows by name down to Physics Settings, or Gameplay Settings' Weather Settings;
-                // there one right on the first row, and the page's rows and modes logged.
+                // SKATE2_DIAGNOSTIC_OPTIONS_PAGE=physics|weather|display|display_left: after the presses
+                // that open Options, the rows by name down to Physics Settings, Gameplay Settings'
+                // Weather Settings or Display Settings' Brightness; there one right on the first row, or
+                // the Brightness knob a step right (left) each press to the end of its range, then back
+                // out of Options, and the page's rows and values logged.
                 if matches!(demo,ControlsDemo::MainMenu) && tick > 600 && tick % 30 == 0
                     && let Ok(target) = std::env::var("SKATE2_DIAGNOSTIC_OPTIONS_PAGE")
                 {
@@ -2205,9 +2209,21 @@ impl LiveSkatingClient {
                     let options = self.session.options_snapshot();
                     let row = options.rows().get(options.selected).copied();
                     let physics = target == "physics";
+                    let display = target.starts_with("display");
+                    let wanted = if physics { Row::PhysicsSettings } else if display { Row::DisplaySettings } else { Row::VideoSettings };
+                    let left = target == "display_left";
+                    let end = if left { *skate2_core::ui::options::BRIGHTNESSES.start() } else { *skate2_core::ui::options::BRIGHTNESSES.end() };
                     sample.buttons = match options.page {
-                        Page::Options if row == Some(if physics { Row::PhysicsSettings } else { Row::VideoSettings }) => 0x1000,
+                        Page::Options if display && options.values.brightness == end => 0x2000,
+                        Page::Options if row == Some(wanted) => 0x1000,
                         Page::Options => 0x0002,
+                        Page::Display if row != Some(Row::Brightness) => 0x0002,
+                        Page::Display => {
+                            if tick % 300 == 0 {
+                                eprintln!("options page Display: rows {:?}, selected {}, brightness {}", options.rows(), options.selected, options.values.brightness);
+                            }
+                            if options.values.brightness == end { 0x2000 } else if left { 0x0004 } else { 0x0008 }
+                        }
                         Page::Video if !physics && row == Some(Row::WeatherSettings) => 0x1000,
                         Page::Video if !physics => 0x0002,
                         Page::Physics | Page::Weather if !self.options_page_adjusted => {
@@ -2681,7 +2697,8 @@ impl LiveSkatingClient {
                             skate2_core::edit_skater_profile::EditSkaterProfileStore::default_path()?)?;
                         let expected=skate2_core::ui::options::PcDisplaySettings{postfx:false,fisheye:false,
                             frame_rate_cap:skate2_core::ui::options::FrameRateCap::Fps60,fps_counter:false,fullscreen:false,
-                            resolution_scale:100,vsync:true,field_of_view:skate2_core::ui::options::VANILLA_FIELD_OF_VIEW};
+                            resolution_scale:100,vsync:true,field_of_view:skate2_core::ui::options::VANILLA_FIELD_OF_VIEW,
+                            brightness:skate2_core::ui::options::VANILLA_BRIGHTNESS};
                         if display.page!=skate2_core::ui::options::Page::Hidden
                             || display.values!=expected || store.load_display_settings()?!=expected {
                             return Err("Display Settings main-menu save roundtrip failed".into());
@@ -2891,6 +2908,40 @@ impl LiveSkatingClient {
                         let yaw = fields.next().and_then(|yaw| yaw.parse::<f32>().ok()).unwrap_or(0.0);
                         eprintln!("diagnostic: teleport here on_board={on_board} yaw={yaw} at {}: {}",
                             self.completed_frames, self.session.diagnostic_teleport_here(on_board, yaw));
+                    }
+                }
+            }
+            // SKATE2_DIAGNOSTIC_SKITCH=<frame>[:<hold>[:<gap>]]: at that frame, the local skater
+            // teleported on its board `gap` metres (default 0.6) behind the nearest vehicle's rear
+            // grab handle; from 30 frames later both hand grabs (the triggers) held `hold` frames.
+            if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_SKITCH") {
+                let mut fields = spec.split(':').map(str::trim);
+                if let Some(at) = fields.next().and_then(|at| at.parse::<u64>().ok()) {
+                    let hold = fields.next().and_then(|hold| hold.parse::<u64>().ok()).unwrap_or(600);
+                    let gap = fields.next().and_then(|gap| gap.parse::<f32>().ok()).unwrap_or(0.6);
+                    if self.completed_frames == at {
+                        eprintln!("diagnostic: skitch teleport at {at}: {:?}",
+                            self.session.diagnostic_teleport_behind_vehicle(gap));
+                    }
+                    if (at + 30..at + 30 + hold).contains(&self.completed_frames) {
+                        sample.left_trigger = u8::MAX;
+                        sample.right_trigger = u8::MAX;
+                    }
+                }
+            }
+            // SKATE2_DIAGNOSTIC_PROP_GRAB=<frame>[:<hold>[:<gap>]]: at that frame, the local skater
+            // teleported off its board `gap` metres (default 0.8) short of the nearest prop, facing
+            // it; from 30 frames later RB held `hold` frames.
+            if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_PROP_GRAB") {
+                let mut fields = spec.split(':').map(str::trim);
+                if let Some(at) = fields.next().and_then(|at| at.parse::<u64>().ok()) {
+                    let hold = fields.next().and_then(|hold| hold.parse::<u64>().ok()).unwrap_or(600);
+                    let gap = fields.next().and_then(|gap| gap.parse::<f32>().ok()).unwrap_or(0.8);
+                    if self.completed_frames == at {
+                        eprintln!("diagnostic: prop teleport at {at}: {:?}", self.session.diagnostic_teleport_to_prop(gap));
+                    }
+                    if (at + 30..at + 30 + hold).contains(&self.completed_frames) {
+                        sample.buttons |= 0x0200;
                     }
                 }
             }

@@ -176,6 +176,27 @@ pub(crate) fn advance(
         },
     );
     skater.animation.action.gameplay_conditions = skater.animation.motion.gameplay_conditions;
+    // Skitching FillPhysOut's Animation/Ground values, or Ground's own spline height (Ground+280).
+    let skitch = skater.skitch_output.unwrap_or_default();
+    skater.animation.motion.skitch_physical =
+        Some(crate::skate3_native::graph_host::motion_skitching::Physical {
+            state: physical.state.state_16,
+            crouch: skitch.crouch,
+            hand_speed: skitch.hand_speed,
+            grip_hand: skitch.grip_hand,
+            time_to_skitch: physical.ground.scalar_276,
+            spline_height: if skater.skitch_output.is_some() {
+                skitch.spline_height
+            } else {
+                skater
+                    .player_state
+                    .ground_output
+                    .as_ref()
+                    .map_or(0.0, |output| output.ground_32.skitch_spline_height)
+            },
+            contact_speed: skitch.contact_speed,
+            push_speed: skitch.push_target_speed,
+        });
     skater.animation.motion.native_physical = Some(crate::skate3_native::graph_host::motion_native::Physical {
         centre_of_mass_velocity: skater.animated_skeleton.board_frames.com_velocity,
         system_up: vec4(physics.riding.reckoning.up),

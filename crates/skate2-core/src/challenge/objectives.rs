@@ -789,6 +789,24 @@ fn reset_objective_status(world: &mut World, group: u32, index: usize) {
     }
 }
 
+/// PC port (`crate::skate3`): the activation mode a Skate 3 objective of its "challenge start"
+/// mode (Skate 3's 1) takes in Skate 2's numbering, which stops at 4: enabled until
+/// [`activate_challenge_start_objectives`].
+pub const CHALLENGE_START_MODE: i32 = 5;
+
+/// TU3 `Objectives.ActivateChallengeStartObjectives(group)` (0x82c61158): each of the group's
+/// objectives of the challenge start mode becomes active.
+pub fn activate_challenge_start_objectives(world: &mut World, group: u32) {
+    let db = std::sync::Arc::clone(&world.db);
+    let Some(gi) = world.objectives.group_index(group) else { return };
+    let keys: Vec<u64> = world.objectives.groups[gi].objectives.iter().map(|o| o.key).collect();
+    for (index, key) in keys.into_iter().enumerate() {
+        if activation_mode(&db, key) == CHALLENGE_START_MODE {
+            set_status(world, group, index, Status::Active);
+        }
+    }
+}
+
 /// `ObjectiveInfo.ActivationMode` of an objective.
 fn activation_mode(db: &AttribDb, key: u64) -> i32 {
     db.attribute(class::CHALLENGE_OBJECTIVE, key, field::ACTIVATION_MODE).and_then(|a| a.i32(0)).unwrap_or(0)

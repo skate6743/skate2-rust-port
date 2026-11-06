@@ -43,6 +43,8 @@ const SKATE3_SKATE_LETTERS: u32 = 154;
 const SKATE3_ONE_UP_LETTERS: u32 = 163;
 /// The depth of the letter board's first Skate 3 `mUp` row, past all it authors.
 const SKATE3_LETTERS_DEPTH: i32 = 0x4000;
+/// The space between a row's name panel and its Skate 3 1-Up letters, in board units.
+const SKATE3_LETTERS_GAP: f32 = 4.0;
 
 /// The `eLeaderBoardHUD` layouts the class tests.
 const LAYOUT_ONE_UP: i32 = 1;
@@ -96,6 +98,8 @@ pub(super) struct LeaderboardMovie {
     /// into this board's `mcSkate` rows once made.
     skate3_letters: bool,
     skate3_letters_transform: Option<Matrix>,
+    /// The authored placements [`Self::condense_for_skate3_letters`] changed, by piece.
+    condensed: BTreeMap<String, Matrix>,
 }
 
 impl LeaderboardMovie {
@@ -118,6 +122,7 @@ impl LeaderboardMovie {
             names: Vec::new(),
             skate3_letters: false,
             skate3_letters_transform: None,
+            condensed: BTreeMap::new(),
         };
         movie.calls()?;
         Ok(movie)
@@ -207,6 +212,7 @@ impl LeaderboardMovie {
     /// board for the layout, its variant line, title and rows, then the background sized and
     /// placed for the widest of them.
     fn setup_screen(&mut self, assets: &Assets, data: &LeaderboardHud, regular: bool, online: bool, title: &MissionTitle) -> RenderResult<()> {
+        self.restore_condensed()?;
         self.online = online;
         self.voip_icon_size = if online { VOIP_ICON_SIZE } else { 0. };
         self.num_players = data.num_players;
@@ -223,7 +229,75 @@ impl LeaderboardMovie {
         let widest = as_max(as_max(variant, title), rows);
         self.update_voip_icons();
         self.set_screen_size(assets, throwdown, widest)?;
-        self.position_hud(assets, throwdown, widest)
+        self.position_hud(assets, throwdown, widest)?;
+        if throwdown {
+            self.condense_for_skate3_letters(assets, widest, title)?;
+        }
+        Ok(())
+    }
+
+    /// PC port: Skate 3's `SizePlayerRow` sizes its row around the 1-Up strip, three letters to
+    /// the S.K.A.T.E. strip's five. This board's backs come in fixed widths, so with Skate 3's
+    /// letters the shown back narrows (its left edge kept, the title centred on it again) until
+    /// it ends as far past the 1-Up strip as the strip starts past the name panel, the even
+    /// spacing the S.K.A.T.E. letters keep; never below the title, which `SetScreenSize` keeps
+    /// 4 narrower than its back. The board moves right as far, its right edge where the back's
+    /// was. Each layout starts from the authored placements.
+    fn condense_for_skate3_letters(&mut self, assets: &Assets, widest: f32, title: f32) -> RenderResult<()> {
+        if !self.shows_skate3_letters() {
+            return Ok(());
+        }
+        let Some(hud) = assets.skate3_hud else { return Ok(()) };
+        let board = self.root.named(&["mcThrowdownHUD"])?;
+        let Some(up) = board.children.get(&SKATE3_LETTERS_DEPTH).map(|up| up.entry.matrix) else { return Ok(()) };
+        let Some(strip) = find_child(board, "mcSkateStrip0") else { return Ok(()) };
+        let Some(panel) = bounds(&strip.clip, assets)? else { return Ok(()) };
+        let s = strip.entry.matrix;
+        let panel_right = panel.left.mul_add(s.a, s.tx).max(panel.right.mul_add(s.a, s.tx));
+        let letters = bounds(&Clip::new(assets, hud.leaderboard, SKATE3_ONE_UP_LETTERS)?, assets)?.ok_or("Skate 3's 1-Up letters without bounds")?;
+        let (up_left, up_right) = (letters.left.mul_add(up.a, up.tx), letters.right.mul_add(up.a, up.tx));
+        let bg = find_child(board, "mBackground").ok_or("letter board without mBackground")?.entry.matrix;
+        let back_name = size(self.root.named(&["mcThrowdownHUD", "mBackground"])?, assets, widest)?.1;
+        let back_path = format!("back:{back_name}");
+        let (r, m) = {
+            let piece = condensed_piece(&mut self.root, &back_path)?;
+            (bounds(&piece.clip, assets)?.ok_or("letter board back without bounds")?, piece.entry.matrix)
+        };
+        let local_left = r.left.mul_add(m.a, m.tx);
+        let left = local_left.mul_add(bg.a, bg.tx);
+        let right = r.right.mul_add(m.a, m.tx).mul_add(bg.a, bg.tx);
+        let target = (up_right + (up_left - panel_right).max(0.)).max((title + 4.).mul_add(bg.a, left));
+        let unused = right - target;
+        if !(unused > 0.) || !(r.right > r.left) {
+            return Ok(());
+        }
+        for path in ["board", "title", back_path.as_str()] {
+            let matrix = condensed_piece(&mut self.root, path)?.entry.matrix;
+            self.condensed.insert(path.to_owned(), matrix);
+        }
+        let a = (target - left) / bg.a / (r.right - r.left);
+        let back = condensed_piece(&mut self.root, &back_path)?;
+        back.clip.script_transform = true;
+        back.entry.matrix.a = a;
+        back.entry.matrix.tx = r.left.mul_add(-a, local_left);
+        let title = condensed_piece(&mut self.root, "title")?;
+        title.clip.script_transform = true;
+        title.entry.matrix.tx -= unused / bg.a * 0.5;
+        let board = condensed_piece(&mut self.root, "board")?;
+        board.entry.matrix.tx = unused.mul_add(board.entry.matrix.a, board.entry.matrix.tx);
+        Ok(())
+    }
+
+    /// The authored placements back, before the background is sized again from them.
+    fn restore_condensed(&mut self) -> RenderResult<()> {
+        for (path, matrix) in std::mem::take(&mut self.condensed) {
+            let piece = condensed_piece(&mut self.root, &path)?;
+            piece.entry.matrix = matrix;
+            if path != "board" {
+                piece.clip.script_transform = false;
+            }
+        }
+        Ok(())
     }
 
     /// `SetupContestVariant`: a named variant (not `#Unknown`, `ID_COMMON_UNKNOWN` or its
@@ -710,14 +784,44 @@ fn height(piece: &Child, assets: &Assets) -> RenderResult<f32> {
 /// `mSkate` S.K.A.T.E. letters (where its `mUp` sits) scaled and moved onto this board's, at
 /// their first frames.
 fn skate3_letters_transform(assets: &Assets, skate3: usize, root: &mut Clip) -> RenderResult<Matrix> {
-    let skate = root.named(&["mcThrowdownHUD", "mcSkate0"])?;
-    let ours = bounds(&Clip::new(assets, skate.asset, skate.character)?, assets)?.ok_or("letter board's letters without bounds")?;
+    let board = root.named(&["mcThrowdownHUD"])?;
+    let skate = find_child(board, "mcSkate0").ok_or("letter board without mcSkate0")?;
+    let (asset, character, at) = (skate.clip.asset, skate.clip.character, skate.entry.matrix);
+    let ours = bounds(&Clip::new(assets, asset, character)?, assets)?.ok_or("letter board's letters without bounds")?;
+    // The row's name panel (`mcSkateStrip0` at its current size): its right edge on the board.
+    let panel = match find_child(board, "mcSkateStrip0") {
+        Some(strip) => bounds(&strip.clip, assets)?.map(|r| r.right.mul_add(strip.entry.matrix.a, strip.entry.matrix.tx)),
+        None => None,
+    };
     let theirs = bounds(&Clip::new(assets, skate3, SKATE3_SKATE_LETTERS)?, assets)?.ok_or("Skate 3's letters without bounds")?;
+    let up = bounds(&Clip::new(assets, skate3, SKATE3_ONE_UP_LETTERS)?, assets)?.ok_or("Skate 3's 1-Up letters without bounds")?;
     let scale = (ours.bottom - ours.top) / (theirs.bottom - theirs.top);
     if !scale.is_finite() || scale <= 0. {
         return Err("Skate 3's letters without height".into());
     }
-    Ok(Matrix { a: scale, b: 0., c: 0., d: scale, tx: theirs.left.mul_add(-scale, ours.left), ty: theirs.top.mul_add(-scale, ours.top) })
+    // Skate 3's SizePlayerRow puts both strips at the row's right end (`_x` = rowWidth - 6), right
+    // aligned, and sizes the row around the shorter 1-Up strip; this board keeps its S.K.A.T.E.
+    // width, so the 1-Up letters start just past the name panel (where the S.K.A.T.E. strip, which
+    // starts under the panel's end, would leave them overlapping it).
+    let left = panel
+        .map(|right| (right + SKATE3_LETTERS_GAP - at.tx) / at.a)
+        .filter(|left| left.is_finite())
+        .unwrap_or(ours.left);
+    Ok(Matrix { a: scale, b: 0., c: 0., d: scale, tx: up.left.mul_add(-scale, left), ty: theirs.top.mul_add(-scale, ours.top) })
+}
+
+/// A piece [`LeaderboardMovie::condense_for_skate3_letters`] moves: the letter board itself, its
+/// title, or a back (`back:<name>`) of its background.
+fn condensed_piece<'a>(root: &'a mut Clip, path: &str) -> RenderResult<&'a mut Child> {
+    let board = child(root, "mcThrowdownHUD")?;
+    if path == "board" {
+        return Ok(board);
+    }
+    let background = child(&mut board.clip, "mBackground")?;
+    match path.strip_prefix("back:") {
+        Some(name) => child(&mut background.clip, name),
+        None => child(&mut background.clip, "mcTitle"),
+    }
 }
 
 pub(super) fn find_child<'a>(clip: &'a mut Clip, name: &str) -> Option<&'a mut Child> {

@@ -1,5 +1,4 @@
-Skate 3 data can now optionally be linked to get access to Skate 3 maps, clothes, physics, online challenges
-New Gameplay Options such as Weather and FoV have been added (credits to Smokey for the weather system)
-New previously hidden 1-Up challenges added to online map pool (this gamemode was a leftover always in Skate 2)
+Skate 3 data can now optionally be linked to get access to Skate 3 maps, clothes, physics and online challenges (Available in the Downloadable Content section)
+New options added to Gameplay and Display Settings (credits to Smokey for the Weather system)
 Fixed various online softlock issues
-Fixed scoring parity mistakes with flatground tricks
+Fixed scoring bugs with flatground tricks that caused less points

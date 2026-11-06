@@ -64,6 +64,8 @@ pub struct MotionHost {
     pub playback_context: PlaybackContext,
     pub condition_inputs: ConditionInputs,
     pub gameplay_conditions: Option<super::motion_gameplay_conditions::GameplayConditions>,
+    /// The completed PhysOut skitching values the skitching leaves read.
+    pub skitch_physical: Option<super::motion_skitching::Physical>,
     pub manual_exit: Option<bool>,
     /// Completed Skeleton PhysOut536/540, in native yaw-then-pitch order.
     pub deck_yaw_pitch: Option<[f32; 2]>,
@@ -115,6 +117,7 @@ pub struct MotionHost {
     pub flags: super::motion_landing::Flags,
     hippy_jump: super::motion_hippy_jump::Settings,
     finger_flip: super::motion_finger_flip::Settings,
+    pub(super) skitching: super::motion_skitching::Settings,
     pub landing_physical: Option<super::motion_landing::Physical>,
     pub wipeout_physical: Option<super::motion_wipeout::Physical>,
     pub wipeout_controls: super::motion_wipeout::Controls,
@@ -223,6 +226,7 @@ impl MotionHost {
             playback_context,
             condition_inputs: ConditionInputs::default(),
             gameplay_conditions: None,
+            skitch_physical: None,
             manual_exit: None,
             deck_yaw_pitch: None,
             riding_conditions: None,
@@ -294,6 +298,7 @@ impl MotionHost {
             manual: super::motion_manual::settings(data)?,
             hippy_jump: super::motion_hippy_jump::Settings::load(data)?,
             finger_flip: super::motion_finger_flip::Settings::load(data)?,
+            skitching: super::motion_skitching::Settings::load(data),
             next_instance: 1,
         })
     }

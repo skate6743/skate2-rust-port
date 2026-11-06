@@ -754,15 +754,16 @@ to the lobby:
   are disabled; the results board omits the gamercard and player-review bumpers; no invites.
 - **Spot leaderboards**, Create-a-Spot online, Skate.Reel uploads and the freeskate screen's
   activity stats panel are not ported.
-- **1-Up** (PC port addition): the custom match and the host's options list 1-Up (network type 4,
-  challenge type 32), which the original's lists leave out (`unranked_custom_match`'s
-  `m_1upIndex`, `ranked_custom`'s `mOneUpIndex`) though the game ships its online challenges, their
-  state graph and its English text. The game's ten online 1-Ups (`ol_1up_01` to `ol_1up_05` and
-  five `t_*_1up_*`) play under their own script: the leader picks one of the spots
-  (`OneUpObject`) by skating a line through its trigger volumes, the followers start at it to beat
-  the score, the round's best takes a letter, and the first to spell 1-Up (`NumToWin`, 3) wins; the
-  spots come round again once all are played. With a Skate 3 data folder linked, the Map Pool's
-  Skate 3 maps add its ten online 1-Ups at the districts, which run Skate 3's own 1-Up: its state
+- **1-Up** (PC port addition): with a Skate 3 data folder linked, the custom match and the host's
+  options list 1-Up (network type 4, challenge type 32) in the Map Pool's Skate 3 maps, a type the
+  original's lists leave out (`unranked_custom_match`'s `m_1upIndex`, `ranked_custom`'s
+  `mOneUpIndex`) though the game ships its online challenges, their state graph and its English
+  text. The game's own ten online 1-Ups (`ol_1up_01` to `ol_1up_05` and five `t_*_1up_*`) are left
+  out of the Skate 2 maps for now, as their online play is not complete. Under their own script the
+  leader picks one of the spots (`OneUpObject`) by skating a line through its trigger volumes, the
+  followers start at it to beat the score, the round's best takes a letter, and the first to spell
+  1-Up (`NumToWin`, 3) wins; the spots come round again once all are played. Skate 3's ten online
+  1-Ups at the districts run Skate 3's own 1-Up: its state
   graph (`challenge_stategraph/1up`, imported with each state and handler under a key of its own,
   since it keeps some of Skate 2's 1-Up handler keys) over all of the game's own data
   (`crate::skate3`, `Skate3Data::graft_graph_game`), with what each game's local data inherits
@@ -771,16 +772,25 @@ to the lobby:
   `StartLocationRotation`, the others waiting at its `WaitLocationRotation`; each run counts down
   3-2-1, then the challenge data's `TimeLimit` runs at once and the run's lines score through its
   objective (`1up_sequence_anywhere`) until the time is up, when the run ends and lines stop
-  counting. A run that fails to 1-Up the round's best takes a letter and sits out the rest of the
+  counting. Skate 3 numbers its objectives' activation modes one higher than Skate 2 from 1 up
+  (its own mode 1 is activated by `Objectives.ActivateChallengeStartObjectives`), so an imported
+  Skate 3 objective's mode is read in Skate 2's numbering: the 1-Up objective activates as each
+  line begins, as Skate 3's does. A run that fails to 1-Up the round's best takes a letter and sits out the rest of the
   round. The letters are Skate 3's own, from its `fedynamic.big`: each letter board row shows
-  the `mUp` letters of Skate 3's `leaderboardhud` in place of its S.K.A.T.E. letters, placed and
-  sized as Skate 3 places them over its own S.K.A.T.E. letters, and each letter plays Skate 3's
+  the `mUp` letters of Skate 3's `leaderboardhud` in place of its S.K.A.T.E. letters, sized as
+  Skate 3 sizes them against its own S.K.A.T.E. letters and started just past the row's name
+  panel. Skate 3 sizes its row around the shorter strip; this board's backs come in fixed
+  widths, so the shown back narrows until it ends as far past the 1-Up letters as they start
+  past the name panel (never below the title plus 4, `SetScreenSize`'s own rule), and the board
+  moves right as far. Each letter plays Skate 3's
   `hudthrowmes` banner (`apps/skate2-pc` marker UI, `Assets::skate3_hud`); when those movies
   differ from the ones translated, the game's own show. The runs score without the multiplier:
   Skate 3's `Physics::IsScoringMultiplierActive` reads the challenge's own setting (key
   0xCB837EEF50958FBB, off in its 1-Ups' local data) where Skate 2's reads the challenge type.
   The DPO panel (the run's score over the round's best) shows no icon, as Skate 3's has none, and
-  the central HUD's second line shows the script's modified messages ("<name>'s turn", a bail),
+  the central HUD's messages take Skate 3's colours (its `hudcentral` shows a green-asked message
+  through `ShowCelebratory`, in white), and its second line shows the script's modified messages
+  ("<name>'s turn", a bail),
   held up until cleared when Skate 3's seventh argument asks. Skate 3's natives that
   Skate 2's binding tables lack are bound after Skate 2's (`challenge/skate3_natives.rs`), and
   those whose arguments Skate 3 changed take both forms; each console reports its own row of the

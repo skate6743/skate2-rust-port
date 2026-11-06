@@ -158,12 +158,15 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// The unranked custom match screen, with the Map Pool row while Skate 3 data is linked and
     /// has online games of its types; `host` opens it in its host state.
     pub(super) fn online_custom_screen(&mut self, host: Option<bool>) -> Result<CustomMatch, SelectedLiveError> {
-        let lists = self.online_match_lists()?;
+        let mut lists = self.online_match_lists()?;
         let skate3: Vec<(u8, Vec<OnlineChallenge>)> = lists
             .iter()
             .map(|&(net_type, _)| (net_type, Self::online_skate3_list(net_type)))
             .filter(|(_, list)| !list.is_empty())
             .collect();
+        // PC port, for now: the game's own 1-Ups stay out until their online play is complete;
+        // Skate 3's play Skate 3's own graph.
+        lists.retain(|&(net_type, _)| net_type != challenge::ONE_UP);
         let screen = match host {
             Some(private) => CustomMatch::host(lists, private),
             None => CustomMatch::new(lists),

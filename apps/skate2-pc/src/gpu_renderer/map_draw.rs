@@ -129,6 +129,8 @@ pub(crate) struct FrameEnvironment {
     pub(crate) world_shadow: Option<WorldShadowProjection>,
     /// The main view's island area rule; None culls islands by the frustum only.
     pub(crate) scene_cull: Option<skate2_core::presentation_scene_culling::IslandAreaCullSettings>,
+    /// The environment's `skate3_district`.
+    pub(crate) skate3_district: bool,
 }
 
 /// Axis-aligned bounds of positions exactly as the vertex buffer holds them.
@@ -538,6 +540,12 @@ struct MapObject {
 /// RenderShadowMesh82824440: position-only simple VS, existing mesh/instance
 /// streams, no material PS or alpha test. World-space effects have identity
 /// instances already; local-space diagnostic effects keep their own matrix.
+/// `WorldShadowView::Render` 0x82829ef8 locks `GfxMan->mWorldShadowScope` (+0x1B140), the
+/// `WorldShadow` effect `GraphicsMan::Init` creates, whose pass states CULLMODE FRONT: the
+/// world's own culling, not the characters' `shadow` technique's BACK. The light basis
+/// (side x up = the light's forward) has the opposite handedness of the main camera's, so it
+/// keeps the faces turned away from the sun: open ground stays uncovered, and only what stands
+/// between a receiver and the sun covers its texel.
 pub(super) fn world_caster_pipeline(
     device: &wgpu::Device,
     camera: &wgpu::BindGroupLayout,
@@ -584,7 +592,15 @@ struct Camera { clip: mat4x4<f32> }
             ],
         },
         fragment: None,
-        primitive: RasterState::culled(super::raster_state::CullMode::Back).primitive(),
+        // SKATE2_WORLD_CASTER_CULL=back (diagnostic): the characters' BACK instead.
+        primitive: RasterState::culled(
+            if std::env::var("SKATE2_WORLD_CASTER_CULL").is_ok_and(|cull| cull.eq_ignore_ascii_case("back")) {
+                super::raster_state::CullMode::Back
+            } else {
+                super::raster_state::CullMode::Front
+            },
+        )
+        .primitive(),
         depth_stencil: Some(depth),
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,

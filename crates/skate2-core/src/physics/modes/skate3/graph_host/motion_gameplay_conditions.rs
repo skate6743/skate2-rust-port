@@ -87,6 +87,12 @@ pub enum GameplayCondition {
     PlayHandplant { phase: usize },
     EnteringSkitch,
     Skitching,
+    /// IsSkitchingWithAbsorb 0x82BBBD00.
+    SkitchingWithAbsorb,
+    /// SkitchingPosition 0x82BBC068, ctor 0x82BBBF90: "side" front 1, back 2, both 3.
+    SkitchingPosition { desired: u8 },
+    /// IsSkitchShimmying 0x82BBC1A0, ClassHelper 0x82BCACD8: "direction" right 2, left 1.
+    SkitchShimmying { direction: u8 },
     /// ActivationFunc 0x82ba6038: the pushing record's movement (PhysOut+0x48: x +4, z +0) is
     /// longer than 0.1 and its heading atan2(-x, z) lies in the authored arc (radians).
     IsMovingObject { start: f32, end: f32 },
@@ -117,6 +123,9 @@ impl GameplayCondition {
                 | "ShouldPlayHandPlantAnim"
                 | "IsEnteringSkitch"
                 | "IsSkitching"
+                | "IsSkitchingWithAbsorb"
+                | "SkitchingPosition"
+                | "IsSkitchShimmying"
                 | "IsMovingObject"
         )
     }
@@ -141,6 +150,22 @@ impl GameplayCondition {
             "OkToDoTrickOnStairs" => Self::OkToDoTrickOnStairs,
             "IsEnteringSkitch" => Self::EnteringSkitch,
             "IsSkitching" => Self::Skitching,
+            "IsSkitchingWithAbsorb" => Self::SkitchingWithAbsorb,
+            "SkitchingPosition" => Self::SkitchingPosition {
+                desired: match a.text("side") {
+                    Some("front") => 1,
+                    Some("back") => 2,
+                    Some("both") => 3,
+                    _ => 0,
+                },
+            },
+            "IsSkitchShimmying" => Self::SkitchShimmying {
+                direction: match a.text("direction") {
+                    Some("right") => 2,
+                    Some("left") => 1,
+                    _ => 0,
+                },
+            },
             "IsFootPlanting" => Self::FootPlanting,
             "ShouldPrepareOneFootAirForFootplant" => Self::PrepareFootplant,
             "HasNewHandPlantPos" => Self::NewHandplantPosition,
@@ -219,6 +244,9 @@ impl GameplayCondition {
             | Self::UnderflipRequested
             | Self::DarkCatchRequested
             | Self::IsMovingObject { .. }
+            | Self::SkitchingWithAbsorb
+            | Self::SkitchingPosition { .. }
+            | Self::SkitchShimmying { .. }
             | Self::CanEnterSlide { .. } => return None,
         })
     }
@@ -237,6 +265,17 @@ impl GameplayCondition {
             //82BA79A0 calls the specific MotionGraph getter8258FB68.
             Self::Dark => host.riding.dark,
             Self::UnderflipRequested => host.trick_requests.underflip,
+            Self::SkitchingWithAbsorb => {
+                super::motion_skitching::with_absorb(host.skitch_physical, &host.skitching)?
+            }
+            Self::SkitchingPosition { desired } => {
+                super::motion_skitching::position(host.skitch_physical, host.physical_stance, *desired)?
+            }
+            Self::SkitchShimmying { direction } => super::motion_skitching::shimmying(
+                host.skitch_physical,
+                host.playback_context.is_mirrored,
+                *direction,
+            )?,
             Self::DarkCatchRequested => host.trick_requests.dark_catch,
             Self::IsMovingObject { start, end } => {
                 let [x, z] = host.moving_objects.physical.movement;

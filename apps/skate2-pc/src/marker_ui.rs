@@ -1730,10 +1730,7 @@ impl MarkerUi {
                 else { label }
             })
         }).collect::<RenderResult<Vec<_>>>()?;
-        let count = locations.iter().filter(|location| {
-            matches!(snapshot.category, skate2_core::ui::map_menu::MapCategory::Root |
-                skate2_core::ui::map_menu::MapCategory::Locations) || location.category == snapshot.category
-        }).count();
+        let count = skate2_core::ui::map_menu::MapMenuSnapshot::count(snapshot.category, locations);
         let title = self.assets.localize(snapshot.category.localization_key())?
             .replace("%d", &count.to_string());
         let info_title = snapshot.info_location.map(|key| {
@@ -2812,6 +2809,14 @@ fn flatten_masked(
                 let (top, bottom) = shape.elements.iter().flat_map(|e| &e.positions)
                     .map(|&p| point(m, p)[1])
                     .fold((f32::INFINITY, f32::NEG_INFINITY), |(top, bottom), y| (top.min(y), bottom.max(y)));
+                if std::env::var_os("SKATE2_TRACE_LETTERS").is_some() && (clip.asset == 57 || clip.asset + 2 >= assets.movies.len()) {
+                    static SEEN: std::sync::Mutex<Vec<(usize, u32)>> = std::sync::Mutex::new(Vec::new());
+                    if let Ok(mut seen) = SEEN.lock() && !seen.contains(&(clip.asset, clip.character)) {
+                        seen.push((clip.asset, clip.character));
+                        let (left, right) = shape.elements.iter().flat_map(|e| &e.positions).map(|&p| point(m, p)[0]).fold((f32::INFINITY, f32::NEG_INFINITY), |(l, r), x| (l.min(x), r.max(x)));
+                        eprintln!("letters draw: asset {} shape {} x {left}..{right} y {top}..{bottom} m {m:?} size {size:?}", clip.asset, clip.character);
+                    }
+                }
                 let background_height = if background && bottom - top >= 719. {
                     (size.1 as f32 / size.0.max(1) as f32 * (16. / 9.)).max(1.)
                 } else { 1. };
@@ -3324,7 +3329,8 @@ fn render_map_component(assets: &Assets, clip: &Clip, m: Matrix,
         }
         return Ok(());
     }
-    for location in &facts.locations {
+    // A Skate 3 district's teleport has no icon on this map (`map_menu::skate3_locations`).
+    for location in facts.locations.iter().filter(|location| !location.icon.is_empty()) {
         if category == MapCategory::Locations || location.category == category {
             icon(&location.icon, location.world_position,
                 if selected == Some(location.key) {64.} else {32.}, None)?;

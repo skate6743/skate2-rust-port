@@ -9,11 +9,11 @@ use skate2_core::ui::{
 };
 
 pub(super) const ASSET: usize = 48;
-/// PC port: the Area row a linked Skate 3 data folder adds (`freeskate_option::Area`), a copy of
-/// the character selector standing where the timeline places that row; the native rows move one
-/// row down.
+/// PC port: the District row a linked Skate 3 data folder adds (`freeskate_option::Area`), a copy of
+/// the character selector one row above where the timeline places that row; the native rows keep
+/// their own placements, so the last one stays clear of the front end's stairs.
 const AREA_SELECT: &str = "mAreaSelect";
-const AREA_TITLE: &str = "#Area";
+const AREA_TITLE: &str = "#District";
 /// The placed controls in `kState_*` order, their titles and kinds.
 const ROWS: [(&str, &str, &str); 5] = [
     ("mCharacterSelect", "ID_FREESKATEOPTION_CHARACTER_TITLE", "selector"),
@@ -105,9 +105,9 @@ impl FreeskateMovie {
         self.follow_area_row()
     }
 
-    /// PC port: the Area row stands where the timeline places the character selector, with its
-    /// fade (it is no timeline's own), and each native row one row below its own placement: the
-    /// spacing between the timeline's character and location rows.
+    /// PC port: the Area row stands one row above where the timeline places the character
+    /// selector, with its fade (it is no timeline's own); a row is the spacing between the
+    /// timeline's character and location rows. The native rows keep their own placements.
     fn follow_area_row(&mut self) -> RenderResult<()> {
         let named = |child: &Child, name: &str| child.entry.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name));
         if !self.root.children.values().any(|child| named(child, AREA_SELECT)) {
@@ -123,12 +123,10 @@ impl FreeskateMovie {
         let (Some(character), Some(location)) = (placed(ROWS[0].0), placed(ROWS[1].0)) else { return Ok(()) };
         let row = location.matrix.ty - character.matrix.ty;
         for child in self.root.children.values_mut() {
-            if ROWS.iter().any(|&(name, _, _)| named(child, name)) {
-                child.entry.matrix.ty += row - child.clip.layout_offset[1];
-                child.clip.layout_offset[1] = row;
-            } else if named(child, AREA_SELECT) {
+            if named(child, AREA_SELECT) {
                 let name = child.entry.name.take();
                 child.entry = character.clone();
+                child.entry.matrix.ty -= row;
                 child.entry.name = name;
             }
         }

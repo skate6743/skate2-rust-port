@@ -334,7 +334,11 @@ impl EditSkaterFrontend {
             GestureSet::Skate3 => SKATE3_GESTURE_HAL.len(),
         };
         self.available_gestures = (0..u32::try_from(count)?).collect();
-        self.gesture_presentation();
+        // The body follows the gestures only in the style menu, as `update` keeps it; another
+        // menu keeps its own (a new career opens on Back Alley Pete's table).
+        if self.controller.menu() == EditSkaterMenu::EditSkaterStyle {
+            self.gesture_presentation();
+        }
         Ok(())
     }
     /// `SetScreenState(24)` (`0x82684b40`), entering the wear styles menu or coming back to it:

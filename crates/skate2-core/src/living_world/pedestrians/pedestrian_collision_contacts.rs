@@ -24,6 +24,9 @@ impl CollisionContact for crate::simulation_assembly_backend::constraint_session
 pub(crate) struct Skate3PedestrianContact {
     pub(crate) body: crate::simulation_rigid_body_pool::SimulationRigidBodyObservation,
     pub(crate) normal: [f32; 3],
+    /// The contact point, and the velocity of the skater's side (its board or its root).
+    pub(crate) point: [f32; 3],
+    pub(crate) velocity: [f32; 3],
     pub(crate) other: SimulationIslandBodyHandle,
 }
 enum AnyContact<'a> {

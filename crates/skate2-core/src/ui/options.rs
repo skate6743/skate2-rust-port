@@ -4,7 +4,7 @@
 //! `OnMenuSelect` (0x826871a0) picks for the front end, a free skate game or any other game, and
 //! Control Settings. In game the list leads with the Music Player (FE state 30). PC port addition: a
 //! Display Settings page after Control Settings holds the PC rows (PostFX, Fisheye, Frame Rate
-//! Cap, VSync, Resolution Scale, Frame Rate Counter, Fullscreen), saved in their own chunk, and
+//! Cap, VSync, Resolution Scale, Frame Rate Counter, Fullscreen, Brightness), saved in their own chunk, and
 //! an Online Settings page holds Show Lobby Chat, saved in `online-config.json`. Beside them the
 //! PC port calls Video Settings (`ID_GAMESETTINGS_VIDEO_SETTINGS`) Gameplay Settings, for its
 //! camera, HUD and subtitle rows, and the PC Field of View last. PC port addition: Control Settings'
@@ -13,8 +13,8 @@
 use super::{FeSoundRequest, pause_menu::PauseMenuInput};
 use crate::stick_settings::{ControllerSettings, DEADZONES, MULTIPLIERS, StickSettings};
 pub use skate2_formats::skater_profile::{
-    FIELD_OF_VIEWS, FrameRateCap, PcDisplaySettings, ProfileSettings, RESOLUTION_SCALES, RESOLUTION_SCALE_STEP,
-    VANILLA_FIELD_OF_VIEW,
+    BRIGHTNESSES, FIELD_OF_VIEWS, FrameRateCap, PcDisplaySettings, ProfileSettings, RESOLUTION_SCALES, RESOLUTION_SCALE_STEP,
+    VANILLA_BRIGHTNESS, VANILLA_FIELD_OF_VIEW,
 };
 use super::gameplay_modes::{Difficulty, PcGameplayModes, PhysicsMode, RAIN_VOLUME_STEPS, Weather};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
@@ -147,6 +147,8 @@ pub enum Row {
     StickAntiDeadzone,
     /// PC port addition: Gameplay Settings' field of view, on Edit Skater's morph knob.
     FieldOfView,
+    /// PC port addition: Display Settings' brightness, on the same knob.
+    Brightness,
     /// PC port addition: the Physics Settings page, its physics and Skate 3's difficulty.
     PhysicsSettings,
     PhysicsMode,
@@ -168,7 +170,7 @@ impl Row {
             | Self::OnlineSettings | Self::StickSettings | Self::LeftStick | Self::RightStick | Self::ResetSticks
             | Self::PhysicsSettings | Self::WeatherSettings => "option",
             Self::SfxVolume | Self::DialogueVolume | Self::MusicVolume | Self::RainVolume => "slider",
-            Self::StickDeadzone | Self::StickAntiDeadzone | Self::FieldOfView => "morph",
+            Self::StickDeadzone | Self::StickAntiDeadzone | Self::FieldOfView | Self::Brightness => "morph",
             Self::PostFx | Self::Fisheye | Self::FrameRateCap | Self::VSync | Self::ResolutionScale
             | Self::FpsCounter | Self::Fullscreen | Self::Subtitles | Self::CameraAngle | Self::GrindTransparency
             | Self::MiniMap | Self::Hud | Self::OffboardYAxis | Self::Vibration | Self::ShowLobbyChat
@@ -213,6 +215,7 @@ impl Row {
             Self::StickDeadzone => "Stick Deadzone",
             Self::StickAntiDeadzone => "Stick Anti-Deadzone",
             Self::FieldOfView => "Field of View",
+            Self::Brightness => "Brightness",
             Self::PhysicsSettings => "Physics Settings",
             Self::PhysicsMode => "Physics",
             Self::Difficulty => "Difficulty",
@@ -288,6 +291,7 @@ const DISPLAY: &[Row] = &[
     Row::ResolutionScale,
     Row::FpsCounter,
     Row::Fullscreen,
+    Row::Brightness,
 ];
 const ONLINE: &[Row] = &[Row::ShowLobbyChat, Row::ShowGhostPlayers];
 
@@ -461,6 +465,10 @@ const fn repeat_due(frames: u32) -> bool {
 /// 3, a steady 20 percent a second, as Edit Skater's morph knobs move at a steady pace.
 const fn slide_due(frames: u32) -> bool {
     frames == 0 || (frames >= 12 && (frames - 12) % 3 == 0)
+}
+/// The value a knob row of the display settings moves.
+fn knob(values: &mut PcDisplaySettings, row: Row) -> &mut u8 {
+    if row == Row::Brightness { &mut values.brightness } else { &mut values.field_of_view }
 }
 /// One step up or down, stopping at either end of `RESOLUTION_SCALES`.
 fn step_resolution_scale(value: u8, forward: bool) -> u8 {
@@ -687,8 +695,8 @@ impl Controller {
             self.stop_slider();
         }
         let Some(&row) = self.state.rows().get(self.state.selected) else { return Action::None };
-        if row == Row::FieldOfView {
-            self.update_field_of_view(input);
+        if matches!(row, Row::FieldOfView | Row::Brightness) {
+            self.update_knob(row, input);
             return Action::None;
         }
         if input.select && row.kind() == "option" {
@@ -843,15 +851,19 @@ impl Controller {
         self.sounds.push(if forward { "FE_SOUND_CORE_NAV_RIGHT" } else { "FE_SOUND_CORE_NAV_LEFT" });
         super::gameplay_modes::publish(*modes);
     }
-    /// PC port addition: Gameplay Settings' Field of View. The stick or the D-pad held moves its
-    /// knob a percent at a time at Edit Skater's steady pace, looping `FE_SOUND_CAS_SLIDER` while
-    /// it moves, and X puts it back to the original's; the camera follows at once.
-    fn update_field_of_view(&mut self, input: PauseMenuInput) {
+    /// PC port addition: Gameplay Settings' Field of View and Display Settings' Brightness. The
+    /// stick or the D-pad held moves the knob a percent at a time at Edit Skater's steady pace,
+    /// looping `FE_SOUND_CAS_SLIDER` while it moves, and X puts it back to the game's own; the
+    /// camera and the screen follow at once.
+    fn update_knob(&mut self, row: Row, input: PauseMenuInput) {
+        let (range, vanilla) =
+            if row == Row::Brightness { (BRIGHTNESSES, VANILLA_BRIGHTNESS) } else { (FIELD_OF_VIEWS, VANILLA_FIELD_OF_VIEW) };
         if input.misc {
             self.stop_slider();
-            if self.state.values.field_of_view != VANILLA_FIELD_OF_VIEW {
+            let value = knob(&mut self.state.values, row);
+            if *value != vanilla {
+                *value = vanilla;
                 self.sounds.push("FE_SOUND_CORE_A_BUTTON");
-                self.state.values.field_of_view = VANILLA_FIELD_OF_VIEW;
                 publish(&self.state.values);
             }
             return;
@@ -881,13 +893,13 @@ impl Controller {
         if !slide_due(frames) {
             return;
         }
-        let value = self.state.values.field_of_view;
-        let next = value.saturating_add_signed(direction).clamp(*FIELD_OF_VIEWS.start(), *FIELD_OF_VIEWS.end());
+        let value = *knob(&mut self.state.values, row);
+        let next = value.saturating_add_signed(direction).clamp(*range.start(), *range.end());
         if next == value {
             self.stop_slider();
             self.held = Some((direction, frames));
         } else {
-            self.state.values.field_of_view = next;
+            *knob(&mut self.state.values, row) = next;
             publish(&self.state.values);
             if !self.slider {
                 self.slider = true;
@@ -1005,7 +1017,7 @@ mod tests {
         assert_eq!(
             menu.snapshot().values,
             PcDisplaySettings { postfx: false, fisheye: false, frame_rate_cap: FrameRateCap::RefreshRate, fps_counter: false, fullscreen: false,
-                resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW }
+                resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS }
         );
         menu.update(press(|i| i.down = true), &mut settings);
         menu.update(press(|i| i.left = true), &mut settings);
@@ -1095,7 +1107,7 @@ mod tests {
         menu.acknowledge_intro();
         menu.update(press(|i| i.down = true), &mut settings);
         menu.update(press(|i| i.select = true), &mut settings);
-        assert_eq!(menu.snapshot().rows().last(), Some(&Row::Subtitles));
+        assert_eq!(menu.snapshot().rows().first(), Some(&Row::Subtitles));
         assert_eq!(Row::Subtitles.kind(), "selector");
         assert_eq!(Row::Subtitles.title(), "ID_GAMESETTINGS_SUBTITLE_TOGGLE");
         menu.take_sounds();
@@ -1240,12 +1252,16 @@ mod tests {
         let mut settings = ProfileSettings::default();
         let mut menu = Controller::default();
         menu.load(PcDisplaySettings::default());
-        menu.open(false, VideoScreen::MainMenu, &settings);
+        menu.open(true, VideoScreen::Game, &settings);
         menu.acknowledge_intro();
-        menu.update(press(|i| i.down = true), &mut settings);
+        // In a game: the Music Player and Audio Settings, then Gameplay Settings, whose last row it is.
+        for _ in 0..2 {
+            menu.update(press(|i| i.down = true), &mut settings);
+        }
         menu.update(press(|i| i.select = true), &mut settings);
-        assert_eq!(menu.snapshot().rows(), VIDEO_MAIN_MENU);
-        menu.update(press(|i| i.down = true), &mut settings);
+        assert_eq!(menu.snapshot().rows(), VIDEO_GAME);
+        menu.update(press(|i| i.up = true), &mut settings);
+        assert_eq!(menu.snapshot().rows()[menu.snapshot().selected], Row::FieldOfView);
         menu.take_sound_requests();
         // Held right: a step at once, then from 12 frames one every 3.
         for _ in 0..16 {
@@ -1263,6 +1279,41 @@ mod tests {
         assert_eq!(menu.snapshot().values.field_of_view, *FIELD_OF_VIEWS.start());
         menu.update(press(|i| i.misc = true), &mut settings);
         assert_eq!(menu.snapshot().values.field_of_view, VANILLA_FIELD_OF_VIEW);
+        assert!(!menu.display_dirty());
+    }
+    #[test]
+    fn brightness_slides_on_display_settings_and_x_resets_it() {
+        let mut settings = ProfileSettings::default();
+        let mut menu = Controller::default();
+        menu.load(PcDisplaySettings::default());
+        menu.open(false, VideoScreen::MainMenu, &settings);
+        menu.acknowledge_intro();
+        for _ in 0..3 {
+            menu.update(press(|i| i.down = true), &mut settings);
+        }
+        menu.update(press(|i| i.select = true), &mut settings);
+        assert_eq!(menu.snapshot().page, Page::Display);
+        // Up from the first row wraps to the last, the knob.
+        menu.update(press(|i| i.up = true), &mut settings);
+        assert_eq!(menu.snapshot().rows()[menu.snapshot().selected], Row::Brightness);
+        menu.take_sound_requests();
+        for _ in 0..16 {
+            menu.update(press(|i| i.morph_axis = 1.), &mut settings);
+        }
+        assert_eq!(menu.snapshot().values.brightness, 103);
+        assert_eq!(menu.take_sound_requests(), [FeSoundRequest::Loop(SLIDER_SOUND)]);
+        assert!(menu.display_dirty());
+        for _ in 0..400 {
+            menu.update(press(|i| i.morph_axis_secondary = 1.), &mut settings);
+        }
+        assert_eq!(menu.snapshot().values.brightness, *BRIGHTNESSES.end());
+        for _ in 0..600 {
+            menu.update(press(|i| i.morph_axis_secondary = -1.), &mut settings);
+        }
+        assert_eq!(menu.snapshot().values.brightness, *BRIGHTNESSES.start());
+        assert_eq!(menu.snapshot().values.field_of_view, VANILLA_FIELD_OF_VIEW);
+        menu.update(press(|i| i.misc = true), &mut settings);
+        assert_eq!(menu.snapshot().values.brightness, VANILLA_BRIGHTNESS);
         assert!(!menu.display_dirty());
     }
     /// The front end's Options, Control Settings, then Stick Settings.

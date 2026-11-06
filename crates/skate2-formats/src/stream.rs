@@ -124,7 +124,7 @@ pub struct CollectionMapEntry {
     pub alignment_pad: i32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CollectionMap {
     pub version: u32,
     pub stamp: u64,
@@ -201,7 +201,7 @@ pub struct CollectionSpaceEntry {
     pub geometry_max: [f32; 4],
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CollectionSpace {
     pub version: u32,
     pub stamp: u64,

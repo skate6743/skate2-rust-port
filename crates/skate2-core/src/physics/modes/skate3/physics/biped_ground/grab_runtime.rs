@@ -20,6 +20,9 @@ pub(crate) struct Owner {
     requests: [Option<Descriptor>; 2],
     data: [Option<Record>; 2],
     data_ready: [bool; 2],
+    /// The records last published to ProcessedPhysIn's GrabSpline payloads, retained like them
+    /// when a publication clears only the readiness bit.
+    published: [Option<Record>; 2],
     interactable_request: Option<[Line; 5]>,
     interactable_result: Option<Option<u32>>,
     pub(crate) interactable_latched: bool,
@@ -167,6 +170,16 @@ impl Owner {
         Ok(())
     }
 
+    /// The validated candidates ConsiderGrabSplineQueryResults walks.
+    pub(crate) fn validated(&self) -> &[Record] {
+        &self.validated
+    }
+
+    /// ProcessedPhysIn's first GrabSpline payload, which Skitching copies.
+    pub(crate) fn published_primary(&self) -> Option<&Record> {
+        self.published[0].as_ref()
+    }
+
     pub(crate) fn best(&self, position: Vector) -> Option<Record> {
         selection::best(&self.validated, position)
     }
@@ -198,6 +211,11 @@ impl Owner {
             self.data_ready[i] = false;
             record
         });
+        for (slot, record) in self.published.iter_mut().zip(&records) {
+            if let Some(record) = record {
+                *slot = Some(record.clone());
+            }
+        }
         let object = self.interactable_result.take();
         if let Some(result) = object {
             self.interactable_latched = result.is_some();

@@ -292,8 +292,18 @@ impl CityStreaming {
                         let shared = ProxyWorldOwner::load_shared_stream(&mounts, stream)?;
                         let order = {
                             let mut owner = shared.lock().map_err(|_| "district proxy world lock poisoned")?;
+                            // SKATE2_DIAGNOSTIC_DISTRICT_PROXIES_SHOWN: no high tile hides a proxy, so
+                            // every district proxy stays drawn (a comparison for holes in the distance).
+                            let shown = std::env::var_os("SKATE2_DIAGNOSTIC_DISTRICT_PROXIES_SHOWN").is_some();
+                            let trace = std::env::var_os("SKATE2_TRACE_DISTRICT_PROXY").is_some();
                             for &(id, x, z) in &tiles {
-                                owner.add_high_collection(id, x, z)?;
+                                if !shown {
+                                    owner.add_high_collection(id, x, z)?;
+                                }
+                                if trace {
+                                    let proxy = owner.proxy_of(id).map_or_else(|| "none".to_owned(), |proxy| format!("{proxy:016x}"));
+                                    eprintln!("{stream} tile ({x},{z}) high {id:016x} hides proxy {proxy}");
+                                }
                             }
                             owner.collection_ids()
                         };
@@ -451,15 +461,24 @@ impl CityStreaming {
         ->Option<[skate2_core::streaming::replay_focus::VisualFocus;2]> {
         use skate2_core::streaming::replay_focus::VisualFocus;
         let (pres,tex)=self.sources.as_ref()?;
-        let more=self.selectable();
+        // A Skate 3 district stands where San Vanelona does: as `select`, the focuses take from it
+        // alone, and without its Tex file the texture focus is empty.
+        let (pres,tex,more)=match self.exclusive() {
+            Some(district)=>(&district.pres,district.tex.as_ref(),None),
+            None=>(pres,Some(tex),self.selectable()),
+        };
         let additional=|source:&FocusSource|(Arc::clone(&source.space),Arc::clone(&source.file.map));
+        let texture_focus=match tex {
+            Some(tex)=>VisualFocus {space:Arc::clone(&tex.space),map:Arc::clone(&tex.file.map),xml:tex.xml.clone(),
+                additional:more.and_then(|world|world.tex.as_ref()).map(additional),radius:tex.radius,
+                resident:textures.collections.iter().map(|c|c.id).collect(),texture:true},
+            None=>VisualFocus {space:Arc::default(),map:Arc::default(),xml:None,additional:None,radius:0.,resident:Vec::new(),texture:true},
+        };
         Some([
             VisualFocus {space:Arc::clone(&pres.space),map:Arc::clone(&pres.file.map),xml:pres.xml.clone(),
                 additional:more.map(|world|additional(&world.pres)),radius:pres.radius,
                 resident:scene.collections.iter().map(|c|c.id).collect(),texture:false},
-            VisualFocus {space:Arc::clone(&tex.space),map:Arc::clone(&tex.file.map),xml:tex.xml.clone(),
-                additional:more.and_then(|world|world.tex.as_ref()).map(additional),radius:tex.radius,
-                resident:textures.collections.iter().map(|c|c.id).collect(),texture:true},
+            texture_focus,
         ])
     }
 
@@ -547,9 +566,11 @@ impl CityStreaming {
         }
         let proxy_changed = proxy_changed || district_changed;
         let focus_enabled = !disabled && !position.iter().any(|x| x.is_nan());
-        // A hull registration change also needs a new draw list.
+        // A hull registration change also needs a new draw list. The scene holds each hull's
+        // presentation collections, then its simulation collections' visual indicators
+        // (`hull_presentation::sync`).
         let hulls_changed = scene.as_ref().is_some_and(|scene| {
-            !scene.hulls.iter().map(|c| c.id).eq(hulls.iter().flat_map(|hull| hull.collections.iter().copied()))
+            !scene.hulls.iter().map(|c| c.id).eq(hulls.iter().flat_map(|hull| hull.collections.iter().chain(&hull.sim_collections).copied()))
         });
         if !focus_enabled && !proxy_changed && !hulls_changed {
             return Ok(None);

@@ -295,6 +295,9 @@ pub struct WorldAudioState {
     /// PC port: the local skater stands in a linked Skate 3 district, whose painter's
     /// `ambience_key` names one of Skate 3's beds.
     pub skate3_district: bool,
+    /// PC port: that district's name (`downtown`, `industrial`, `university`), whose own
+    /// `reverb_<district>.ems` volumes TU3 loads there.
+    pub skate3_district_name: Option<&'static str>,
     /// `AudioPresentation` `mVehicleCount`/`mVehicle`: the cars `DoSimSubmit` 0x827fb2f8 found
     /// around the camera, with their presentation matrices.
     pub vehicles: Vec<crate::world::traffic::VehicleData>,
@@ -726,7 +729,7 @@ impl AudioSystem {
     }
 
     /// PC port: a linked Skate 3 data folder's attributes, whose district ambience beds play in
-    /// its districts; none unlinked.
+    /// its districts; none unlinked. Data linked or unlinked while the game runs sets them again.
     pub fn set_skate3_attributes(&mut self, vault: Option<Vault>) {
         let vault = vault.map(Arc::new);
         self.skate3_vault.clone_from(&vault);
@@ -735,6 +738,11 @@ impl AudioSystem {
             environment.set_skate3(vault);
         } else {
             self.pending_skate3 = Some(vault);
+        }
+        if let Some(players) = self.players.as_mut() {
+            for state in &mut players.states {
+                state.tricks.skate3_link_changed();
+            }
         }
     }
 
@@ -1584,9 +1592,12 @@ impl AudioSystem {
         self.update_speaker_object(self.camera_man_io, speech::CHANNEL_CAMERA_MAN);
         let (reverb_key, skate3_reverb) = self.world.as_ref().map_or((0, false), |world| (world.reverb_key, world.skate3_district));
         let local_board = self.world.as_ref().and_then(|world| world.player.skaters.iter().find(|skater| skater.local)).map(|skater| (skater.board_pos, skater.board_look));
+        // PC port: a district's reverb volumes name Skate 3's attributes.
+        let volumes_vault = self.emitter_system.statuses_vault();
         if let Some(map) = self.mixer.map_mut() {
             let presentation = self.state.presentation.is_some();
-            self.reverb.update_params(t, presentation, reverb_key, skate3_reverb, local_board, &self.emitter_system, &mut self.core, map, &self.vault, &mut self.global_effects);
+            let vault = volumes_vault.as_deref().unwrap_or(&self.vault);
+            self.reverb.update_params(t, presentation, reverb_key, skate3_reverb, local_board, &self.emitter_system, &mut self.core, map, vault, &mut self.global_effects);
         }
         self.update_nis();
         self.update_pause();
@@ -2146,6 +2157,22 @@ impl AudioSystem {
         let presentation_key = self.world.as_ref().filter(|_| self.state.presentation.is_some()).map(|world| world.emitter_key);
         let key = emitter_system::audio_emitter_key(presentation_key, self.state.challenge_type);
         let district = self.world.as_ref().is_some_and(|world| world.skate3_district);
+        // PC port: the district's own reverb volumes, read from Skate 3's `audiofiles.big` once
+        // the district changes.
+        let file = self.world.as_ref().and_then(|world| world.skate3_district_name).map(|name| format!("reverb_{name}.ems"));
+        if self.emitter_system.skate3_district_file() != file.as_deref() {
+            let loaded = file.as_ref().and_then(|file| {
+                let vault = self.skate3_vault.clone()?;
+                let files = self.core.stream_pools.files()?;
+                let path = format!("{}data\\audio\\audiofiles.big|data\\audio\\{file}", crate::rwac::stream_pool::SKATE3_FILES);
+                let size = files.size(&path)?;
+                let mut bytes = vec![0u8; usize::try_from(size).ok()?];
+                files.read_at(&path, 0, &mut bytes).then_some((bytes, vault))
+            });
+            let count = loaded.as_ref().map(|(bytes, _)| crate::world::emitter_system::parse_data_file(bytes).len());
+            eprintln!("skate 3 district reverb: {file:?}, {count:?} volumes");
+            self.emitter_system.set_skate3_district_volumes(file, loaded);
+        }
         let Self { core, mixer, vault, rng, microphones, aems, emitters, emitter_system, .. } = self;
         emitter_system.set_skate3_district(district);
         let (Some(map), Some(emitters)) = (mixer.map_mut(), emitters.as_mut()) else { return };

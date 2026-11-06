@@ -438,8 +438,12 @@ impl EnvironmentManager {
     }
 
     /// PC port: a linked Skate 3 data folder's attributes (its `aud_wp_ambiences`); none unlinked.
+    /// Data linked again has its ambience data read again.
     pub fn set_skate3(&mut self, vault: Option<Arc<Vault>>) {
         self.skate3 = vault;
+        if let Some(ambience) = self.ambience.as_mut() {
+            ambience.skate3_infos = None;
+        }
     }
 
     /// `CSTATEMGR_Base::UpdateParams`. The first one enters gameplay (`CreateState`, `Setup(1)`,

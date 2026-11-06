@@ -277,13 +277,17 @@ pub(crate) fn advance(
             board_correction_pending: &mut skater.skeleton_output.correction.pending,
             // Original830BD4A0 initializer82F825F0 splats8216DEE0=-1.
             move_future_deck: &mut move_future,
-            offboard_grab: &mut skater.offboard_grab,
         },
     );
     // These source writes occur during update. Publish even on a later branch
     // error so retrying cannot silently erase a completed physical side effect.
     skater.player_input.processed.vectors_400_416[0] = velocity.map(f32::to_bits);
     skater.animated_skeleton.roots.predicted_board_position = predicted;
+    //82D37F04..F10: the Update's tail checks for a grabbable object on the same
+    //PlayerGrabSpline owner as offboard, or invalidates its query.
+    if result.is_ok() {
+        super::ground_grab::check(skater);
+    }
     result
 }
 fn raw(v: [u32; 4]) -> [f32; 4] {

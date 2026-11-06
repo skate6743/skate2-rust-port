@@ -533,6 +533,10 @@ pub struct SelectedLiveSession<T, C> {
     /// `sGameInfo.additionalWorldLocation`: the world location of the additional world loaded.
     additional_location: Option<u64>,
     map_menu: crate::ui::map_menu::MapMenuController,
+    /// The free-skate map's destinations as the map last opened with them: the main world's,
+    /// then offline a linked Skate 3 data folder's districts' teleports (PC port); none before
+    /// the map first opens.
+    map_locations: Option<Vec<crate::ui::map_menu::MapLocation>>,
     editor: Option<crate::edit_skater_session::EditSkaterSession>,
     /// The sound requests Edit Skater left when it closed.
     editor_sounds: Vec<crate::ui::FeSoundRequest>,
@@ -689,6 +693,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             presentation_additional_world: None,
             additional_location: None,
             map_menu: crate::ui::map_menu::MapMenuController::default(),
+            map_locations: None,
             editor: None,
             editor_sounds: Vec::new(),
             frontend_fade: Default::default(),
@@ -2553,17 +2558,31 @@ impl<T, C> SelectedLiveSession<T, C> {
             }
             if policy.has_focus {
                 let assets = self.inner.assets.as_ref().expect("ready assets");
-                match self.map_menu.update(frontend_input, &assets.map_catalog.locations) {
+                let locations = self.map_locations.as_deref().unwrap_or(&assets.map_catalog.locations);
+                match self.map_menu.update(frontend_input, locations) {
                     crate::ui::map_menu::MapMenuAction::None => {},
                     crate::ui::map_menu::MapMenuAction::Close => {
                         self.map_menu.close();
                         self.pause_menu.reenter();
                     }
                     crate::ui::map_menu::MapMenuAction::Teleport(key) => {
-                        let transform = assets.map_catalog.transform(key).ok_or_else(||
-                            SelectedLiveError::failed(Stage::SessionMarker, "Map destination transform absent"))?;
-                        // The Map's destinations are the main world's.
-                        let world = self.world_operation(u64::MAX, None).unwrap_or_default();
+                        // PC port: a linked Skate 3 district's teleport travels into its district
+                        // at the spot's global locator, lit by its render location, as the
+                        // career's map's does.
+                        let skate3 = crate::skate3::linked()
+                            .and_then(|data| data.spot(key).map(|(district, spot)| (district.spec.stream, district.render_location, spot.transform)));
+                        let (world, transform) = match skate3 {
+                            Some((stream, location, transform)) => {
+                                eprintln!("travel: skate 3 teleport into {stream}");
+                                (self.world_operation(location, Some(stream)).unwrap_or_default(), transform)
+                            }
+                            None => {
+                                let transform = assets.map_catalog.transform(key).ok_or_else(||
+                                    SelectedLiveError::failed(Stage::SessionMarker, "Map destination transform absent"))?;
+                                // The Map's other destinations are the main world's.
+                                (self.world_operation(u64::MAX, None).unwrap_or_default(), transform)
+                            }
+                        };
                         self.start_world_travel(world, transform, false);
                     },
                 }
@@ -2792,6 +2811,16 @@ impl<T, C> SelectedLiveSession<T, C> {
         if was_paused && pause.visible && !pause.jacked && policy.has_focus && frontend_input.select
             && self.pause_menu.selected_option() == crate::ui::pause_menu::PauseMenuOption::Map {
             self.map_menu.open();
+            // PC port: offline free skate's map also lists a linked Skate 3 data folder's
+            // districts' teleports under the downloaded content, as the career's map does.
+            let skate3 = self.career.is_none() && self.online.game.is_none();
+            self.map_locations = self.inner.assets.as_ref().map(|assets| {
+                let mut locations = assets.map_catalog.locations.clone();
+                if skate3 {
+                    locations.extend(crate::ui::map_menu::skate3_locations());
+                }
+                locations
+            });
             if let Some(career) = self.career.as_mut() {
                 career.open_challenge_map(self.additional_location);
             }
@@ -3913,6 +3942,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let mut sounds: Vec<_> =
             self.pause_menu.take_sounds().into_iter().map(FeSoundRequest::Play).collect();
         sounds.extend(self.take_career_sounds().into_iter().map(FeSoundRequest::Play));
+        sounds.extend(self.map_menu.take_sounds().into_iter().map(FeSoundRequest::Play));
         if let Some(menu) = self.main_menu.as_mut() {
             sounds.extend(menu.take_sounds().into_iter().map(FeSoundRequest::Play));
         }
@@ -3960,7 +3990,10 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
     #[must_use]
     pub fn map_locations(&self) -> &[crate::ui::map_menu::MapLocation] {
-        self.inner.assets.as_ref().map_or(&[], |assets| assets.map_catalog.locations.as_slice())
+        match &self.map_locations {
+            Some(locations) => locations.as_slice(),
+            None => self.inner.assets.as_ref().map_or(&[], |assets| assets.map_catalog.locations.as_slice()),
+        }
     }
     /// MapIconManager826187b8 uses Actor position and Entity::GetHeading,
     /// whose Actor transform is GetEffectiveSkaterTransform825ed4c0.
@@ -4266,6 +4299,21 @@ impl<T, C> SelectedLiveSession<T, C> {
     #[must_use]
     pub fn audio_skate3_district(&self) -> bool {
         crate::skate3::district_active()
+    }
+
+    /// PC port: the linked Skate 3 district the world shows, by its key less `dist_`
+    /// (`downtown`, `industrial`, `university`): TU3 loads that district's own emitter files
+    /// (`reverb_<district>.ems`) there.
+    #[must_use]
+    pub fn audio_skate3_district_name(&self) -> Option<&'static str> {
+        let key = self.world_render_location()?;
+        crate::skate3::linked()?
+            .districts
+            .iter()
+            .find(|district| district.render_location == key)?
+            .spec
+            .key
+            .strip_prefix("dist_")
     }
 
     /// `AudioPresentation::DoSimSubmit` 0x827fb2f8's `GlobalData.emitterKey`: `LayerMan::GetAttribData`

@@ -428,7 +428,7 @@ fn hud_setup_distance_data(_: &mut Lua<World>, world: &mut World, call: &NativeC
 fn hud_show_central_message(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let message = CentralMessage {
         hal_id: get_string(call, 0).unwrap_or_default(),
-        colour: get_int_or(call, 1, 0),
+        colour: super::skate3_natives::central_colour(world, get_int_or(call, 1, 0)),
         args: [get_string_or(call, 2, ""), get_string_or(call, 3, ""), get_string_or(call, 4, ""), get_string_or(call, 5, "")],
         audio_hook: get_int_or(call, 6, 0),
     };

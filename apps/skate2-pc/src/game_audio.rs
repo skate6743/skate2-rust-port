@@ -10,6 +10,7 @@ use skate2_audio::player::pos3d::CameraMatrix;
 use skate2_audio::player::skateboard::GrainFiles;
 use skate2_audio::player::PlayerFrame;
 use skate2_audio::presentation::{audio_material, multiplier_flags, CollisionInfo, PhysOutView};
+use skate2_audio::rwac::stream_pool::GameStreamFiles;
 use skate2_audio::system::{AemsFiles, AudioSystem, FeSound, GameAudioState, WorldAudioState};
 use skate2_audio::vault::{AttribSource, Vault};
 use skate2_audio::world::pedestrian::{PedStateOut, PedestrianData};
@@ -318,7 +319,7 @@ fn dmo_swap_files(mounts: &MountSet) -> Result<DmoSwapFiles, String> {
 
 /// `AudioSystem::EnterWorld` with the front-end banks of `data\audio\splicerfe.big`, the skater
 /// and collision splicer banks, `data\audio\MixMapSK8.mxb`, `skater.vlt` and its `fe` collections.
-fn load_system(mounts: &MountSet) -> Result<(AudioSystem, HashMap<String, u64>), String> {
+fn load_system(mounts: &MountSet) -> Result<(AudioSystem, HashMap<String, u64>, Arc<GameStreamFiles>), String> {
     let root = game_root(mounts)?;
     let banks = MountedBig::open(root.join("data/audio/splicerfe.big"), false).map_err(|e| e.to_string())?;
     let fe_bank: Arc<[u8]> = banks.read_path("Sk82_FE.bnk").map_err(|e| format!("Sk82_FE.bnk: {e}"))?.into();
@@ -336,12 +337,16 @@ fn load_system(mounts: &MountSet) -> Result<(AudioSystem, HashMap<String, u64>),
     // `rw::core::filesys` for the streamed ambience beds and `ambienceresident.big`; with Skate 3
     // data linked, its own ambience data for its districts.
     let skate3 = skate2_core::skate3::linked();
-    system.set_stream_files(Arc::new(
-        skate2_audio::rwac::stream_pool::GameStreamFiles::new(root).with_skate3(skate3.as_ref().map(|data| data.root.clone())),
-    ));
-    system.set_skate3_attributes(skate3.map(|data| Vault::new(Some(Box::new(VaultSource(Arc::clone(&data.db)))))));
+    let files = Arc::new(GameStreamFiles::new(root).with_skate3(skate3.as_ref().map(|data| data.root.clone())));
+    system.set_stream_files(files.clone());
+    system.set_skate3_attributes(skate3.as_deref().map(skate3_vault));
     system.enter_world(Vault::new(Some(Box::new(VaultSource(Arc::new(db))))), fe_bank, menu_bank, world_banks, mix_map, sounds, grains, aems)?;
-    Ok((system, globals))
+    Ok((system, globals, files))
+}
+
+/// PC port: a linked Skate 3 data folder's attributes, as the audio reads them.
+fn skate3_vault(data: &skate2_core::skate3::Skate3Data) -> Vault {
+    Vault::new(Some(Box::new(VaultSource(Arc::clone(&data.db)))))
 }
 
 /// The core's `PhysOut` copy as the audio presentation reads it.
@@ -477,6 +482,8 @@ pub(crate) struct AudioWorldInput {
     pub(crate) ambience_key: u64,
     /// PC port: the key is a linked Skate 3 district's (`audio_skate3_district`).
     pub(crate) skate3_district: bool,
+    /// PC port: that district's name (`audio_skate3_district_name`).
+    pub(crate) skate3_district_name: Option<&'static str>,
     /// `GlobalData.emitterKey` (`SelectedLiveSession::audio_emitter_key`): the location's random
     /// emitters, which `AudioSystem::GetEmitterKey` 0x824f1cf0 returns outside races.
     pub(crate) emitter_key: u64,
@@ -679,6 +686,11 @@ pub(crate) struct GameAudio {
     output: AudioOutput,
     /// The device's clock; none for the dump, whose mix the update renders.
     clock: Option<Arc<DeviceClock>>,
+    /// The files the audio reads, whose Skate 3 data folder follows the link.
+    files: Arc<GameStreamFiles>,
+    /// PC port: the Skate 3 link generation (`skate2_core::skate3::link_generation`) the audio
+    /// last read the linked data at.
+    skate3_link: u64,
 }
 
 /// The game's `IAudioInterface` over the audio system: the scenes' speech, posts, music and
@@ -787,7 +799,8 @@ impl skate2_core::nis::audio::AudioInterface for GameAudioInterface {
 impl GameAudio {
     /// `AudioSystem::EnterWorld`, then the output stream.
     pub(crate) fn start(mounts: &MountSet) -> Result<Self, String> {
-        let (system, globals) = load_system(mounts)?;
+        let skate3_link = skate2_core::skate3::link_generation();
+        let (system, globals, files) = load_system(mounts)?;
         let system = Arc::new(Mutex::new(system));
         let dmo_swap_files = Arc::new(dmo_swap_files(mounts)?);
         if let Some(path) = std::env::var_os("SKATE2_AUDIO_DUMP") {
@@ -795,7 +808,7 @@ impl GameAudio {
             eprintln!("audio: {} fe sounds, mix dumped to {}", globals.len(), PathBuf::from(&path).display());
             let dump = Dump { file: std::io::BufWriter::new(file), simulated: 0.0, mixed: 0.0, block: Vec::new(), weather: Default::default() };
             return Ok(Self { system, globals, skaters: Vec::new(), dmo_swap_files, output: AudioOutput::Dump(dump), clock: None,
-                exporting:Arc::new(AtomicBool::new(false)),export_pending:VecDeque::new(),export_weather:Default::default() });
+                exporting:Arc::new(AtomicBool::new(false)),export_pending:VecDeque::new(),export_weather:Default::default(), files, skate3_link });
         }
 
         let host = cpal::default_host();
@@ -842,7 +855,7 @@ impl GameAudio {
             config.channels,
             supported.sample_format()
         );
-        Ok(Self { system, globals, skaters: Vec::new(), dmo_swap_files, output: AudioOutput::Device { _stream: stream }, clock: Some(clock),exporting,export_pending:VecDeque::new(),export_weather:Default::default() })
+        Ok(Self { system, globals, skaters: Vec::new(), dmo_swap_files, output: AudioOutput::Device { _stream: stream }, clock: Some(clock),exporting,export_pending:VecDeque::new(),export_weather:Default::default(), files, skate3_link })
     }
 
     /// The audio system as the career's scenes and challenge audio manager call it
@@ -958,6 +971,15 @@ impl GameAudio {
     /// One game frame of `AudioSystem::Update`: the world (camera, the local skater's
     /// `FillSkaterData` as player 0) when the session has one, else the front-end branch.
     pub(crate) fn update(&mut self, dt: f32, state: GameAudioState, world: Option<AudioWorldInput>) {
+        // PC port: Skate 3 data linked or unlinked since the audio read it: its files and
+        // attributes again, for its districts' ambience and the Skate 3 physics' sounds.
+        let link = skate2_core::skate3::link_generation();
+        if link != self.skate3_link {
+            self.skate3_link = link;
+            let skate3 = skate2_core::skate3::linked();
+            self.files.set_skate3(skate3.as_ref().map(|data| data.root.clone()));
+            lock(&self.system).set_skate3_attributes(skate3.as_deref().map(skate3_vault));
+        }
         if let Some(world) = world.as_ref() {
             if world.front_end {
                 self.skaters = world.skaters.clone().unwrap_or_default();
@@ -1006,6 +1028,7 @@ impl GameAudio {
                 reverb_key: world.reverb_key,
                 ambience_key: world.ambience_key,
                 skate3_district: world.skate3_district,
+                skate3_district_name: world.skate3_district_name,
                 emitter_key: world.emitter_key,
                 pedestrians: world.pedestrians.iter().map(pedestrian_data).collect(),
                 vehicles: world.vehicles.iter().map(vehicle_data).collect(),
@@ -1082,7 +1105,7 @@ mod tests {
         for spec in SKATE2_ARCHIVES.iter().take(4) {
             mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
         }
-        let (mut system, globals) = load_system(&mounts).unwrap();
+        let (mut system, globals, _) = load_system(&mounts).unwrap();
         let unresolved: Vec<_> = globals.iter().filter(|(_, key)| system.fe_sound(**key).is_none()).map(|(name, _)| name.clone()).collect();
         assert!(unresolved.is_empty(), "globals without an fe collection: {unresolved:?}");
         // `pause_menu` itself has Volume 0.0 in skater.vlt; the press sound is the audible one.
@@ -1119,7 +1142,7 @@ mod tests {
         for spec in SKATE2_ARCHIVES.iter().take(4) {
             mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
         }
-        let (mut system, _) = load_system(&mounts).unwrap();
+        let (mut system, _, _) = load_system(&mounts).unwrap();
         system.queue_nis_post(5008);
         system.queue_nis_speech(40, 5008);
         let mut stereo = Vec::new();
@@ -1156,7 +1179,7 @@ mod tests {
         for spec in SKATE2_ARCHIVES.iter().take(4) {
             mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
         }
-        let (mut system, _) = load_system(&mounts).unwrap();
+        let (mut system, _, _) = load_system(&mounts).unwrap();
         let mut stereo = Vec::new();
         let mut mixed = 0.0f64;
         for tick in 0u32..240 {

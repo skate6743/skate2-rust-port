@@ -98,6 +98,14 @@ pub(crate) struct Skate3ControllerState {
     pub offboard_air_selector: super::offboard::air_selector::AirSelector,
     pub offboard_feet: skate3_core::player::offboard::board_possession::manager::State,
     pub offboard_grab: super::biped_ground::grab_runtime::Owner,
+    /// PhysState_Skitching (104) and PhysicsGround's grabbable-object check settings (absent
+    /// without the game's skitching collection).
+    pub skitching: super::skitching::Skitching,
+    pub ground_grab: Option<super::ground_grab::Settings>,
+    /// This tick's Skitching FillPhysOut values that the PhysOut record does not hold.
+    pub skitch_output: Option<super::skitching::Output>,
+    /// Skitching's grab manager messages, sent to the host world after the tick.
+    pub skitch_messages: Vec<super::skitching::Message>,
     /// PC port: the pushing state's follow (TU3 Skeleton::UpdateOffBoardPushing's skeleton COM
     /// target and turn), set by the host's pushing driver for the next BipedGround update.
     pub pushing_follow: Option<super::biped_ground::PushingFollow>,
@@ -355,6 +363,10 @@ impl Skate3ControllerState {
             ),
             offboard_feet: Default::default(),
             offboard_grab: Default::default(),
+            skitching: super::skitching::Skitching::load(&data),
+            ground_grab: super::ground_grab::Settings::load(&data).ok(),
+            skitch_output: None,
+            skitch_messages: Vec::new(),
             pushing_follow: None,
             animation_input,
             animation_feedback: AnimationFeedback::load(&data)?,
