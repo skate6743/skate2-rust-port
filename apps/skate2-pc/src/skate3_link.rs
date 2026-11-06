@@ -151,6 +151,7 @@ impl Skate3Link {
                 }
                 text.push_str("^- Skate 3 clothing in Edit Skater's Merchandise");
                 text.push_str("^- Skate 3 Physics available in Physics Settings");
+                text.push_str("^- Skate 3 Online Challenges now available");
                 if let Err(error) = config.save() {
                     text.push_str(&format!("^^config.json could not be saved ({error}): the data stays linked until the game closes."));
                 }
