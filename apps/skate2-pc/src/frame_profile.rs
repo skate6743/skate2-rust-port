@@ -59,6 +59,8 @@ struct Window {
     frames: u64,
     mean: [f64; METRICS],
     worst: Sample,
+    /// Each metric's highest value this window, whichever frame had it.
+    peak: [f64; METRICS],
     p95: f64,
 }
 pub(super) struct FrameProfile {
@@ -70,6 +72,7 @@ pub(super) struct FrameProfile {
     frames: u64,
     totals: [f64; METRICS],
     worst: Sample,
+    peak: [f64; METRICS],
     durations: Vec<f64>,
     windows: VecDeque<Window>,
     image: ImagePacing,
@@ -88,6 +91,7 @@ impl FrameProfile {
             frames: 0,
             totals: [0.; METRICS],
             worst: Sample::default(),
+            peak: [0.; METRICS],
             durations: Vec::with_capacity(4096),
             windows: VecDeque::new(),
             image: ImagePacing::default(),
@@ -164,6 +168,9 @@ impl FrameProfile {
         for (total, value) in self.totals.iter_mut().zip(milliseconds) {
             *total += value;
         }
+        for (peak, value) in self.peak.iter_mut().zip(milliseconds) {
+            *peak = peak.max(value);
+        }
         if milliseconds[0] >= self.worst.milliseconds[0] {
             self.worst = sample;
         }
@@ -197,6 +204,7 @@ impl FrameProfile {
             frames: self.frames,
             mean: self.totals.map(|total| total / self.frames as f64),
             worst: self.worst,
+            peak: self.peak,
             p95,
         });
         self.frames = 0;
@@ -205,6 +213,7 @@ impl FrameProfile {
         self.gpu_totals = [0.; 4];
         self.totals = [0.; METRICS];
         self.worst = Sample::default();
+        self.peak = [0.; METRICS];
         self.durations.clear();
         self.window_start = now;
     }
@@ -223,7 +232,7 @@ impl FrameProfile {
             ",worst_ticks,worst_x,worst_y,worst_z,worst_map_objects,worst_map_drawn,worst_map_islands,worst_world_shadow_islands,worst_dynamic_objects,worst_vehicle_visuals,worst_vehicle_draws,worst_car_opacity,worst_car_x,worst_car_y,worst_car_z,worst_car_palette_x,worst_car_palette_y,worst_car_palette_z,worst_car_palette_rows,worst_car_axis_x,worst_car_axis_y,worst_car_axis_z,window_gpu_samples,window_gpu_dynamic_ms,window_gpu_world_ms,window_gpu_scene_ms,window_gpu_overlay_ms,worst_map_calls,image_intervals,image_max_ms,image_late,image_mean_deviation_ms,image_skips,fps_counter_min,ticks_per_frame,worker_ticks_per_frame,simulation_ticks_per_second,sim_debt_max_ms,sim_lock_wait_mean_ms,sim_ready_wait_mean_ms,tick_completion_mean_ms,tick_finish_mean_ms,post_tick_presentation_mean_ms,catch_up_budget_max"
         )?;
         for window in &self.windows {
-            for (kind, values) in [("mean", window.mean), ("worst", window.worst.milliseconds)] {
+            for (kind, values) in [("mean", window.mean), ("worst", window.worst.milliseconds), ("peak", window.peak)] {
                 write!(
                     file,
                     "{:.3},{kind},{:.2},{:.4}",

@@ -1063,6 +1063,8 @@ impl SelectedLivingWorldDmo {
         let (center, _) =
             local_skater_census_centre(actor).map_err(SelectedLivingWorldDmoError::World)?;
         let recipes=recipes.ok_or_else(|| SelectedLivingWorldDmoError::Pedestrians("pedestrian execution session absent".into()))?;
+        use crate::diagnostics::frame_profile as profile;
+        let span=profile::span(profile::LW2_LOS);
         recipes.update_pedestrian_los_states(world, cvars, center)
             .map_err(SelectedLivingWorldDmoError::Pedestrians)?;
         let owner = Arc::clone(world.grind_services.living_world());
@@ -1074,8 +1076,12 @@ impl SelectedLivingWorldDmo {
             living.dynamic_object_update_los_states(center,self.registered_vault().expect("checked above"))
                 .map_err(SelectedLivingWorldDmoError::Pedestrians)?;
         }
+        drop(span);
+        let span=profile::span(profile::LW2_CHASE);
         recipes.update_chase_manager(world,cvars,UPDATE_TIME,ground,ai_respawn)
             .map_err(SelectedLivingWorldDmoError::Pedestrians)?;
+        drop(span);
+        let span=profile::span(profile::LW2_PEDESTRIANS);
         {
             let mut living=owner.lock().map_err(|_|SelectedLivingWorldDmoError::LivingWorldLock)?;
             living.pedestrian_execution.advance();
@@ -1099,17 +1105,23 @@ impl SelectedLivingWorldDmo {
             .try_local_index().map_err(SelectedLivingWorldDmoError::Identity)?;
         recipes.update_pedestrian_preframe(world,cvars,ground,center,local_index,random.as_deref_mut())
             .map_err(SelectedLivingWorldDmoError::Pedestrians)?;
+        drop(span);
         let mut living = owner
             .lock()
             .map_err(|_| SelectedLivingWorldDmoError::LivingWorldLock)?;
+        let span=profile::span(profile::LW2_VEHICLES);
         living
             .vehicle_update_preframe(center, actor, cvars)
             .map_err(SelectedLivingWorldDmoError::Vehicles)?;
+        drop(span);
+        let span=profile::span(profile::LW2_DMO);
         {
             let painter=recipes.painter.lock().map_err(|_|SelectedLivingWorldDmoError::Pedestrians("DMO preframe painter lock".into()))?;
             recipes.update_dmo_preframe(&mut living,world,center,cvars,&painter,actor)
                 .map_err(SelectedLivingWorldDmoError::Pedestrians)?;
         }
+        drop(span);
+        let span=profile::span(profile::LW2_PROPS);
         let local_position={
             let physical=actor.cached_physical_allocation().map_err(|e|SelectedLivingWorldDmoError::Pedestrians(format!("Prop Actor physical: {e:?}")))?;
             let output=physical.owner().phys_out().lock().map_err(|_|SelectedLivingWorldDmoError::Pedestrians("Prop Actor PhysOut lock".into()))?;
@@ -1124,6 +1136,8 @@ impl SelectedLivingWorldDmo {
         };
         recipes.prop_recipe_frame().update_preframe(&mut living,center,Some(local_position))
             .map_err(SelectedLivingWorldDmoError::Pedestrians)?;
+        drop(span);
+        let _span=profile::span(profile::LW2_VEHICLES);
         living
             .vehicle_update_targets(cvars, UPDATE_TIME)
             .map_err(SelectedLivingWorldDmoError::Vehicles)?;

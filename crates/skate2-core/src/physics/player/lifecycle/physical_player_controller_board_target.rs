@@ -98,6 +98,9 @@ impl PhysicalAssemblyWorld {
         self.controller_board_access()
             .try_set_deck_body_velocity(board, velocity)
     }
+    pub(crate) fn try_diagnostic_deck_velocity(&mut self, index: usize, velocity: [f32; 3]) -> Result<(), E> {
+        self.controller_board_access().try_diagnostic_deck_velocity(index, velocity)
+    }
     pub(crate) fn try_store_post_solve_deck_velocity(&mut self, board: &Handle, velocity: [f32; 3]) -> Result<(), E> {
         self.controller_board_access()
             .try_store_post_solve_deck_velocity(board, velocity)

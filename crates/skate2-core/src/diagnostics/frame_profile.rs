@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const COUNT: usize = 45;
+pub const COUNT: usize = 51;
 pub const NAMES: [&str; COUNT] = [
     "queued",
     "actor_total",
@@ -53,6 +53,12 @@ pub const NAMES: [&str; COUNT] = [
     "ai_manager",
     "ai_dispatch",
     "career",
+    "lw2_los",
+    "lw2_chase",
+    "lw2_pedestrians",
+    "lw2_vehicles",
+    "lw2_dmo",
+    "lw2_props",
 ];
 pub const TICK_TERRAIN_RELEASE: usize = 26;
 pub const TICK_TERRAIN_FOCUS: usize = 27;
@@ -73,6 +79,12 @@ pub const TERRAIN_REQUEST: usize = 41;
 pub const AI_MANAGER: usize = 42;
 pub const AI_DISPATCH: usize = 43;
 pub const CAREER: usize = 44;
+pub const LW2_LOS: usize = 45;
+pub const LW2_CHASE: usize = 46;
+pub const LW2_PEDESTRIANS: usize = 47;
+pub const LW2_VEHICLES: usize = 48;
+pub const LW2_DMO: usize = 49;
+pub const LW2_PROPS: usize = 50;
 thread_local! { static TOTALS: RefCell<[Duration; COUNT]> = const { RefCell::new([Duration::ZERO; COUNT]) }; }
 pub fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();

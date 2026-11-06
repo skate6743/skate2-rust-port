@@ -196,6 +196,22 @@ impl BoardTargetAccess<'_> {
     pub(crate) fn try_set_deck_body_velocity(&mut self, board: &Handle, velocity: [f32; 3]) -> Result<(), E> {
         self.try_store_deck_body_velocity(board, velocity, false)
     }
+    /// Diagnostics: the deck body of the pool's `index`th skater given `velocity` before the solve.
+    pub(crate) fn try_diagnostic_deck_velocity(&mut self, index: usize, velocity: [f32; 3]) -> Result<(), E> {
+        let observation = self
+            .skaters
+            .as_ref()
+            .ok_or(E::Missing("skater pool"))?
+            .members[index]
+            .content
+            .board()
+            .map_err(E::Pool)?
+            .0
+            .session
+            .try_part_contact_spy_observation(self.backend, 6)
+            .map_err(E::Spy)?;
+        self.backend.try_set_part_linear_velocity(observation, velocity).map_err(E::Body)
+    }
     /// `PostPhysics_AdjustVelocity` 0x82b32b28's store after the solve.
     pub(crate) fn try_store_post_solve_deck_velocity(&mut self, board: &Handle, velocity: [f32; 3]) -> Result<(), E> {
         self.try_store_deck_body_velocity(board, velocity, true)

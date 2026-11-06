@@ -3722,6 +3722,13 @@ impl<T, C> SelectedLiveSession<T, C> {
         if on_board { self.teleport_local_player(transform) } else { self.online_sync_teleport(transform) }.is_ok()
     }
 
+    /// Diagnostics: the first skater's deck body given `velocity` before the solve.
+    pub fn diagnostic_set_board_velocity(&mut self, velocity: [f32; 3]) -> bool {
+        let Some(world) = self.inner.world.as_ref() else { return false };
+        let Ok(mut world) = world.world.lock() else { return false };
+        world.try_diagnostic_deck_velocity(0, velocity).is_ok()
+    }
+
     /// Diagnostics: the local skater on its board `gap` metres behind the nearest vehicle's
     /// rearmost grab handle, facing the vehicle's heading. Describes the pick, None without one.
     pub fn diagnostic_teleport_behind_vehicle(&mut self, gap: f32) -> Option<String> {

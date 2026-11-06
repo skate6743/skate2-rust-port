@@ -2911,6 +2911,33 @@ impl LiveSkatingClient {
                     }
                 }
             }
+            // SKATE2_DIAGNOSTIC_BOARD_ROUTE=<m/s>:<frame>:<height>:<x>,<z>[;<x>,<z>...]: from that
+            // frame the deck flies the looping route at that speed and height, over the city's
+            // collision, crossing the chunks as a speed glitch does.
+            if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_BOARD_ROUTE") {
+                static LEG: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let fields: Vec<&str> = spec.split(':').map(str::trim).collect();
+                if let [speed, from, height, route] = fields[..]
+                    && let (Ok(speed), Ok(from), Ok(height)) = (speed.parse::<f32>(), from.parse::<u64>(), height.parse::<f32>())
+                    && self.completed_frames >= from
+                    && let Some((position, _, _)) = self.session.diagnostic_board_kinematics()
+                {
+                    let points: Vec<[f32; 2]> = route.split(';').filter_map(|point| {
+                        let (x, z) = point.split_once(',')?;
+                        Some([x.trim().parse().ok()?, z.trim().parse().ok()?])
+                    }).collect();
+                    if !points.is_empty() {
+                        let target = points[LEG.load(Ordering::Relaxed) % points.len()];
+                        let (dx, dz) = (target[0] - position[0], target[1] - position[2]);
+                        let distance = dx.hypot(dz);
+                        if distance < 25.0 {
+                            LEG.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let scale = speed / distance.max(1.0);
+                        self.session.diagnostic_set_board_velocity([dx * scale, ((height - position[1]) * 2.0).clamp(-20.0, 20.0), dz * scale]);
+                    }
+                }
+            }
             // SKATE2_DIAGNOSTIC_SKITCH=<frame>[:<hold>[:<gap>]]: at that frame, the local skater
             // teleported on its board `gap` metres (default 0.6) behind the nearest vehicle's rear
             // grab handle; from 30 frames later both hand grabs (the triggers) held `hold` frames.
