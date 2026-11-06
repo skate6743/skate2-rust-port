@@ -1,9 +1,6 @@
 // Pixel programs8212b250/b748/f2e0/df38,82130478. The base-bloom copy from
 // 82130038 remains, but its six lens reflections are intentionally omitted
 // as a PC presentation choice (2026-10-12).
-// PC port (user request, 11-06): the copy scales the glow by GLARE, so a low sun does not
-// flood the lens; the scene, its exposure and the colour grade are unchanged.
-const GLARE: f32 = 0.65;
 // Each render target has its own constant buffer; no late-write aliasing.
 struct Parameters { v: array<vec4<f32>, 33>, }
 @group(0) @binding(0) var<uniform> p: Parameters;
@@ -73,8 +70,9 @@ fn blur(uv:vec2<f32>,direction:vec2<f32>) -> vec4<f32> {
     // Preserve the untransformed base sample from native 82130038 slots8/33,
     // including its sampling phase and UNORM intermediate. Removing only the
     // reflection contribution keeps the normal sign/light bloom path intact.
+    // PC port: the glow's scale (`GLARE` in postfx.rs).
     let base=sample_at(v.uv+p.v[24].zw);
-    return vec4(base.rgb*GLARE,base.a);
+    return vec4(base.rgb*p.v[15].y,base.a);
 }
 @fragment fn grade(v:Vertex) -> @location(0) vec4<f32> {
     let bloom=textureSampleLevel(low,linear_clamp,v.uv,0.).rgb;

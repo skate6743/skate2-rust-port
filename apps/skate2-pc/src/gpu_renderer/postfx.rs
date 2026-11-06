@@ -22,6 +22,10 @@ type Constants = [[f32; 4]; 33];
 // original normalized bloom footprint when the window or render scale changes.
 const BLOOM_REFERENCE_WIDTH: u32 = 1152;
 const BLOOM_REFERENCE_HEIGHT: u32 = 640;
+/// PC port (user request, 11-06): the base-bloom copy scales the glow by this, so a low sun does
+/// not flood the lens; the scene, its exposure and the colour grade are unchanged. A white fade
+/// ([`Frame::white_fade`]) takes it back to the full glow, which is what whitens the screen.
+const GLARE: f32 = 0.65;
 
 struct Target {
     texture: wgpu::Texture,
@@ -638,6 +642,7 @@ impl PostFx {
         // PC visual exception: omit the six colored reflections
         // from native 82130038. Keep its base-bloom resample so normal glow
         // reaches both gameplay and cinematic composition with the same phase.
+        c[15][1] = (1. - GLARE).mul_add(frame.white_fade, GLARE);
         self.stages[9].record(queue, encoder, &self.targets[7].view, &c);
         // ICE: ApplyFX_NEW's near (A) and far (B) grades replace the vault's. The grades are
         // PostFX members: a frame whose VisualFX_Animation wrote neither (its challenge fade

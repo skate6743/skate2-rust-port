@@ -1436,6 +1436,7 @@ fn challenge_fade(postfx: &mut crate::render_postfx::Frame, fade: f32) {
     };
     postfx.bloom = [threshold, postfx.bloom[1], 0., 1., fine];
     postfx.keep_matrices = true;
+    postfx.white_fade = fade.clamp(0., 1.);
 }
 
 /// `VisualFX_Animation`'s challenge success branch (`0x82847e7c`, `bChallengeSuccessInfo`) or,
@@ -1455,9 +1456,16 @@ fn challenge_result(postfx: &mut crate::render_postfx::Frame) {
 /// value (`VisualFX_Animation` `0x82848718`), on the ICE path too.
 fn nis_postfx(postfx: &mut crate::render_postfx::Frame, nis: &skate2_core::nis::manager::NisView, planes: [f32; 2]) {
     let white = nis.bloom_to_white;
+    let fade = (2. * white).min(1.);
     match nis.ice_postfx {
-        Some(ice) => ice_postfx(postfx, &ice, white, planes),
-        None => postfx.bloom[0] = (-2f32).mul_add(white, postfx.bloom[0]),
+        Some(ice) => {
+            ice_postfx(postfx, &ice, white, planes);
+            postfx.white_fade = fade;
+        }
+        None => {
+            postfx.bloom[0] = (-2f32).mul_add(white, postfx.bloom[0]);
+            postfx.white_fade = postfx.white_fade.max(fade);
+        }
     }
 }
 
@@ -1535,6 +1543,7 @@ mod tests {
             ice: None,
             fe_online_menu: false,
             luminance_scale: 1.0,
+            white_fade: 0.0,
         };
         let mut nis = skate2_core::nis::manager::NisView { bloom_to_white: 0.25, ..Default::default() };
         let mut game = frame;
@@ -1568,17 +1577,20 @@ mod tests {
             ice: None,
             fe_online_menu: false,
             luminance_scale: 1.0,
+            white_fade: 0.0,
         };
         let mut half = frame;
         super::challenge_fade(&mut half, 0.5);
         assert_eq!(half.bloom, [0.25, 0.3, 0.0, 1.0, 1.0]);
         assert!(half.keep_matrices);
+        assert_eq!(half.white_fade, 0.5);
         let mut full = frame;
         super::challenge_fade(&mut full, 1.0);
         assert_eq!(full.bloom, [-0.25, 0.3, 0.0, 1.0, 1.125]);
         let mut deep = frame;
         super::challenge_fade(&mut deep, 3.0);
         assert_eq!(deep.bloom, [-2.25, 0.3, 0.0, 1.0, 1.5]);
+        assert_eq!(deep.white_fade, 1.0);
         let nis = skate2_core::nis::manager::NisView {
             ice_postfx: Some(skate2_core::nis::manager::IcePostfx::default()),
             ..Default::default()
@@ -1586,6 +1598,7 @@ mod tests {
         let mut scene = full;
         super::nis_postfx(&mut scene, &nis, [0.2, 1000.0]);
         assert_eq!(scene.bloom, [0.7, 1.0, 0.0, 2.0, 2.0]);
+        assert_eq!(scene.white_fade, 0.0, "the ICE path replaces the challenge fade's bloom");
         assert!(scene.cinematic && scene.ice.is_some());
     }
 
@@ -1605,6 +1618,7 @@ mod tests {
             ice: None,
             fe_online_menu: false,
             luminance_scale: 1.0,
+            white_fade: 0.0,
         };
         let near = Grade { brightness: 0.0, contrast: 1.0, midpoint: 0.5, saturate: -0.6957, colour: [1.0, 0.57, 0.49] };
         let far = Grade { brightness: 0.1, contrast: 2.5679, midpoint: 0.6602, saturate: 10.0, colour: [1.0, 0.63, 0.2] };

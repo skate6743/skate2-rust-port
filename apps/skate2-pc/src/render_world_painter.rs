@@ -218,6 +218,7 @@ impl WorldPainterBlend {
             cube, dt, updated_at: now, cinematic: false, camera_planes: None, hom: None, final_mult: [1.; 4], keep_matrices: false, tazer: false, ice: None,
             fe_online_menu: false,
             luminance_scale: environment.luminance_scale,
+            white_fade: 0.,
         }
     }
     pub(crate) fn new(environment: &EnvironmentLighting) -> Self {

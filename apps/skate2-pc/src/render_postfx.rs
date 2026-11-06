@@ -92,6 +92,8 @@ pub(crate) struct Frame {
     /// What `Tonemap` multiplies the measured luminance by: 1 in Skate 2, 2.515 in a linked
     /// Skate 3 district (TU3 0x827f0e08).
     pub luminance_scale: f32,
+    /// PC port: how far a white fade (a challenge fade, a NIS bloom to white) has gone, 0 to 1.
+    pub white_fade: f32,
 }
 
 /// `SetParameters`' ICE branch inputs and the camera planes it turns into

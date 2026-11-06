@@ -12636,9 +12636,6 @@ fn load_runtime_texture_scene_at(mounts:&MountSet,location_name:&str,focus:[f32;
 /// map encode cannot wait behind a load reading the disk.
 fn on_stream_load_pool<T: Send>(work: impl FnOnce() -> T + Send) -> Result<T, String> {
     static POOL: std::sync::OnceLock<Result<rayon::ThreadPool, String>> = std::sync::OnceLock::new();
-    if std::env::var_os("SKATE2_DIAGNOSTIC_SHARED_LOAD_POOL").is_some() {
-        return Ok(work());
-    }
     let pool = POOL.get_or_init(|| {
         let threads = std::thread::available_parallelism().map_or(1, |threads| (threads.get() / 3).clamp(1, 8));
         rayon::ThreadPoolBuilder::new()
@@ -12650,18 +12647,11 @@ fn on_stream_load_pool<T: Send>(work: impl FnOnce() -> T + Send) -> Result<T, St
     Ok(pool.as_ref().map_err(Clone::clone)?.install(work))
 }
 
-fn diagnostic_load_delay() {
-    if let Some(ms) = std::env::var("SKATE2_DIAGNOSTIC_LOAD_DELAY_MS").ok().and_then(|ms| ms.parse().ok()) {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
-    }
-}
-
 fn load_texture_collection(
     mounts: &MountSet,
     collections: &render_streams::RenderStreams,
     focus_collection: &skate2_formats::stream::FocusCollection,
 ) -> Result<TextureCollection, Box<dyn std::error::Error>> {
-    diagnostic_load_delay();
     let (collection, stream) = collections
         .entry(focus_collection.id)
         .ok_or_else(|| format!("missing texture collection {:016x}", focus_collection.id))?;
@@ -13066,7 +13056,6 @@ fn load_presentation_collection(
     collections: &render_streams::RenderStreams,
     focus_collection: &skate2_formats::stream::FocusCollection,
 ) -> Result<PresentationCollection, Box<dyn std::error::Error>> {
-    diagnostic_load_delay();
     let (collection, stream) = collections
         .entry(focus_collection.id)
         .ok_or_else(|| {

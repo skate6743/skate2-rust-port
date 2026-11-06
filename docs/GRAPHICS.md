@@ -532,7 +532,9 @@ review yet.
 - **Exposure fixed** at the Vault 1.0 (no auto-exposure).
 - **Softer bloom.** The base-bloom copy (`82130038`) scales the glow by 0.65 before the
   uber, visual-FX, cinematic and stereo composites add it, so a low sun does not flood the
-  view. The scene, the exposure and the colour grade are unchanged.
+  view. The scene, the exposure and the colour grade are unchanged. A challenge fade or a NIS
+  bloom to white takes the scale back to 1 as it runs: the glow is what whitens the screen, and
+  at 0.65 a fade never reaches solid white.
 - **Pedestrians in Skate 3 districts.** Skate 2's `livingworld_stamp` pixel program blends
   toward a far colour, `diffuse*0.3*saturate(worldShadow+0.1)`, over `i_material_lod`
   (`rendering` LOD distance 15: from 10.5 m to 15 m). Skate 3's program binds no material
