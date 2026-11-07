@@ -3,7 +3,8 @@
 //! 12 sets the wipeout flag 65) and resets the skater at its sea (surface type 6, the teleport
 //! flag 69). Without the swim, a district's water resets the skater as its sea does: the local
 //! skater's last breadcrumb (`TeleportLocalToLastBreadcrumb` 0x828a93a8, as the NIS's), once the
-//! ground under or over the skater is water.
+//! ground under or over the skater is water. In a challenge on Skate 3 physics the reset gives way
+//! to the water's own wipeout, which is what ends the run.
 use super::{SelectedLiveError, SelectedLiveSession, SelectedLiveStage as Stage};
 use crate::skeleton_root_transforms::SkeletonRootVector;
 
@@ -11,6 +12,8 @@ use crate::skeleton_root_transforms::SkeletonRootVector;
 const WATER: u16 = 12;
 /// Ticks after a reset before water resets the skater again.
 const COOLDOWN_TICKS: u32 = 120;
+/// Ticks a challenge waits on water for the skater's wipeout before resetting it anyway.
+const WIPEOUT_WAIT_TICKS: u32 = 60;
 
 fn error(e: impl std::fmt::Display) -> SelectedLiveError {
     SelectedLiveError::failed(Stage::SessionMarker, format!("district water: {e}"))
@@ -34,6 +37,10 @@ impl<T, C> SelectedLiveSession<T, C> {
         let world = self.inner.world.as_ref().map(|owner| &owner.world);
         let Ok(position) = super::local_skater_position(world, selected) else { return Ok(()) };
         if !self.water_at(position)? {
+            self.district_water_wipeout_wait = 0;
+            return Ok(());
+        }
+        if self.water_wipeout_runs()? {
             return Ok(());
         }
         let Some(crumb) = self.local_suggested_breadcrumb()? else { return Ok(()) };
@@ -46,7 +53,34 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
         self.player_ui_queues()?.send_teleport(crumb.transform, !crumb.offboard);
         self.district_water_cooldown = COOLDOWN_TICKS;
+        self.district_water_wipeout_wait = 0;
         Ok(())
+    }
+
+    /// Skate 3 physics in a challenge: water is a wipeout, as in Skate 3 (0x82db8120, flag 65). The
+    /// challenge's scripts end a run on a wipeout that is no physics teleport, and the physics
+    /// respawns the skater from it, so the reset stands aside while it runs and for
+    /// [`WIPEOUT_WAIT_TICKS`] for it to start; a skater it never reaches is reset all the same.
+    fn water_wipeout_runs(&mut self) -> Result<bool, SelectedLiveError> {
+        if !self.career.as_ref().is_some_and(|career| career.system.world().activities.main.is_some()) {
+            return Ok(false);
+        }
+        let Some(actor) = self.inner.player.as_ref().and_then(|player| player.selected.actor.as_deref()) else { return Ok(false) };
+        let physical = actor.cached_physical_allocation().map_err(|e| error(format!("{e:?}")))?;
+        let (skate3, wiping) = {
+            let output = physical.owner().phys_out().lock().map_err(|_| error("PhysOut lock poisoned"))?;
+            let state = output.try_state_output().map_err(|e| error(format!("{e:?}")))?;
+            (state.skate3_physics, state.is_wiping_out)
+        };
+        if !skate3 {
+            return Ok(false);
+        }
+        if wiping {
+            self.district_water_wipeout_wait = 0;
+            return Ok(true);
+        }
+        self.district_water_wipeout_wait += 1;
+        Ok(self.district_water_wipeout_wait <= WIPEOUT_WAIT_TICKS)
     }
 
     /// Diagnostics (`SKATE2_DIAGNOSTIC_SKATE3_WATER_SCAN`): 300 ticks into the first district, the

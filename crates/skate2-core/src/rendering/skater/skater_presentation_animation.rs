@@ -139,6 +139,12 @@ impl PresentationAnimation {
         }
     }
 
+    /// The hierarchy's bone names, every skater's alike.
+    pub(crate) fn bone_names(&self) -> Option<Vec<String>> {
+        let full = self.full.as_ref()?.lock().ok()?;
+        hierarchy(&full.database).ok().map(|hierarchy| hierarchy.bone_names)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "native startup order preserves partial owner construction"

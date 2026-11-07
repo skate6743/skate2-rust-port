@@ -455,9 +455,16 @@ impl Controller {
             }
             root.items.push(player_list);
         }
-        // OnEvent selects the root's first enabled item.
-        root.selected = root.items.iter().position(|item| item.enabled).unwrap_or(0);
+        // OnEvent selects the root's first enabled item. PC port: `refresh` runs on every change
+        // of the session, not only the player list's, so the item the player is on stays
+        // selected while it stays enabled: after a challenge the first enabled item came back
+        // as Start Challenge under the player's press.
         let root_id = if lobby.host { HOST } else { CLIENT };
+        let kept = self.menus.get(&root_id).and_then(|menu| menu.items.get(menu.selected)).map(|item| item.target);
+        root.selected = kept
+            .and_then(|target| root.items.iter().position(|item| item.enabled && item.target == target))
+            .or_else(|| root.items.iter().position(|item| item.enabled))
+            .unwrap_or(0);
         self.menus.remove(&if lobby.host { CLIENT } else { HOST });
         self.menus.insert(root_id, root);
         self.menus.insert(FRIENDS, Menu { title: Some(Title::Hal("ID_ONLINE_HUB_FRIENDS")), items: Vec::new(), selected: 0 });
@@ -790,6 +797,28 @@ mod tests {
         );
         assert_eq!(root.items.iter().map(|(_, enabled)| *enabled).collect::<Vec<_>>(), vec![false, true, false, true, true]);
         assert_eq!(root.selected, 1);
+    }
+
+    #[test]
+    fn a_session_change_keeps_the_root_s_selection() {
+        let settled = lobby(true, 1);
+        // Just after a challenge Start Challenge is still off: the root opens on the Player List.
+        let mut hub = Controller::open(Lobby { challenge_in_progress: true, ..settled.clone() });
+        hub.ready = true;
+        assert_eq!(hub.snapshot().stack[0].selected, 3);
+        hub.refresh(settled.clone());
+        let snapshot = hub.snapshot();
+        assert!(snapshot.stack[0].items[1].1, "Start Challenge is on again");
+        assert_eq!(snapshot.stack[0].selected, 3, "the selection stays on the Player List");
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::None, "no challenge starts");
+        assert_eq!(hub.snapshot().stack.len(), 2, "the Player List opens");
+        // An item that goes off hands the selection on.
+        let mut hub = Controller::open(settled.clone());
+        hub.ready = true;
+        hub.update(press(|input| input.down = true));
+        assert_eq!(hub.snapshot().stack[0].selected, 3);
+        hub.refresh(Lobby { players: Vec::new(), participants: 1, ..settled });
+        assert_eq!(hub.snapshot().stack[0].selected, 4, "on Host Options, the first still enabled");
     }
 
     #[test]

@@ -614,6 +614,8 @@ impl RenderWindowClient for Inspection {
             frontend_fade_alpha: 0.,
             nis_white: None,
             nis_white_alpha: 0.,
+            fade_black: None,
+            fade_black_alpha: 0.,
             movie: None,
             final_blit: None,
             postfx_overlay: None,

@@ -20,11 +20,18 @@ use super::super::replay_editor_session::archive::{
 };
 use crate::{
     actor_animation_construction::initialization::body_dispatch::tree_commands::numeric::blend,
-    actor_face_playback::presentation::{frame::selected_runtime::render_opacity::SkaterRenderOpacity, move_root::rigid_matrix},
+    actor_face_playback::presentation::{
+        frame::selected_runtime::render_opacity::{SkaterRenderOpacity, rendering_skaters},
+        move_root::rigid_matrix,
+    },
+    ai::skater_manager::CHARACTERS_MARQUEE,
     attribute_runtime::AttributeRuntimeVault,
-    character::{material_admission::CharacterMaterialAdmission, palette::CharacterPalette},
+    character::{CharacterHierarchy, material_admission::CharacterMaterialAdmission, palette::CharacterPalette},
     input_cvar_runtime::InputCvarReferences,
-    player::mounted_recipe::finalize::FinalizedRecipeScene,
+    player::{
+        DEFAULT_MARQUEE_ID, MarqueeDefinition,
+        mounted_recipe::{MountedPlayerRecipeLoad, finalize::FinalizedRecipeScene},
+    },
     presentation_restore::{
         math::slerp,
         skater::{HEADER_BYTES, SkaterFrame, SkaterRestore, SkaterRig},
@@ -153,7 +160,7 @@ pub(super) struct RemoteCamera {
 pub(super) struct Character {
     rig: Arc<SkaterRig>,
     palette: Arc<CharacterPalette>,
-    finalized: Option<FinalizedRecipeScene>,
+    finalized: Option<Arc<FinalizedRecipeScene>>,
     materials: Option<Arc<Mutex<CharacterMaterialAdmission>>>,
 }
 
@@ -171,6 +178,10 @@ impl Character {
         // `encode_character` sends one look, palette and rig; a message with more is refused
         // before any of them loads.
         let catalog = Catalog::get_at_most(&mut reader, mounts, vault, [1, 1, 1])?;
+        // The message's skinning belongs to the parts it names, not to their slots' defaults.
+        if catalog.parts_replaced {
+            return Err("parts this console lacks".into());
+        }
         if reader.offset != body.len() {
             return Err("trailing character data".into());
         }
@@ -181,7 +192,48 @@ impl Character {
         }
         let mut finalized = FinalizedRecipeScene::new(Arc::clone(palette.scene()));
         finalized.try_finalize(3).map_err(|e| e.to_string())?;
-        Ok(Self { rig, palette, finalized: Some(finalized), materials: None })
+        Ok(Self { rig, palette, finalized: Some(Arc::new(finalized)), materials: None })
+    }
+
+    /// PC port: the skater a look this console cannot build shows as: the marquee
+    /// `StartLoadingDefaultRecipe` 0x82748fa0 loads for a player without a recipe, also the
+    /// skater of a save with no created skater. `own` gives what every skater shares; the pose
+    /// stays the remote player's.
+    pub(super) fn default_skater(
+        user_id: u64,
+        own: &SkaterRig,
+        lod: u8,
+        hierarchy: &CharacterHierarchy,
+        mounts: &MountSet,
+        vault: &Arc<AttributeRuntimeVault>,
+        cvars: &InputCvarReferences,
+    ) -> Result<Self, String> {
+        let instance = vault.instance(CHARACTERS_MARQUEE, DEFAULT_MARQUEE_ID);
+        let name = instance.try_cached_layout_text(0).map_err(|e| format!("{e:?}"))?.ok_or("default skater without a name")?;
+        let definition = MarqueeDefinition { id: DEFAULT_MARQUEE_ID, schema_name: String::from_utf8_lossy(name.bytes()).into_owned() };
+        let prepared = MountedPlayerRecipeLoad::try_prepare_marquee_scene(mounts, &definition).map_err(|e| e.to_string())?;
+        let finalized = Arc::clone(&prepared.scene);
+        let scene = Arc::clone(finalized.scene().map_err(|e| e.to_string())?);
+        // SkaterPresEntity::SkaterPresEntity 0x827e5740: CalculateBoundsInfo, then
+        // 0x827e5a30..5b2c lowers both y lanes by 1.0 into m_localBB.
+        let mut bounds = scene.level_bounds(0).map_err(|e| e.to_string())?.ok_or("LOD 0 model bounds")?;
+        bounds.minimum[1] -= 1.0;
+        bounds.maximum[1] -= 1.0;
+        let skinning = scene.build_skinning_state(lod, hierarchy, "Hips").map_err(|e| e.to_string())?;
+        let palette = Arc::new(CharacterPalette::from_replay_skinning(scene, skinning).map_err(|e| e.to_string())?);
+        let rig = Arc::new(SkaterRig {
+            skeleton: own.skeleton.clone(),
+            bind: own.bind.clone(),
+            inverse_bind: Arc::clone(&palette.skinning().hierarchy_inverse_bind_pose),
+            hips: own.hips,
+            board: own.board,
+            twist_bones: own.twist_bones,
+            local_bounds: [std::array::from_fn(|lane| bounds.minimum[lane]), std::array::from_fn(|lane| bounds.maximum[lane])],
+            rendering_skaters: rendering_skaters(vault),
+        });
+        let mut character = Self { rig, palette, finalized: Some(finalized), materials: None };
+        character.first_materials(user_id, vault, cvars)?;
+        Ok(character)
     }
 
     /// The recipe message's skater with its entity's materials, which `UpdatePresEntity` constructs
@@ -189,12 +241,18 @@ impl Character {
     /// player's, and its locality, never this console's, so the build need not wait for a frame.
     pub(super) fn build(data: &[u8], user_id: u64, mounts: &MountSet, vault: &Arc<AttributeRuntimeVault>, cvars: &InputCvarReferences) -> Result<Self, String> {
         let mut character = Self::decode(data, mounts, vault)?;
+        character.first_materials(user_id, vault, cvars)?;
+        Ok(character)
+    }
+
+    /// The materials of the first header a remote player's frames bring.
+    fn first_materials(&mut self, user_id: u64, vault: &Arc<AttributeRuntimeVault>, cvars: &InputCvarReferences) -> Result<(), String> {
         let mut words = [0; HEADER_WORDS];
         let peer = user_id.to_be_bytes();
         words[PEER_WORD] = u32::from_be_bytes([peer[0], peer[1], peer[2], peer[3]]);
         words[PEER_WORD + 1] = u32::from_be_bytes([peer[4], peer[5], peer[6], peer[7]]);
-        character.materials(&header_bytes(&words), vault, cvars)?;
-        Ok(character)
+        self.materials(&header_bytes(&words), vault, cvars)?;
+        Ok(())
     }
 
     /// The entity's materials, constructed from the first header (`UpdatePresEntity`).
@@ -499,8 +557,10 @@ pub(super) struct RemoteSkater {
     hud_through: Option<u32>,
     /// The character a recipe is building on its own thread, and how long it took.
     building: Option<std::thread::JoinHandle<(Result<Character, String>, std::time::Duration)>>,
-    /// PC port: a stand-in look was asked for since the last recipe (see `take_stand_in`).
+    /// PC port: the default skater was asked for since the last recipe (see `recipe_failed`).
     stood_in: bool,
+    /// PC port: a look failed, and the default skater waits for the local skater's rig.
+    default_due: bool,
 }
 
 fn header_bytes(words: &[u32; HEADER_WORDS]) -> [u8; HEADER_BYTES] {
@@ -541,7 +601,26 @@ impl RemoteSkater {
             hud_through: None,
             building: None,
             stood_in: false,
+            default_due: false,
         }
+    }
+
+    /// PC port: a look failed: the default skater takes its place, once per recipe.
+    pub(super) fn recipe_failed(&mut self) {
+        self.default_due = !self.stood_in;
+    }
+
+    /// Whether the default skater is to be built now.
+    pub(super) fn take_default_due(&mut self) -> bool {
+        let due = std::mem::take(&mut self.default_due);
+        self.stood_in |= due;
+        due
+    }
+
+    /// A recipe arrived: its look builds, and a later failure may stand in again.
+    pub(super) fn received_recipe(&mut self) {
+        self.stood_in = false;
+        self.default_due = false;
     }
 
     /// Builds a recipe message's character on its own thread: reading its parts from the
@@ -550,16 +629,6 @@ impl RemoteSkater {
     ///
     /// # Errors
     /// The thread could not start.
-    /// PC port: whether this skater may take a stand-in look now: once per recipe that failed.
-    pub(super) fn take_stand_in(&mut self) -> bool {
-        !std::mem::replace(&mut self.stood_in, true)
-    }
-
-    /// A recipe arrived: its look builds, and a later failure may stand in again.
-    pub(super) fn received_recipe(&mut self) {
-        self.stood_in = false;
-    }
-
     pub(super) fn build_character(&mut self, data: Vec<u8>, mounts: Arc<MountSet>, vault: Arc<AttributeRuntimeVault>, cvars: InputCvarReferences) -> Result<(), String> {
         let user_id = self.user_id;
         let thread = std::thread::Builder::new()
@@ -567,6 +636,31 @@ impl RemoteSkater {
             .spawn(move || {
                 let start = std::time::Instant::now();
                 (Character::build(&data, user_id, &mounts, &vault, &cvars), start.elapsed())
+            })
+            .map_err(|e| format!("remote character thread: {e}"))?;
+        self.building = Some(thread);
+        Ok(())
+    }
+
+    /// Builds [`Character::default_skater`] on its own thread, as a recipe's.
+    ///
+    /// # Errors
+    /// The thread could not start.
+    pub(super) fn build_default_character(
+        &mut self,
+        own: Arc<SkaterRig>,
+        lod: u8,
+        hierarchy: CharacterHierarchy,
+        mounts: Arc<MountSet>,
+        vault: Arc<AttributeRuntimeVault>,
+        cvars: InputCvarReferences,
+    ) -> Result<(), String> {
+        let user_id = self.user_id;
+        let thread = std::thread::Builder::new()
+            .name("sk8 remote character".into())
+            .spawn(move || {
+                let start = std::time::Instant::now();
+                (Character::default_skater(user_id, &own, lod, &hierarchy, &mounts, &vault, &cvars), start.elapsed())
             })
             .map_err(|e| format!("remote character thread: {e}"))?;
         self.building = Some(thread);
@@ -1059,6 +1153,25 @@ mod tests {
             }
         }
         assert_eq!(skater.playout.allowance, 3);
+    }
+
+    #[test]
+    fn a_failed_look_asks_for_the_default_skater_once_per_recipe() {
+        let mut skater = RemoteSkater::new(1, 1);
+        assert!(!skater.take_default_due());
+        skater.recipe_failed();
+        assert!(skater.take_default_due());
+        assert!(!skater.take_default_due(), "asked for once");
+        // The default skater failing as well starts nothing over.
+        skater.recipe_failed();
+        assert!(!skater.take_default_due());
+        // The next recipe may fail in its turn; one that arrives first cancels a waiting ask.
+        skater.received_recipe();
+        skater.recipe_failed();
+        skater.received_recipe();
+        assert!(!skater.take_default_due());
+        skater.recipe_failed();
+        assert!(skater.take_default_due());
     }
 
     #[test]

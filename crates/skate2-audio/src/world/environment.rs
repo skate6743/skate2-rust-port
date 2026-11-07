@@ -74,6 +74,11 @@ const RESIDENT_DATA: &str = "data\\audio/ambienceresident.big";
 /// PC port: a linked Skate 3 district's beds come from Skate 3's own ambience data
 /// (`aud_wp_ambiences` has Skate 2's layout: volume, id, fade out, fade in).
 const SKATE3_FILES: &str = crate::rwac::stream_pool::SKATE3_FILES;
+/// PC port: -2 dB on a Skate 3 bed, for the mix it plays in. The port mixes with Skate 2's
+/// `MixMapSK8.mxb`. Skate 3's sets the ambience's master channel a decibel lower (-3 dB
+/// against -2 dB) and the skateboard's and wheels' channels a decibel higher, which only a bed
+/// can make up for here: the skater keeps Skate 2's mix.
+const SKATE3_BED_LEVEL: f32 = 0.794_328_2;
 const STREAMS: &str = "data\\audio/ambience.big|";
 /// `32767.0f`, the fade's Q15 scale.
 const Q15: f32 = f32::from_bits(0x46FF_FE00);
@@ -183,10 +188,10 @@ impl Ambience {
 
     /// `UpdateParams` 0x8254dd30: follows the key (`UpdateAmbience` while it holds,
     /// `ChangeAmbience` when it moves), then sets mixer input 0 to the fade: the fade-out's
-    /// progress, the fade-in's remainder, 0 while playing and 0x7FFF without a bed.
-    fn update_params(&mut self, t: f32, key: u64, skate3: Option<&Vault>, ctx: &mut SfxCtx<'_>) {
-        // PC port: a key from a linked Skate 3 district's painter names Skate 3's bed.
-        let key_skate3 = skate3.is_some();
+    /// progress, the fade-in's remainder, 0 while playing and 0x7FFF without a bed. PC port:
+    /// `key_skate3`, the key names a linked Skate 3 district's bed; `skate3` is Skate 3's data
+    /// whatever the key, as a bed that leaves a district fades by its own times.
+    fn update_params(&mut self, t: f32, key: u64, key_skate3: bool, skate3: Option<&Vault>, ctx: &mut SfxCtx<'_>) {
         if key == self.ambience_key && key_skate3 == self.skate3 {
             self.update_ambience(t, skate3, ctx);
         } else {
@@ -278,7 +283,8 @@ impl Ambience {
             return;
         }
         let level = ctx.output(self.io, 0, PresetType::Volume) as f32 * VOLUME_SCALE;
-        let volume = self.vault(skate3, ctx.vault).layout_f32(wp_ambience(self.ambience_key), VOLUME) * level;
+        let bed = if self.skate3 { SKATE3_BED_LEVEL } else { 1.0 };
+        let volume = self.vault(skate3, ctx.vault).layout_f32(wp_ambience(self.ambience_key), VOLUME) * level * bed;
         if matches!(self.state, AmbienceState::FadeIn | AmbienceState::FadeOut) {
             if let Some(cross_fade) = &mut self.cross_fade {
                 let level = ctx.output(self.io, 1, PresetType::Volume).clamp(0, 0x7FFF);
@@ -463,8 +469,8 @@ impl EnvironmentManager {
         if let Some(ambience) = &mut self.ambience {
             let key = ambience.get_ambience_key(self.presentation_key, is_fe, loading, ctx.vault);
             // The front end's bed and a test bed are Skate 2's.
-            let skate3 = self.skate3.as_deref().filter(|_| self.presentation_skate3 && key == self.presentation_key && is_fe <= 0);
-            ambience.update_params(t, key, skate3, ctx);
+            let key_skate3 = self.skate3.is_some() && self.presentation_skate3 && key == self.presentation_key && is_fe <= 0;
+            ambience.update_params(t, key, key_skate3, self.skate3.as_deref(), ctx);
         }
     }
 

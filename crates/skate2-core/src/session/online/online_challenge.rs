@@ -1073,6 +1073,8 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.skate_profile.close();
         // `FrontEndState_OnlineHubMenu::OnLeave` (0x82661228) closes its popup with its screen.
         self.close_online_hub()?;
+        // The map over the StartHub: its frames return before the round's ticks.
+        self.map_menu.close();
         // `FrontEndState_StartHub::OnLeave` (0x8264c4d8), then `UnpauseGame`.
         if self.pause_menu.snapshot().visible {
             self.pause_menu.close();
@@ -1546,6 +1548,13 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// opens.
     pub(in super::super) fn online_loading_screen(&self) -> bool {
         self.online.round.as_ref().is_some_and(|round| round.streamer.is_some())
+    }
+
+    /// PC port (user request): a round of a linked Skate 3 data folder's online game, whose
+    /// screen fades go to black where Skate 2's go to white, over the same timing.
+    #[must_use]
+    pub fn online_skate3_round(&self) -> bool {
+        self.online.round.is_some() && self.online_game_is_skate3()
     }
 
     /// `ChallengeLoadState` holds the simulation (`kPAUSE_STATE_ONLINE` with `Net::PauseGame`).

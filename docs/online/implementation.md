@@ -164,14 +164,16 @@ game's state:
   A challenge every participant left goes straight back to lobby skate, with no board. The board
   holds the participants still in the challenge, each line at its place among them in the
   round's order; one who left has no line.
-  A console loads its round every frame, as `ChallengeLoadState` does, with or without a pause menu
-  or Options open; only a travel to the lobby's location comes first. The load pauses the
+  A console loads its round every frame, as `ChallengeLoadState` does, with or without a pause menu,
+  the online hub, Options or the map open, its terrain stream pass included: a linked Skate 3
+  game's hull is not held from the lobby, so it streams in during the load, and the server's
+  barrier waits for every console. Only a travel to the lobby's location comes first. The load pauses the
   simulation (`kPAUSE_STATE_ONLINE`) and puts the loading screen up (`WaitForStreamer`: the
   front-end background snapped black, no pause menu or online hub opening) at the player's spawn
   point; `ChallengeLoaded` goes once the challenge's assets are in and the area there has stayed
   loaded for 16 updates. `GameReset(Challenge)` then closes every front-end screen as
-  `PopAllStates` does (the pause menu, Options and its music player, Skate Profile, the online
-  hub), each with its `OnLeave` (Options saves nothing), and unpauses the simulation; the loading
+  `PopAllStates` does (the pause menu, the map, Options and its music player, Skate Profile, the
+  online hub), each with its `OnLeave` (Options saves nothing), and unpauses the simulation; the loading
   screen comes down once the area has stayed loaded for 16 more updates. Its `ResetGame` puts
   every player's skater at its spawn point of the challenge's location (`PlayerUI::ResetPlayer`
   0x828ad280) under the loading screen, so an air or a bail from lobby skate does not carry into

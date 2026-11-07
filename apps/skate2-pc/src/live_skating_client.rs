@@ -3615,6 +3615,7 @@ impl LiveSkatingClient {
         }
         let fade = scene.frontend_fade_alpha;
         let white = scene.nis_white_alpha;
+        let black = scene.fade_black_alpha;
         let mut changed = false;
         // FrontEndState_MoviePlayer's HUD state and FEMoviePlayer's subtitle line.
         if let Some(generation) = view.set_movie_state(self.session.movie_state_open(), self.session.movie_subtitle(),
@@ -3854,8 +3855,13 @@ impl LiveSkatingClient {
                 if wall {"wall"} else {"pause"}, self.completed_frames);
         }
         renderer.set_frontend_fade(scene, self.session.frontend_fade_alpha())?;
-        // Without PostFX the challenge fade (a round's transition) shows as the same white cover.
-        renderer.set_nis_white(scene, self.session.nis_bloom_to_white().max(view.challenge_fade_white()))?;
+        // Without PostFX the challenge fade (a round's transition) shows as the same white cover;
+        // in a linked Skate 3 game's round both fades go to black instead, over the same amount.
+        let black_fades = self.session.online_skate3_round();
+        view.set_black_fades(black_fades);
+        let screen_fade = self.session.nis_bloom_to_white().max(view.challenge_fade_white());
+        renderer.set_nis_white(scene, if black_fades { 0. } else { screen_fade })?;
+        renderer.set_fade_black(scene, if black_fades { screen_fade } else { 0. })?;
         // AptRenderingIntegration::Render2D's AptMovieIntegration::Render, each render.
         let requests = self.session.take_movie_requests();
         let movie = view.update_movie(renderer, scene, requests, self.session.movie_foreground(), self.session.movie_background_forced());
@@ -3893,7 +3899,8 @@ impl LiveSkatingClient {
         } else {
             self.backlogged_redraws = 0;
         }
-        Ok(changed || scene.frontend_fade_alpha != fade || scene.nis_white_alpha.to_bits() != white.to_bits())
+        Ok(changed || scene.frontend_fade_alpha != fade || scene.nis_white_alpha.to_bits() != white.to_bits()
+            || scene.fade_black_alpha.to_bits() != black.to_bits())
     }
 }
 

@@ -71,10 +71,41 @@ const PART_DECK_COLOUR: usize = (38 - 28) / 2;
 const PART_STYLE_SUBCATEGORY: usize = (104 - 28) / 2;
 /// `PARTSLOT::SKATE_DECK`.
 const SKATE_DECK: u8 = 11;
+/// The zone whose colours the bottom zone offers: `top`'s, the clothing colours.
+const TOP_COLOUR: usize = 9;
+
+/// The colour zone of a clothing part slot. A linked Skate 3 data folder's parts can be
+/// colourizable in a slot that has none: they offer no colour.
+fn clothing_colour_zone(slot: u8) -> Option<usize> {
+    Some(match slot {
+        18 => 0,
+        2 => 1,
+        0 | 1 | 3 => 2,
+        9 => 6,
+        23 => TOP_COLOUR,
+        17 => 10,
+        11 => 11,
+        15 => record_ops::BOTTOM_COLOUR,
+        _ => return None,
+    })
+}
+
+/// Whether the clothing category's parts have a colour zone.
+fn category_has_colour(category: Option<EditSkaterOption>) -> bool {
+    category.and_then(clothing_slot).and_then(clothing_colour_zone).is_some()
+}
 
 #[cfg(test)]
 mod parity_tests {
     use super::*;
+    #[test]
+    fn a_clothing_slot_takes_its_colour_zone_and_legs_the_bottom_zone() {
+        assert_eq!(clothing_colour_zone(23), Some(TOP_COLOUR));
+        assert_eq!(clothing_colour_zone(15), Some(record_ops::BOTTOM_COLOUR));
+        assert_eq!(clothing_colour_zone(5), None, "shoes have no zone, so no colour row");
+        assert!(category_has_colour(Some(EditSkaterOption::Legs)));
+        assert!(!category_has_colour(Some(EditSkaterOption::Shoes)));
+    }
     #[test]
     #[ignore = "requires original SKATE2_GAME_ROOT assets"]
     fn original_editor_colour_materials_and_morphs() {
@@ -350,7 +381,7 @@ impl EditSkaterFrontend {
         let index = self.current_part.ok_or("CAC wear styles part absent")?;
         let part = &self.db.parts[index];
         let mut options = Vec::new();
-        if flag(part.colourizable) {
+        if flag(part.colourizable) && category_has_colour(self.controller.category) {
             options.push(O::WearStylesColour);
         }
         self.wear_styles = Vec::new();
@@ -725,7 +756,8 @@ impl EditSkaterFrontend {
                     let part = &db.parts[i];
                     let mut wear = Some(part);
                     let alternates = shop::wear_style_alternates(&db, &self.available_parts, i).len();
-                    if flag(part.colourizable) || alternates > 1 || flag(part.logoable) {
+                    let colour = flag(part.colourizable) && category_has_colour(self.controller.category);
+                    if colour || alternates > 1 || flag(part.logoable) {
                         self.current_part = Some(i);
                         let a = self.controller.push(M::WearStyles);
                         self.action(a, e)?;
@@ -1157,22 +1189,15 @@ impl EditSkaterFrontend {
             O::FacialHairColour => 7,
             O::EyesColour => 6,
             O::SkinColourDarkness => 2,
-            O::WearStylesColour => match clothing_slot(
-                self.controller
-                    .category
-                    .ok_or("CAC colour category absent")?,
+            O::WearStylesColour => clothing_colour_zone(
+                clothing_slot(
+                    self.controller
+                        .category
+                        .ok_or("CAC colour category absent")?,
+                )
+                .ok_or("CAC colour part slot absent")?,
             )
-            .ok_or("CAC colour part slot absent")?
-            {
-                18 => 0,
-                2 => 1,
-                0 | 1 | 3 => 2,
-                9 => 6,
-                23 => 9,
-                17 => 10,
-                11 => 11,
-                _ => return Err("CAC part has no colour zone".into()),
-            },
+            .ok_or("CAC part has no colour zone")?,
             _ => return Err("CAC option has no colour zone".into()),
         })
     }
@@ -1284,6 +1309,7 @@ impl EditSkaterFrontend {
     }
     fn colours(&self, o: EditSkaterOption) -> RecordResult<Vec<u64>> {
         let slot = self.colour_slot(o)?;
+        let slot = if slot == record_ops::BOTTOM_COLOUR { TOP_COLOUR } else { slot };
         let mut selected = None;
         for key in self
             .vault
@@ -1303,13 +1329,26 @@ impl EditSkaterFrontend {
             .vault
             .descendants_sorted(record_ops::COLOUR_CLASS, seed)?)
     }
+    /// The row of `colours` the zone's colour is. The bottom zone has no `colour_ids` entry: its
+    /// customization's colour tells, the first row without one.
+    fn colour_position(&self, slot: usize, colours: &[u64]) -> RecordResult<usize> {
+        if let Some(&worn) = self.record.colour_ids.get(slot) {
+            return Ok(colours.iter().position(|&key| key == worn).unwrap_or(0));
+        }
+        let (custom, _) = CharacterCustomizations::parse_prefix(self.record.customizations_bytes()?)?;
+        let Some(worn) = custom.colours.iter().find(|c| c.key == slot as i32) else { return Ok(0) };
+        for (index, &key) in colours.iter().enumerate() {
+            let colour = self.vault.instance(record_ops::COLOUR_CLASS, key);
+            if [word(&colour, 32)?, word(&colour, 36)?, word(&colour, 40)?] == worn.base_rgb_bits {
+                return Ok(index);
+            }
+        }
+        Ok(0)
+    }
     fn adjust_colour(&mut self, o: EditSkaterOption, forward: bool) -> RecordResult<()> {
         let slot = self.colour_slot(o)?;
         let colours = self.colours(o)?;
-        let at = colours
-            .iter()
-            .position(|&key| key == self.record.colour_ids[slot])
-            .unwrap_or(0);
+        let at = self.colour_position(slot, &colours)?;
         // FrontEndState_CaC::OnKey clamps colour selection at either end.
         // Unlike a style selector, a colour strip does not wrap around.
         let next = if forward { at.saturating_add(1).min(colours.len().saturating_sub(1)) }
@@ -1322,13 +1361,18 @@ impl EditSkaterFrontend {
         let highlight = [word(&colour, 0)?, word(&colour, 4)?, word(&colour, 8)?];
         let (mut custom, _) =
             CharacterCustomizations::parse_prefix(self.record.customizations_bytes()?)?;
+        if slot == record_ops::BOTTOM_COLOUR {
+            record_ops::ensure_bottom_colour(&mut custom);
+        }
         let slots: &[usize] = match slot {
             1 => &[1, 8],
             2 => &[2, 3, 4, 5],
             _ => std::slice::from_ref(&slot),
         };
         for &slot in slots {
-            self.record.colour_ids[slot] = key;
+            if let Some(id) = self.record.colour_ids.get_mut(slot) {
+                *id = key;
+            }
             let c = custom
                 .colours
                 .iter_mut()
@@ -1379,7 +1423,7 @@ impl EditSkaterFrontend {
         // display the new HUD colour while its shader retains the old colour.
         let target_slot = match slot {
             0 => Some(18), 1 => Some(2), 6 => Some(9),
-            9 => Some(23), 10 => Some(17), _ => None,
+            9 => Some(23), 10 => Some(17), record_ops::BOTTOM_COLOUR => Some(15), _ => None,
         };
         if let Some(target_slot) = target_slot {
             let id = self.record.installed_parts[target_slot];
@@ -1497,10 +1541,7 @@ impl EditSkaterFrontend {
                 }
                 if d.kind == "color" {
                     let colours = self.colours(o)?;
-                    row.value = colours
-                        .iter()
-                        .position(|&k| k == self.record.colour_ids[self.colour_slot(o).unwrap()])
-                        .unwrap_or(0) as i32;
+                    row.value = self.colour_position(self.colour_slot(o)?, &colours)? as i32;
                     for key in colours {
                         let c = self.vault.instance(record_ops::COLOUR_CLASS, key);
                         row.colours.push(

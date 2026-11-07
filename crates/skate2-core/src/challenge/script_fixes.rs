@@ -26,11 +26,12 @@ pub(crate) const SKATE3_HANDLERS: [(u64, u8); 4] = [
 /// PC port: Skate 3's rules over Skate 2's handlers.
 ///
 /// A Spot Battle ends a run as Skate 3's own Spot Battle graph does (its `challenge_running`
-/// timer and line handlers): where Skate 2 changes to `end_turn`, Skate 3 changes to it only on
-/// the battle's last run (`LastRun`: the last round, no connected player still to go) and
-/// otherwise starts a two-second `EndRunTimerID`, at whose expiry the screen fades out over half
-/// a second (`FadeOut`, which hides the HUD) and the turn ends; lines finished meanwhile still
-/// score. Skate 3 lifts the fade under its loading screen before the next turn; here the next
+/// timer and line handlers): where Skate 2 changes to `end_turn`, Skate 3 starts a two-second
+/// `EndRunTimerID`, at whose expiry the screen fades out over half a second (`FadeOut`, which
+/// hides the HUD) and the turn ends; lines finished meanwhile still score. Skate 3's last run
+/// (`LastRun`: the last round, no connected player still to go) ends at once; PC port (user
+/// request): it takes the two seconds as well, then ends without the fade, as it does there.
+/// Skate 3 lifts the fade under its loading screen before the next turn; here the next
 /// turn's teleport transition takes the faded screen over (`StartEffect` of a `FadeOut` that
 /// already stays only reports it finished, and the teleport's `FadeIn` clears it), and a
 /// `countdown` that ends the battle without one lifts it as Skate 3 does (`ResetEffect`).
@@ -55,7 +56,7 @@ end
 local function EndRun(handler, self, message, vars)
     local changeState = ChangeState
     ChangeState = function(state)
-        if state == "end_turn" and not IsLastRun(self, vars) then
+        if state == "end_turn" then
             vars.EndRunTimerID = ChallengeTimer.AddCountdownTimer(2.0)
         else
             changeState(state)
@@ -68,8 +69,10 @@ end
 function h_skate3_6C94E9C37482DE81(self, message, vars)
     if vars.EndRunTimerID ~= nil and message.TimerID == vars.EndRunTimerID then
         vars.EndRunTimerID = nil
-        vars.EndRunFadeOut = true
-        Effects.StartEffect(Effects.eChallengeEffect.FadeOut, 0.5)
+        if not IsLastRun(self, vars) then
+            vars.EndRunFadeOut = true
+            Effects.StartEffect(Effects.eChallengeEffect.FadeOut, 0.5)
+        end
         ChangeState("end_turn")
     else
         EndRun(h_6C94E9C37482DE81, self, message, vars)
@@ -335,13 +338,15 @@ mod tests {
     }
 
     #[test]
-    fn a_skate3_spot_battle_run_scores_on_for_two_seconds_but_the_last() {
+    fn a_skate3_spot_battle_run_scores_on_for_two_seconds() {
         assert_eq!(skate3_end_run(1, 1, &[], &[7]), (None, Some(41.0), None), "the timer starts the end-of-run timer");
         assert_eq!(skate3_end_run(1, 1, &[], &[7, 41]), (Some("end_turn".into()), None, Some(0.5)), "which fades out and ends the turn");
         assert_eq!(skate3_end_run(1, 1, &[], &[7, 9]), (None, Some(41.0), None), "another timer leaves the run going");
-        assert_eq!(skate3_end_run(2, 3, &[], &[7]), (Some("end_turn".into()), None, None), "the battle's last run ends at once");
-        assert_eq!(skate3_end_run(2, 2, &[3], &[7]), (Some("end_turn".into()), None, None), "with every later player gone");
-        assert_eq!(skate3_end_run(2, 2, &[], &[7]), (None, Some(41.0), None), "a player still to go keeps the grace");
+        assert_eq!(skate3_end_run(2, 3, &[], &[7]), (None, Some(41.0), None), "the battle's last run has the two seconds too");
+        assert_eq!(skate3_end_run(2, 3, &[], &[7, 41]), (Some("end_turn".into()), None, None), "and ends without the fade");
+        assert_eq!(skate3_end_run(2, 3, &[], &[0, 41]), (Some("end_turn".into()), None, None), "its last line as well");
+        assert_eq!(skate3_end_run(2, 2, &[3], &[7, 41]), (Some("end_turn".into()), None, None), "with every later player gone");
+        assert_eq!(skate3_end_run(2, 2, &[], &[7, 41]), (Some("end_turn".into()), None, Some(0.5)), "a player still to go fades out");
         assert_eq!(skate3_end_run(1, 1, &[], &[0]), (None, Some(41.0), None), "the turn's last line starts it too");
         assert_eq!(skate3_end_run(1, 1, &[], &[0, 41]), (Some("end_turn".into()), None, Some(0.5)));
     }

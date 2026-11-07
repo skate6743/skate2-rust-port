@@ -51,6 +51,8 @@ const REPLAY_LIMITS:[usize;3]=[4096,16384,4096];
 #[derive(Default)]
 pub(crate) struct Catalog {
     pub scenes:Vec<Arc<CharacterScene>>,pub palettes:Vec<Arc<CharacterPalette>>,pub rigs:Vec<Arc<SkaterRig>>,
+    /// A look wore parts this console lacks, whose slots took their defaults.
+    pub parts_replaced:bool,
 }
 impl Catalog {
     pub fn scene(&mut self,scene:&Arc<CharacterScene>)->usize {
@@ -113,7 +115,8 @@ impl Catalog {
             admissible(&recipe)?;
             if category=="createacharacter" {
                 let male=recipe.customizations.as_ref().is_none_or(|c|c.is_male);
-                crate::edit_skater_character::fill_missing_parts(mounts,&mut recipe,male,&category).map_err(|e|e.to_string())?;
+                let replaced=crate::edit_skater_character::fill_missing_parts(mounts,&mut recipe,male,&category).map_err(|e|e.to_string())?;
+                result.parts_replaced|=!replaced.is_empty();
             }
             recipe.customizations=recipe.customizations.map(shared);
             result.scenes.push(Arc::new(crate::mounted_character_scene::own_character_scene_category(mounts,&recipe,&category).map_err(|e|e.to_string())?));

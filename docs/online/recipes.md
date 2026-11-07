@@ -63,3 +63,10 @@ Recipes are plain data and independent of the lockstep. The same exchange (uploa
 fetch per player, cache six, default when missing) fits any transport, and the port already
 reads and writes the same record: `skate2_formats::skater_profile::RecipeData`
 (`crates/skate2-formats/src/skater_profile.rs`, after `RecipeData::Pack` 0x82b657b0).
+
+A look this console cannot build whole, such as one with parts of a linked Skate 3 data folder
+it lacks, shows as the default skater: the marquee `0x2275B90050166969` that
+`StartLoadingDefaultRecipe` 0x82748fa0 loads for a player without a recipe, which is also the
+skater of a save with no created skater. The look is the marquee's and the pose stays the
+remote player's; the skeleton comes from the local skater, as every skater's is alike
+(`Character::default_skater`, `crates/skate2-core/src/session/online/remote_skater.rs`).

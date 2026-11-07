@@ -322,6 +322,13 @@ impl GpuRenderer {
         scene.nis_white_alpha = alpha;
         Ok(())
     }
+    /// The screen fades as a black cover of their value, with PostFX or without.
+    pub(crate) fn set_fade_black(&self, scene: &mut GpuScene, alpha: f32) -> RenderResult<()> {
+        if scene.fade_black_alpha.to_bits() == alpha.to_bits() { return Ok(()); }
+        scene.fade_black = self.cover(0., alpha)?;
+        scene.fade_black_alpha = alpha;
+        Ok(())
+    }
     /// A full-screen quad of grey `level` at `alpha`; none while it is clear.
     fn cover(&self, level: f32, alpha: f32) -> RenderResult<Option<DrawList>> {
         if alpha == 0. { return Ok(None); }

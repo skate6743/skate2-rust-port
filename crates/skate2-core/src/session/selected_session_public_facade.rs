@@ -555,6 +555,8 @@ pub struct SelectedLiveSession<T, C> {
     out_of_boundary_amount: Option<f32>,
     /// Ticks before a linked Skate 3 district's water resets the skater again.
     district_water_cooldown: u32,
+    /// PC port: the ticks a challenge's skater has been on water without its wipeout starting.
+    district_water_wipeout_wait: u32,
     failed_stage: Option<SelectedLiveStage>,
     career: Option<career::CareerSession>,
     /// Host GetLocalTime provider, retained across game loads for statistics
@@ -709,6 +711,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             completed_frames: 0,
             out_of_boundary_amount: None,
             district_water_cooldown: 0,
+            district_water_wipeout_wait: 0,
             failed_stage: None,
             career: None,
             host_calendar: None,
@@ -2091,6 +2094,23 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.apply_career_fe_background();
         self.frontend_fade.update(fade_speed);
         self.update_online()?;
+        // ChallengeLoadState's kPAUSE_STATE_ONLINE: the round loads with the simulation paused.
+        // The asset stream manager updates whatever pauses the simulation, so the terrain's
+        // stream pass runs here, ahead of every screen's return below: a hull the lobby never
+        // loaded (a freeskate activity's, a linked Skate 3 game's) registers its collections
+        // through it, and the round's load waits for that hull, as every other player's waits
+        // for this one's. The Replay Editor and a travel not yet dispatched stream for
+        // themselves.
+        if self.online_round_loading()
+            && self.replay_editor.is_none()
+            && self.map_travel.filter(|_| !self.map_travel_dispatched).is_none()
+            && let Some(actor) = self.inner.player.as_ref().and_then(|player| player.selected.actor.as_deref())
+        {
+            let position = local_skater_position(self.inner.world.as_ref().map(|world| &world.world), actor)?;
+            let terrain = self.inner.terrain.as_mut().ok_or_else(|| SelectedLiveError::failed(Stage::TerrainResident, "terrain absent"))?;
+            terrain.try_advance_asset_release().map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
+            terrain.try_update_focus(position).map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
+        }
         // TimerCallback polls once for both input groups. Frontend keeps its
         // PRES history alive while paused; SIM is drained but never enqueued.
         let input = self.inner.bound_input.as_mut().expect("ready input");
@@ -2933,19 +2953,8 @@ impl<T, C> SelectedLiveSession<T, C> {
         if hub_open && !self.online.network_resumed {
             return Ok(SelectedQueuedFrameOutcome::Frontend);
         }
-        // ChallengeLoadState's kPAUSE_STATE_ONLINE: the round loads with the simulation paused.
-        // The asset stream manager updates whatever pauses the simulation, so the terrain's
-        // stream pass runs here as the gameplay path would: a hull the lobby never loaded (a
-        // freeskate activity's) registers its collections through it, and the round's load
-        // waits for that hull.
+        // A loading round runs no simulation; its stream pass ran with the online update.
         if self.online_round_loading() {
-            let position = local_skater_position(
-                self.inner.world.as_ref().map(|world| &world.world),
-                self.inner.player.as_ref().expect("ready player").selected.actor.as_deref().expect("ready Actor"),
-            )?;
-            let terrain = self.inner.terrain.as_mut().ok_or_else(|| SelectedLiveError::failed(Stage::TerrainResident, "terrain absent"))?;
-            terrain.try_advance_asset_release().map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
-            terrain.try_update_focus(position).map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
             return Ok(SelectedQueuedFrameOutcome::Frontend);
         }
         let frontend_input = if was_paused || pause.visible { Default::default() } else { frontend_input };

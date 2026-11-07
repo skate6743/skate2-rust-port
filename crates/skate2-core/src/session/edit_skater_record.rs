@@ -8,6 +8,11 @@ use skate2_formats::{
 };
 use std::sync::Arc;
 
+/// PC port: Skate 3's `bottom` colour zone, for a linked Skate 3 data folder's colourizable
+/// legs. Skate 2 has twelve zones and no colourizable legs, so a skater holds this one only
+/// once a colour is picked, in its customizations alone: `colour_ids` and an outfit's colours
+/// keep Skate 2's twelve.
+pub(crate) const BOTTOM_COLOUR: usize = 12;
 pub(crate) const MORPH_CLASS: u64 = 0x7f47_ca62_f410_0f41;
 pub(crate) const COLOUR_ZONE_CLASS: u64 = 0xae1f_950c_a0d1_adf2;
 pub(crate) const COLOUR_CLASS: u64 = 0x6d93_4d0e_38c9_5e19;
@@ -827,6 +832,9 @@ pub(crate) fn assemble_parts(
     if part(db, &ids, 18).is_some_and(|p| truth(p.colourizable)) {
         apply_colour(&mut custom, 0, ids[18]);
     }
+    if part(db, &ids, 15).is_some_and(|p| truth(p.colourizable)) {
+        apply_colour(&mut custom, BOTTOM_COLOUR as i32, ids[15]);
+    }
     // CorrectSkateboard825900d0 repoints deck stamp only when logoable.
     if part(db, &ids, 11).is_some_and(|p| truth(p.logoable)) {
         for stamp in &mut custom.stamps {
@@ -850,6 +858,15 @@ pub(crate) fn assemble_parts(
     Ok(ids)
 }
 
+/// The bottom zone's colour, added the first time one is picked; the caller sets its colour and
+/// binds it to the worn legs.
+pub(crate) fn ensure_bottom_colour(custom: &mut CharacterCustomizations) {
+    let key = BOTTOM_COLOUR as i32;
+    if !custom.colours.iter().any(|colour| colour.key == key) {
+        custom.colour_capacity = custom.colour_capacity.max(BOTTOM_COLOUR as u32 + 1);
+        custom.colours.push(Colour { key, base_rgb_bits: [0; 3], highlight_rgb_bits: [0; 3], model_id: 0, material_id: 0 });
+    }
+}
 fn apply_colour(custom: &mut CharacterCustomizations, key: i32, target: CacPartId) {
     if let Some(c) = custom.colours.iter_mut().find(|c| c.key == key) {
         c.model_id = target.model;

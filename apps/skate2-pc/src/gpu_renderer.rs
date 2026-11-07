@@ -164,6 +164,9 @@ pub struct GpuScene {
     /// The NIS transition's bloom to white as a white cover, for frames without PostFX.
     pub(crate) nis_white: Option<marker_ui::DrawList>,
     pub(crate) nis_white_alpha: f32,
+    /// PC port: the same fades as a black cover under the HUD, in a linked Skate 3 game's round.
+    pub(crate) fade_black: Option<marker_ui::DrawList>,
+    pub(crate) fade_black_alpha: f32,
     /// `AptMovieIntegration::Render`'s movie and background this frame.
     pub(crate) movie: Option<movie::MovieDraw>,
     pub(crate) final_blit: Option<(final_pass::FisheyeParameters, GpuTexture)>,
@@ -1485,6 +1488,7 @@ impl GpuRenderer {
         // AptRenderingIntegration::Render2D (0x82631b70): a movie not in the foreground
         // renders before the APT levels, one in the foreground after them.
         // FrontEndManager::Render2D (0x82633be0) draws the chase arrows before
+        if let Some(black) = &scene.fade_black { self.marker_ui.draw(&mut encoder, view, black); }
         // AptIntegration::Render2D.
         if let Some(arrows) = &scene.chase_arrows { self.marker_ui.draw(&mut encoder, view, arrows); }
         if let Some(movie) = scene.movie.filter(|movie| !movie.foreground) {

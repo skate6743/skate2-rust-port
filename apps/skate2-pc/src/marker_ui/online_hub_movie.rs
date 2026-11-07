@@ -107,13 +107,19 @@ impl OnlineHubMovie {
                 }
             }
         }
-        // menu_picker NextValue and PrevValue: SetValue, then Update.
+        // menu_picker NextValue and PrevValue: SetValue, then Update. A menu the session rebuilt
+        // shows its new items and title too: an item that came on would stay drawn off.
         if let Some(current) = self.current
             && let Some(view) = snapshot.stack.get(current)
             && self.menus[current].menu == Some(view.id)
-            && self.menus[current].shown.as_ref().is_some_and(|shown| shown.selected != view.selected)
+            && let Some(shown) = self.menus[current].shown.as_ref()
+            && shown != view
         {
-            self.render(assets, current, view)?;
+            if shown.items == view.items && shown.title == view.title {
+                self.render(assets, current, view)?;
+            } else {
+                self.update_menu_data(assets, current, view)?;
+            }
         }
         self.update_popup(assets, popup)
     }

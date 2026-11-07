@@ -64,6 +64,8 @@ pub(crate) struct LiveSkatingView {
     retained: Option<RetainedFrame>,
     /// The last tick's frame waits for the presentation's restore.
     pending_draw: bool,
+    /// PC port: the screen fades show as a black cover, none of them as a bloom to white.
+    black_fades: bool,
     /// `VIPresentation`: the challenge indicators drawn into the scene.
     visual_indicators: crate::visual_indicator_view::VisualIndicatorView,
     /// `ParticlePresentation`: the world's smoke, steam and leaves.
@@ -106,6 +108,9 @@ impl LiveSkatingView {
     /// last call.
     pub(crate) fn take_screen_events(&mut self) -> crate::marker_ui::ScreenEvents {
         self.marker_ui.as_mut().map_or_else(Default::default, crate::marker_ui::MarkerUi::take_screen_events)
+    }
+    pub(crate) fn set_black_fades(&mut self, black: bool) {
+        self.black_fades = black;
     }
     /// The challenge fade's white for frames without PostFX: `VisualFX_Animation` draws the fade
     /// as a bloom only without a tazer or Hall of Meat effect and without challenge success or
@@ -320,6 +325,7 @@ impl LiveSkatingView {
             main_menu_previous: None,
             retained: None,
             pending_draw: false,
+            black_fades: false,
             visual_indicators,
             particles: crate::particle_view::ParticleView::new(),
             movie: Default::default(),
@@ -701,12 +707,19 @@ impl LiveSkatingView {
             crate::weather_splashes::publish(visual.local_board_deck, visual.simulation_tick, replay.is_some());
             crate::weather_splashes::publish_actor(shadow.0, shadow.1, visual.local_skater_feet, visual.simulation_tick, replay.is_some());
         }
+        let black_fades = self.black_fades;
         self.retained = Some(RetainedFrame {
             simulation_tick: visual.simulation_tick,
             hom_visual: visual.hom_visual,
             traffic_light_status: visual.traffic_light_status,
             world_painter: visual.world_painter.clone(),
-            nis: career.map(|career| career.nis.clone()),
+            nis: career.map(|career| {
+                let mut nis = career.nis.clone();
+                if black_fades {
+                    nis.bloom_to_white = 0.;
+                }
+                nis
+            }),
             challenge_fade: career.and_then(|career| career.fade),
             result_info: career.map(|career| career.result_info).unwrap_or_default(),
             camera: CameraView {
@@ -873,7 +886,7 @@ impl LiveSkatingView {
                 assets.apply_hom(postfx, bail, view.planes);
             } else if result.success.is_some() || result.failed.is_some() {
                 challenge_result(postfx);
-            } else if let Some(fade) = retained.challenge_fade {
+            } else if let Some(fade) = retained.challenge_fade.filter(|_| !self.black_fades) {
                 challenge_fade(postfx, fade);
             }
             if let Some(nis) = retained.nis.as_ref() {

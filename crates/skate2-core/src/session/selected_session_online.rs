@@ -122,10 +122,10 @@ pub(super) struct OnlineGame {
     character_sent: bool,
     /// When the local recipe last went: the server takes none within two seconds of the last.
     character_sent_at: Option<std::time::Instant>,
-    /// PC port: the local skater's character as sent, which stands in for a remote skater whose
-    /// own this console cannot build (one wearing a linked Skate 3 data folder's clothing that
-    /// this console lacks, `crate::skate3`).
-    own_character: Option<Vec<u8>>,
+    /// PC port: the local skater's rig and LOD as sent, whose skeleton the default skater takes
+    /// for a remote skater whose own look this console cannot build (one wearing a linked
+    /// Skate 3 data folder's clothing that this console lacks, `crate::skate3`).
+    own_rig: Option<(Arc<crate::presentation_restore::skater::SkaterRig>, u8)>,
     /// The server holds the local recipe and a replay frame (`ChatEnabled`): T opens the chat.
     chat_enabled: bool,
     /// The last frame's header flags, for a pose sample after a teleport.
@@ -852,7 +852,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             entered: false,
             character_sent: false,
             character_sent_at: None,
-            own_character: None,
+            own_rig: None,
             chat_enabled: false,
             last_teleport: false,
             last_camera_rotation: None,
@@ -1375,7 +1375,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 match remote_skater::encode_character(&frame) {
                     Ok(data) => {
                         trace(format_args!("sending our character ({} bytes)", data.len()));
-                        game.own_character = Some(data.clone());
+                        game.own_rig = Some((Arc::clone(&frame.rig), frame.palette.skinning().lod_level));
                         if let Some(client) = &self.online.client {
                             client.send(ClientMessage::Recipe(data));
                         }
@@ -1436,23 +1436,37 @@ impl<T, C> SelectedLiveSession<T, C> {
         // skater's bones.
         let body_bones = self.inner.player.as_ref().and_then(|player| player.selected.owners.presentation.as_ref()).and_then(|presentation| presentation.animation.body);
         let mut followed_hud = None;
-        let own_character = game.own_character.clone();
+        let own_rig = game.own_rig.clone();
         let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts);
         for remote in game.remotes.values_mut() {
             match remote.finish_character() {
                 Some(Ok(took)) => trace(format_args!("{:016x}'s character built in {:.1} ms", remote.user_id, took.as_secs_f64() * 1000.0)),
                 Some(Err(e)) => {
                     trace(format_args!("{:016x}'s character failed: {e}", remote.user_id));
-                    // PC port: a look this console cannot build (another player's linked Skate 3
-                    // clothing) shows as the local skater's own, once, rather than not at all.
-                    if let Some(own) = own_character.clone().filter(|_| remote.take_stand_in()) {
-                        trace(format_args!("{:016x} stands in with our character", remote.user_id));
-                        if let Err(e) = remote.build_character(own, Arc::clone(&mounts), Arc::clone(&vault), cvars.clone()) {
-                            trace(format_args!("{:016x}'s stand-in failed: {e}", remote.user_id));
-                        }
-                    }
+                    remote.recipe_failed();
                 }
                 None => {}
+            }
+            // PC port: a look this console cannot build (another player's linked Skate 3
+            // clothing) shows as the default skater, once, rather than not at all.
+            if let Some((rig, lod)) = &own_rig
+                && remote.take_default_due()
+            {
+                trace(format_args!("{:016x} shows as the default skater", remote.user_id));
+                let built = self
+                    .inner
+                    .player
+                    .as_ref()
+                    .and_then(|player| player.selected.owners.presentation.as_ref())
+                    .and_then(|presentation| presentation.animation.bone_names())
+                    .ok_or_else(|| "presentation hierarchy absent".to_owned())
+                    .and_then(|bone_names| {
+                        let hierarchy = crate::character::CharacterHierarchy { bone_names };
+                        remote.build_default_character(Arc::clone(rig), *lod, hierarchy, Arc::clone(&mounts), Arc::clone(&vault), cvars.clone())
+                    });
+                if let Err(e) = built {
+                    trace(format_args!("{:016x}'s default skater failed: {e}", remote.user_id));
+                }
             }
             let shown = remote.visible();
             if let Err(e) = remote.advance(tick, camera_position, body_bones, &vault, &cvars) {
