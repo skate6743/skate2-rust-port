@@ -28,6 +28,37 @@ use skate_data::collections::Collections;
 /// and the ollie pop's deck ~1 cm low by its 4th frame (retail-matching with 50).
 pub(crate) const SIMULATION_ITERATIONS: u32 = 50;
 
+/// The Y offset Skateboard::ApplyForces 82C03718 adds to every queued board force's point. The
+/// Skateboard constructor binds +0x554 to FindCollection(physicsdeck, "debug") (82C010DC..
+/// 82C01178, key 550740B00AA8D4AC), not the default collection, and ApplyForces reads
+/// DeckForceYOffset from it (82C0373C..82C03778). The stock debug collection has no such
+/// entry and no parent, so GetData fails and the shared Attrib default 830D0850 (zero)
+/// applies: the forces act at the deck's centre of mass, not 5 cm above it.
+fn force_point_y_offset(data: &Collections) -> f32 {
+    data.float("physicsdeck", "debug", "DeckForceYOffset").unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod force_point_tests {
+    use super::*;
+    fn deck(debug_fields: serde_json::Value) -> Collections {
+        serde_json::from_value(serde_json::json!({"version": 1, "collections": [
+            {"class": "physicsdeck", "key": "default", "parent": "", "source": "test", "sha256": "",
+                "fields": {"DeckForceYOffset": {"type": "EA::Reflection::Float", "data": "3d4ccccd"}}},
+            {"class": "physicsdeck", "key": "debug", "parent": "", "source": "test", "sha256": "",
+                "fields": debug_fields},
+        ]}))
+        .unwrap()
+    }
+    #[test]
+    fn board_forces_take_the_debug_collection_offset_not_the_default_one() {
+        // Stock: the debug collection has no DeckForceYOffset, so the Attrib default (zero).
+        assert_eq!(force_point_y_offset(&deck(serde_json::json!({}))), 0.0);
+        let authored = serde_json::json!({"DeckForceYOffset": {"type": "EA::Reflection::Float", "data": "3c23d70a"}});
+        assert_eq!(force_point_y_offset(&deck(authored)), 0.01);
+    }
+}
+
 pub(crate) struct PhysicsSettings {
     pub step: BoardStepSettings,
     pub masses: [RetailBodyMassProperties; 7],
@@ -113,7 +144,7 @@ impl PhysicsSettings {
                 angular_damping: f("physicstrucks_drives", "Angular_Hard_Damping")?,
                 angular_strength: f("physicstrucks_drives", "Angular_Hard_Strength")?,
             }),
-            force_point_y_offset: f("physicsdeck", "DeckForceYOffset")?,
+            force_point_y_offset: force_point_y_offset(data),
         };
         if wheel_radius <= 0.0 || mass_factor <= 0.0 {
             return Err("Invalid stock board radius or mass factor".into());

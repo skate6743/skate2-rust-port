@@ -386,6 +386,15 @@ pub(crate) fn update(
         Some(follow) if owner.result.is_some() => owner.follow_result(follow)?,
         _ => owner.run(job.job),
     };
+    if crate::diagnostics::test_log::enabled() {
+        let s = &owner.controller.state;
+        let planar = |v: [f32; 4]| v[0].hypot(v[2]);
+        crate::diagnostics::test_log::event("skate3_biped_speed", format_args!(
+            "state={} timer={} biped={:.3} speed={:.3} override={:.4} anim={:.3} gate={} duration={} flags2476={:08x}",
+            p.state_2508, p.state_timer_2664, planar(s.motion.velocity_480), s.motion.speed_704,
+            s.velocity_override_remaining_772, planar(job.job.animation_velocity), job.job.requested_phase,
+            job.job.override_duration, p.flags_2476));
+    }
     super::solid_contacts::constrain_ground(owner,&mut result,previous_position,&physics.world_proxies.solids);
     if result
         .physical_frame

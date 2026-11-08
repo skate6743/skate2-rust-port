@@ -604,8 +604,10 @@ impl AndaleClipPart {
         self.sample_vbr_sqt_cached(frame, &mut None)
     }
 
-    /// Decode two frames in order, sharing immutable block coefficients when
-    /// possible. The caller retains its own interpolation/normalization policy.
+    /// Decode the two keys of a consecutive frame pair, sharing immutable block
+    /// coefficients when possible. A pair across an eight-frame block decodes the
+    /// second frame for both keys ([`vbr_pair_first_frame`]). The caller retains its
+    /// own interpolation/normalization policy.
     ///
     /// # Errors
     /// Returns the same errors, in the same order, as two `sample_vbr_sqt` calls.
@@ -616,7 +618,7 @@ impl AndaleClipPart {
     ) -> Result<[Vec<AndaleSqt>; 2], AndaleError> {
         let mut block = None;
         Ok([
-            self.sample_vbr_sqt_cached(first, &mut block)?,
+            self.sample_vbr_sqt_cached(vbr_pair_first_frame(first, second), &mut block)?,
             self.sample_vbr_sqt_cached(second, &mut block)?,
         ])
     }
@@ -647,7 +649,8 @@ impl AndaleClipPart {
 
     /// Samples and blends two integer VBR frames using the reference path's
     /// linear scale/translation blend and shortest-path normalized quaternion
-    /// blend.
+    /// blend. A pair across an eight-frame block uses the second frame for both
+    /// keys ([`vbr_pair_first_frame`]).
     ///
     /// # Errors
     ///
@@ -666,7 +669,7 @@ impl AndaleClipPart {
         // usually read the same eight-frame block; retain its decoded input
         // only for this call, preserving frame order and all reconstruction.
         let mut block = None;
-        let frame0 = self.sample_vbr_sqt_cached(frame0, &mut block)?;
+        let frame0 = self.sample_vbr_sqt_cached(vbr_pair_first_frame(frame0, frame1), &mut block)?;
         let frame1 = self.sample_vbr_sqt_cached(frame1, &mut block)?;
         if frame0.len() != frame1.len() {
             return Err(AndaleError::VbrInterpolatedFrameSizeMismatch {
@@ -685,6 +688,23 @@ impl AndaleClipPart {
                 })
             })
             .collect()
+    }
+}
+
+/// The frame `DecompressTwoConsecFrames` decodes for the first key of a consecutive pair.
+/// Across an eight-frame VBR block (7, 8) it reads the second frame's block and in-block
+/// index for both keys (82edc958..9b4, indices used at 82edce40..58), and
+/// `Vector_ExtractPackedNVBR` 82d71564..78 selects that same block, so the pose holds the
+/// second frame for the whole interval.
+#[must_use]
+pub fn vbr_pair_first_frame(first: usize, second: usize) -> usize {
+    // SKATE2_DIAGNOSTIC_VBR_PAIR=linear decodes both keys as named (A/B tests).
+    static LINEAR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let linear = *LINEAR.get_or_init(|| std::env::var("SKATE2_DIAGNOSTIC_VBR_PAIR").is_ok_and(|v| v == "linear"));
+    if !linear && first / 8 != second / 8 && (first % 8 == 7 || second % 8 == 0) {
+        second
+    } else {
+        first
     }
 }
 
@@ -3675,6 +3695,16 @@ fn u32_to_usize(value: u32) -> Result<usize, AndaleError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_vbr_pair_across_a_block_decodes_the_second_frame_for_both_keys() {
+        assert_eq!(vbr_pair_first_frame(6, 7), 6);
+        assert_eq!(vbr_pair_first_frame(7, 8), 8);
+        assert_eq!(vbr_pair_first_frame(8, 9), 8);
+        assert_eq!(vbr_pair_first_frame(15, 16), 16);
+        assert_eq!(vbr_pair_first_frame(16, 16), 16);
+        assert_eq!(vbr_pair_first_frame(0, 1), 0);
+    }
 
     fn write_header(
         bytes: &mut [u8],

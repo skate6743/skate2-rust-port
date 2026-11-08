@@ -159,6 +159,8 @@ pub enum Row {
     RainVolume,
     /// PC port addition: Smokey's puddle physics, off unless picked.
     PuddlePhysics,
+    /// PC port addition: Online Speed, the online lockstep's usual pace in offline play.
+    OnlineSpeed,
 }
 impl Row {
     /// `gGameOptionsItems` 0x82fdf9a8's type: `option`, `slider` or `selector`; the stick
@@ -175,7 +177,7 @@ impl Row {
             | Self::FpsCounter | Self::Fullscreen | Self::Subtitles | Self::CameraAngle | Self::GrindTransparency
             | Self::MiniMap | Self::Hud | Self::OffboardYAxis | Self::Vibration | Self::ShowLobbyChat
             | Self::ShowGhostPlayers | Self::StickMultiplier | Self::PhysicsMode | Self::Difficulty | Self::Weather
-            | Self::PuddlePhysics => "selector",
+            | Self::PuddlePhysics | Self::OnlineSpeed => "selector",
         }
     }
     /// `gGameOptionsItems`' title id; the PC rows carry literal text.
@@ -223,6 +225,7 @@ impl Row {
             Self::Weather => "Weather",
             Self::RainVolume => "Rain Volume",
             Self::PuddlePhysics => "Puddle Physics",
+            Self::OnlineSpeed => "Online Speed",
         }
     }
 }
@@ -266,8 +269,9 @@ const WEATHER_RAIN: &[Row] = &[Row::Weather, Row::RainVolume, Row::PuddlePhysics
 const AUDIO: &[Row] = &[Row::SfxVolume, Row::DialogueVolume, Row::MusicVolume];
 /// `gGameOptionsScreens` rows 7, 3 and 5 without `eSk8FEGameOption_VideoCalibration`, whose
 /// FE state 0 calibration screen is not ported. The PC Field of View row is last, in a game only.
-const VIDEO_MAIN_MENU: &[Row] = &[Row::Subtitles, Row::WeatherSettings];
-const VIDEO_GAME: &[Row] = &[Row::CameraAngle, Row::GrindTransparency, Row::Subtitles, Row::WeatherSettings, Row::FieldOfView];
+const VIDEO_MAIN_MENU: &[Row] = &[Row::Subtitles, Row::WeatherSettings, Row::OnlineSpeed];
+const VIDEO_GAME: &[Row] =
+    &[Row::CameraAngle, Row::GrindTransparency, Row::Subtitles, Row::WeatherSettings, Row::OnlineSpeed, Row::FieldOfView];
 const VIDEO_FREESKATE: &[Row] = &[
     Row::CameraAngle,
     Row::GrindTransparency,
@@ -275,6 +279,7 @@ const VIDEO_FREESKATE: &[Row] = &[
     Row::MiniMap,
     Row::Hud,
     Row::WeatherSettings,
+    Row::OnlineSpeed,
     Row::FieldOfView,
 ];
 /// `gGameOptionsScreens` row 8, with the PC Stick Settings page last.
@@ -719,7 +724,7 @@ impl Controller {
         if input.left == input.right {
             return Action::None;
         }
-        if matches!(row, Row::PhysicsMode | Row::Difficulty | Row::Weather | Row::RainVolume | Row::PuddlePhysics) {
+        if matches!(row, Row::PhysicsMode | Row::Difficulty | Row::Weather | Row::RainVolume | Row::PuddlePhysics | Row::OnlineSpeed) {
             self.step_mode(row, input.right);
             return Action::None;
         }
@@ -837,6 +842,7 @@ impl Controller {
                 modes.weather = Weather::ALL[step(index, Weather::ALL.len())];
             }
             Row::PuddlePhysics => modes.puddle_physics = !modes.puddle_physics,
+            Row::OnlineSpeed => modes.online_speed = !modes.online_speed,
             _ => {
                 let next = if forward { modes.rain_volume.saturating_add(1) } else { modes.rain_volume.saturating_sub(1) };
                 if next > RAIN_VOLUME_STEPS || next == modes.rain_volume {

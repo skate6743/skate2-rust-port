@@ -105,10 +105,12 @@ pub struct PcGameplayModes {
     /// Puddle Physics: with Skate 3 physics in the rain, wet wheels lose grip, deep water drags,
     /// and riding fast through it bails.
     pub puddle_physics: bool,
+    /// Online Speed: offline play paced like the online lockstep usually ran (61.5 Hz).
+    pub online_speed: bool,
 }
 impl Default for PcGameplayModes {
     fn default() -> Self {
-        Self { physics: PhysicsMode::Skate2, difficulty: Difficulty::Normal, weather: Weather::Vanilla, rain_volume: RAIN_VOLUME_STEPS, puddle_physics: false }
+        Self { physics: PhysicsMode::Skate2, difficulty: Difficulty::Normal, weather: Weather::Vanilla, rain_volume: RAIN_VOLUME_STEPS, puddle_physics: false, online_speed: false }
     }
 }
 
@@ -795,7 +797,8 @@ impl SkaterProfile {
                 };
                 // Puddle Physics came later, and a leaf ends in padding: only a set flag is on.
                 let puddle_physics = matches!(r.tuple(), Ok([1]));
-                return Ok(PcGameplayModes { physics, difficulty, weather, rain_volume, puddle_physics });
+                let online_speed = matches!(r.tuple(), Ok([1]));
+                return Ok(PcGameplayModes { physics, difficulty, weather, rain_volume, puddle_physics, online_speed });
             }
         }
         Ok(PcGameplayModes::default())
@@ -803,7 +806,8 @@ impl SkaterProfile {
     pub fn set_gameplay_modes(&mut self, modes: PcGameplayModes) -> Result<()> {
         let id = name_hash("SK82_PC::GameplayModes");
         let leaf = leaf_chunk(id, 1, &[vec![modes.physics as u8], vec![modes.difficulty as u8], vec![modes.weather as u8],
-            vec![modes.rain_volume.min(RAIN_VOLUME_STEPS)], vec![u8::from(modes.puddle_physics)]]);
+            vec![modes.rain_volume.min(RAIN_VOLUME_STEPS)], vec![u8::from(modes.puddle_physics)],
+            vec![u8::from(modes.online_speed)]]);
         for chunk in self.chunks.iter_mut().skip(1) {
             if read32(chunk, 0)? != name_hash("SK82_PC") { continue; }
             let mut children = split_chunks(&chunk[16..])?;
@@ -1211,9 +1215,10 @@ mod display_tests {
             &leaf_chunk(name_hash("SK82_PC::GameplayModes"), 1, &[vec![1], vec![2], vec![3], vec![4]])));
         let modes = earlier.gameplay_modes().unwrap();
         assert!(!modes.puddle_physics);
+        assert!(!modes.online_speed);
         assert_eq!(modes.rain_volume, 4);
         for puddle_physics in [true, false] {
-            let modes = PcGameplayModes { puddle_physics, ..PcGameplayModes::default() };
+            let modes = PcGameplayModes { puddle_physics, online_speed: !puddle_physics, ..PcGameplayModes::default() };
             let mut profile = SkaterProfile::new_empty();
             profile.set_gameplay_modes(modes).unwrap();
             let profile = SkaterProfile::parse(&profile.encode().unwrap()).unwrap();

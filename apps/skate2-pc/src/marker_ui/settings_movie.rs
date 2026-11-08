@@ -448,6 +448,7 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
             Row::Difficulty => state.modes.difficulty.label(),
             Row::Weather => state.modes.weather.label(),
             Row::PuddlePhysics => on_off(state.modes.puddle_physics),
+            Row::OnlineSpeed => on_off(state.modes.online_speed),
             _ => match state.values.frame_rate_cap {
                 FrameRateCap::Unlimited => "Unlimited",
                 FrameRateCap::Fps60 => "60 (Vanilla)",

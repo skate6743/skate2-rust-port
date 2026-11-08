@@ -86,6 +86,11 @@ impl SimulationSimRate {
     pub(crate) fn online_game(&self) -> bool {
         self.online_game
     }
+    /// Online Speed applies: picked in Gameplay Settings, outside the port's online games. Like
+    /// the network game it stands for, it keeps normal time (no slow motion).
+    pub(crate) fn online_speed_pacing(&self) -> bool {
+        !self.online_game && crate::ui::gameplay_modes::online_speed()
+    }
     /// `Simulation::IsNetworkGame`8289e448; `SkaterManager::IsInAnOnlineGame`
     /// (ISkaterManager+0x2c, folded 825f1bb8) calls the same Simulation slot. In a network game
     /// `OnRequestSetSimRate` keeps 1/60 and `SlowMotionController` posts nothing: no slow
@@ -130,7 +135,7 @@ impl SimulationSimRate {
         Ok(())
     }
     pub(crate) fn try_on_request_set_sim_rate(&mut self, message: SetSimRate) -> Result<(), SimRateError> {
-        let rate = if self.try_is_network_game()? {
+        let rate = if self.try_is_network_game()? || self.online_speed_pacing() {
             UPDATE_TIME
         } else {
             message.sim_time

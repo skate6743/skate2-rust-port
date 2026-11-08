@@ -4050,6 +4050,17 @@ impl<T, C> SelectedLiveSession<T, C> {
         Some(hz)
     }
 
+    /// Online Speed applies to this game: picked in Gameplay Settings and not online.
+    #[must_use]
+    pub fn online_speed_pacing(&self) -> bool {
+        let pacing = || -> Option<bool> {
+            let world = self.inner.world_handle()?.lock().ok()?;
+            let pacing = world.sim_rate.lock().ok()?.online_speed_pacing();
+            Some(pacing)
+        };
+        pacing().unwrap_or(false)
+    }
+
     /// Read the current generated Action and Motion states and raw PhysOut
     /// physics-state ID from the Actor that completed the latest frame.
     /// This is diagnostic observation only; an incomplete or unavailable

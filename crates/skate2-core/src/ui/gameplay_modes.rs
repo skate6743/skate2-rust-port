@@ -2,7 +2,7 @@
 //! Options publishes the rows here; the simulation, renderer and mixer read one atomic word, so
 //! a mode that is off costs nothing beyond that read.
 pub use skate2_formats::skater_profile::{Difficulty, PcGameplayModes, PhysicsMode, RAIN_VOLUME_STEPS, Weather};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// The modes packed a byte each: physics, difficulty, weather, then rain volume with Puddle
 /// Physics in its top bit.
@@ -12,7 +12,10 @@ static MODES: AtomicU32 = AtomicU32::new(pack(PcGameplayModes {
     weather: Weather::Vanilla,
     rain_volume: RAIN_VOLUME_STEPS,
     puddle_physics: false,
+    online_speed: false,
 }));
+/// Online Speed, beside the packed word (whose bits are all in use).
+static ONLINE_SPEED: AtomicBool = AtomicBool::new(false);
 
 const fn pack(modes: PcGameplayModes) -> u32 {
     modes.physics as u32 | (modes.difficulty as u32) << 8 | (modes.weather as u32) << 16 | (modes.rain_volume as u32) << 24
@@ -30,6 +33,7 @@ pub fn publish(mut modes: PcGameplayModes) {
     }
     if cfg!(not(test)) {
         MODES.store(pack(modes), Ordering::Relaxed);
+        ONLINE_SPEED.store(modes.online_speed, Ordering::Relaxed);
     }
 }
 
@@ -92,6 +96,7 @@ pub fn current() -> PcGameplayModes {
         weather: Weather::ALL.get(usize::from(byte(16))).copied().unwrap_or_default(),
         rain_volume: (byte(24) & 0x7F).min(RAIN_VOLUME_STEPS),
         puddle_physics: word >> 31 != 0,
+        online_speed: ONLINE_SPEED.load(Ordering::Relaxed),
     }
 }
 
@@ -139,6 +144,14 @@ pub fn puddle_physics() -> bool {
     current().puddle_physics
 }
 
+/// Online Speed is picked: offline play runs at the online lockstep's usual pace, without slow
+/// motion, as `OnlineNetwork::UpdateInputRate` 0x8278e4b8 kept a connected game between 61 and
+/// 62 Hz.
+#[must_use]
+pub fn online_speed() -> bool {
+    ONLINE_SPEED.load(Ordering::Relaxed)
+}
+
 /// The rain's loudness as a fraction of the sound effects' volume.
 #[must_use]
 pub fn rain_volume() -> f32 {
@@ -181,7 +194,7 @@ mod tests {
 
     #[test]
     fn modes_pack_and_unpack() {
-        let modes = PcGameplayModes { physics: PhysicsMode::Skate3, difficulty: Difficulty::Motorized, weather: Weather::Storm, rain_volume: 4, puddle_physics: true };
+        let modes = PcGameplayModes { physics: PhysicsMode::Skate3, difficulty: Difficulty::Motorized, weather: Weather::Storm, rain_volume: 4, puddle_physics: true, online_speed: true };
         let word = pack(modes);
         assert_eq!(word & 0xff, 1);
         assert_eq!(word >> 8 & 0xff, 3);

@@ -45,6 +45,10 @@ use std::{
 use winit::event::WindowEvent;
 
 const FIXED_STEP: Duration = Duration::from_nanos(16_666_667);
+/// Online Speed: the 60 Hz baseline fires at 61.5 Hz, the pace a connected online game usually
+/// kept (`OnlineNetwork::UpdateInputRate` 0x8278e4b8 sets the timer between 58 and 62 Hz and
+/// sits at 61-62 on a normal connection). Every tick still simulates 1/60 s.
+const ONLINE_SPEED_STEP: Duration = Duration::from_nanos(2_000_000_000 / 123);
 #[path="replay_entry_probe.rs"]
 mod replay_entry_probe;
 const SIM_LOCATIONS_PATH: &str = "data\\content\\world\\stream\\BAM\\BAM_Sim.loc";
@@ -214,6 +218,7 @@ pub(crate) fn run(root: &std::path::Path) -> RenderResult<()> {
         Some("coast-skate") => Some(ControlsDemo::CoastSkate),
         Some("kickturn-hold") => Some(ControlsDemo::KickturnHold),
         Some("mongo-push") => Some(ControlsDemo::MongoPush),
+        Some("caveman") => Some(ControlsDemo::Caveman),
         Some("hippy-spin") => Some(ControlsDemo::HippySpin),
         Some("footplant-stick") => Some(ControlsDemo::FootplantStick),
         Some("boneless-stick") => Some(ControlsDemo::BonelessStick),
@@ -596,6 +601,7 @@ enum ControlsDemo {
     CoastSkate,
     KickturnHold,
     MongoPush,
+    Caveman,
     HippySpin,
     FootplantStick,
     BonelessStick,
@@ -674,6 +680,25 @@ impl ControlsDemo {
                 // Diagnostic raw pad: from rest, hold X (the front-foot push) for 4.5 s.
                 if (120..390).contains(&frame) {
                     sample.buttons = 0x4000;
+                }
+            }
+            Self::Caveman => {
+                // Diagnostic raw pad: step off the board, run forward (SKATE2_CAVEMAN_SPRINT:
+                // A held from frame 200, a sprint) and hop back on with Y at
+                // SKATE2_CAVEMAN_MOUNT (default frame 330), then leave the pad alone.
+                static PLAN: std::sync::OnceLock<(u64, bool)> = std::sync::OnceLock::new();
+                let (mount, sprint) = *PLAN.get_or_init(|| {
+                    let mount = std::env::var("SKATE2_CAVEMAN_MOUNT").ok().and_then(|v| v.trim().parse().ok());
+                    (mount.unwrap_or(330), std::env::var_os("SKATE2_CAVEMAN_SPRINT").is_some())
+                });
+                if frame == 32 || frame == mount {
+                    sample.buttons = 0x8000;
+                }
+                if (160..mount).contains(&frame) {
+                    sample.left_y = i16::MAX;
+                    if sprint && frame >= 200 {
+                        sample.buttons |= 0x1000;
+                    }
                 }
             }
             Self::KickturnHold => {
@@ -1401,7 +1426,11 @@ impl LiveSkatingClient {
         if self.session.pause_menu_snapshot().visible {
             self.step = FIXED_STEP;
         } else if let Some(hz) = self.session.sim_timer_hz() {
-            self.step = timer_period(hz);
+            self.step = if hz == 60 && self.session.online_speed_pacing() {
+                ONLINE_SPEED_STEP
+            } else {
+                timer_period(hz)
+            };
         }
         if let Some([antic, flick]) = self.ollie_points {
             // Opt-in scoring diagnostic repeats ONLY original raw stick

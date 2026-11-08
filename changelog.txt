@@ -1,4 +1,2 @@
-Skate 3 data can now optionally be linked to get access to Skate 3 maps, clothes, physics and online challenges (Available in the Downloadable Content section)
-New options added to Gameplay and Display Settings (credits to Smokey for the Weather system)
-Fixed various online softlock issues
-Fixed scoring bugs with flatground tricks that caused less points
+Added "Online Speed" toggle to Gameplay Settings, which forces your game to always be slightly faster just like lobbies on original game were
+Fixed an animation related issue causing parity mistakes on Skate 3 Physics, this made mongo pushes, etc. feel off previously

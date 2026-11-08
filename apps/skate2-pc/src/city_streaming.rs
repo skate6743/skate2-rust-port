@@ -283,7 +283,11 @@ impl CityStreaming {
                     .collect()
             });
             let mounts = Arc::clone(&self.mounts);
-            let catalog = self.catalog.clone();
+            // The district's proxy registers in a catalog of its own. The Skate 2 PROXY world stays
+            // registered in the shared one for the whole session, and an asset ID both games'
+            // proxies carry keeps its first (Skate 2) metadata there, so a district proxy loaded
+            // after starting on the Skate 2 map read Skate 2's resource sizes for Skate 3's data.
+            let catalog = WorldStreamCatalog::new();
             let (send, receive) = mpsc::sync_channel(1);
             thread::Builder::new()
                 .name("district-proxy-loader".into())
