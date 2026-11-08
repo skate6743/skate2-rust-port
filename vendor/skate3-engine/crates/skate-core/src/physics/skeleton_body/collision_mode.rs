@@ -36,6 +36,10 @@ pub struct SkeletonCollisionMode {
     ///82BE82C0 table: true suppresses this pair before geometric collision.
     pub self_culling: [[bool; PART_COUNT]; PART_COUNT],
     normal_self_culling: [[bool; PART_COUNT]; PART_COUNT],
+    /// SkeletonBody constructor byte 8227 (82BE4608): both tables cull every pair.
+    cull_all_self_pairs: bool,
+    /// The ragdoll table of 82BE6D60 is installed in place of the normal one.
+    ragdoll_culling: bool,
 }
 
 impl SkeletonCollisionMode {
@@ -85,15 +89,11 @@ impl SkeletonCollisionMode {
             partial_ragdoll: false,
             is_ragdoll: false,
             settings,
-            self_culling: [[true; PART_COUNT]; PART_COUNT],
+            self_culling: normal_self_culling(cull_all_self_pairs),
             normal_self_culling: [[true; PART_COUNT]; PART_COUNT],
+            cull_all_self_pairs,
+            ragdoll_culling: false,
         };
-        if !cull_all_self_pairs {
-            for (a, b) in [(14, 4), (14, 8), (23, 4), (23, 8), (4, 18), (8, 22)] {
-                result.self_culling[a][b] = false;
-                result.self_culling[b][a] = false;
-            }
-        }
         if settings.enabled {
             result.normal_collision();
         } else {
@@ -101,6 +101,23 @@ impl SkeletonCollisionMode {
         }
         result.normal_self_culling = result.self_culling;
         result
+    }
+
+    /// Actor 82591448 passes `IsNetworkGame || ghost system` as constructor byte 8227, so a
+    /// network game's skater culls every pair of itself in both tables. PC port: this
+    /// player outlives a switch between offline and online play, where the native Actor
+    /// is rebuilt with the new byte, so the installed table follows the change.
+    pub fn set_cull_all_self_pairs(&mut self, cull_all: bool) {
+        if self.cull_all_self_pairs == cull_all {
+            return;
+        }
+        self.cull_all_self_pairs = cull_all;
+        self.normal_self_culling = normal_self_culling(cull_all);
+        self.self_culling = if self.ragdoll_culling {
+            ragdoll_self_culling(cull_all)
+        } else {
+            self.normal_self_culling
+        };
     }
 
     ///Normal riding and ascending-Air collision. Mode6 calls82BE3700, whose
@@ -193,6 +210,7 @@ impl SkeletonCollisionMode {
     /// limits in that method's original order. This method does not fake either.
     pub fn restore_normal_properties(&mut self, skeleton: &mut SkeletonBody) {
         self.self_culling = self.normal_self_culling;
+        self.ragdoll_culling = false;
         self.set_group(5);
         for part in 0..PART_COUNT {
             let animated = skeleton.definition.parts[part];
@@ -232,25 +250,8 @@ impl SkeletonCollisionMode {
         drag: [f32; 2],
         materials: [RetailContactMaterial; 2],
     ) {
-        //Exact raw82BE8900..A664 stores, not the asymmetric decompiler output.
-        const CULLED: [u32; PART_COUNT] = [
-            0x03FFFFFF, 0x03FFF447, 0x03FFFC47, 0x039B8479, 0x03BB8479, 0x039F8479, 0x03FFFFFF,
-            0x03B987C1, 0x03BB87C1, 0x03F987C1, 0x03FFFFFF, 0x03FFFC45, 0x03FFFC47, 0x03FFFC47,
-            0x03FFFC47, 0x03FFFFFF, 0x038FFFFF, 0x038FFD7F, 0x03CFFC67, 0x03FFFFFF, 0x03F8FFFF,
-            0x03F8FFD7, 0x03FCFE47, 0x03FFFFFF, 0x03FFFFFF, 0x03FFFFFF,
-        ];
-        //Constructor byte8227 selects the all-culled table for both modes.
-        if self
-            .normal_self_culling
-            .iter()
-            .flatten()
-            .all(|culled| *culled)
-        {
-            self.self_culling = [[true; PART_COUNT]; PART_COUNT];
-        } else {
-            self.self_culling =
-                std::array::from_fn(|a| std::array::from_fn(|b| CULLED[a] & (1 << b) != 0));
-        }
+        self.self_culling = ragdoll_self_culling(self.cull_all_self_pairs);
+        self.ragdoll_culling = true;
         self.set_group(6);
         for body in skeleton.bodies_mut() {
             body.inertia.linear_drag = drag[0];
@@ -350,4 +351,31 @@ impl SkeletonCollisionMode {
             }
         }
     }
+}
+
+///82BE82C0: every pair culled, then without constructor byte 8227 these six pairs collide.
+fn normal_self_culling(cull_all: bool) -> [[bool; PART_COUNT]; PART_COUNT] {
+    let mut table = [[true; PART_COUNT]; PART_COUNT];
+    if !cull_all {
+        for (a, b) in [(14, 4), (14, 8), (23, 4), (23, 8), (4, 18), (8, 22)] {
+            table[a][b] = false;
+            table[b][a] = false;
+        }
+    }
+    table
+}
+
+///82BE8728: every pair culled, then without constructor byte 8227 the ragdoll's pairs collide.
+fn ragdoll_self_culling(cull_all: bool) -> [[bool; PART_COUNT]; PART_COUNT] {
+    //Exact raw82BE8900..A664 stores, not the asymmetric decompiler output.
+    const CULLED: [u32; PART_COUNT] = [
+        0x03FFFFFF, 0x03FFF447, 0x03FFFC47, 0x039B8479, 0x03BB8479, 0x039F8479, 0x03FFFFFF,
+        0x03B987C1, 0x03BB87C1, 0x03F987C1, 0x03FFFFFF, 0x03FFFC45, 0x03FFFC47, 0x03FFFC47,
+        0x03FFFC47, 0x03FFFFFF, 0x038FFFFF, 0x038FFD7F, 0x03CFFC67, 0x03FFFFFF, 0x03F8FFFF,
+        0x03F8FFD7, 0x03FCFE47, 0x03FFFFFF, 0x03FFFFFF, 0x03FFFFFF,
+    ];
+    if cull_all {
+        return [[true; PART_COUNT]; PART_COUNT];
+    }
+    std::array::from_fn(|a| std::array::from_fn(|b| CULLED[a] & (1 << b) != 0))
 }

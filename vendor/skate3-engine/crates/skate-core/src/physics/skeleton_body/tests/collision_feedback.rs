@@ -2,6 +2,21 @@ use super::*;
 use crate::physics::{contact::RetailContactMaterial, skeleton_animation_record::IDENTITY};
 
 #[test]
+fn a_network_game_culls_every_self_pair_and_offline_play_restores_the_six() {
+    let offline = SkeletonCollisionMode::new_normal(settings().body, false);
+    let online = SkeletonCollisionMode::new_normal(settings().body, true);
+    assert!(online.self_culling.iter().flatten().all(|culled| *culled));
+    let open = offline.self_culling.iter().flatten().filter(|culled| !**culled).count();
+    assert_eq!(open, 12, "six pairs, both orders");
+    assert!(!offline.self_culling[14][4] && !offline.self_culling[22][8]);
+    let mut switched = SkeletonCollisionMode::new_normal(settings().body, false);
+    switched.set_cull_all_self_pairs(true);
+    assert_eq!(switched.self_culling, online.self_culling);
+    switched.set_cull_all_self_pairs(false);
+    assert_eq!(switched.self_culling, offline.self_culling);
+}
+
+#[test]
 fn handplant_contact_mask_survives_updates_and_restores_on_exit() {
     let mut collision = SkeletonCollisionMode::new_normal(settings().body, false);
     for _ in 0..3 {

@@ -116,7 +116,8 @@ Order rules that matter (each one fixed a real bug):
 - Camera rate requests from tick N apply at the start of N+1, and never online.
 - Body reactions apply to the host body before its next publication, once.
 - No tick without resident collision; a queued teleport waits for the previous one to be consumed.
-- Set the online flag before the tick (`set_online`: 25 passes).
+- Set the online flag before the tick (`set_online`: 25 passes; `set_cull_all_self_pairs`: no
+  self-collision; the solve then caps the board and skeleton world contacts at 80 together).
 
 ## 5. What to read out
 
@@ -139,7 +140,7 @@ Order rules that matter (each one fixed a real bug):
 | AI-skater bump | end-on board hit at ~9 m/s: board contact flag bit 30, Bumped, no wipeout |
 | Prop push | grab a ramp, pull ~2 m; the legs cycle without restarting each tick |
 | Breadcrumbs | entries every 1.5 m (score 100); an airborne A reset returns to the last good crumb |
-| Online | 25 passes; turn wipeout limit resets after 4 s (Spot Battle) / 5 s (S.K.A.T.E.) |
+| Online | 25 passes; no self-collision riding or in a bail; at most 80 world contacts for board and skeleton per tick; turn wipeout limit resets after 4 s (Spot Battle) / 5 s (S.K.A.T.E.) |
 | Grind scoring | grind exits score with valid scorables and spline GUIDs |
 
 Tests in the repo: `crates/skate2-core` unit tests under `physics/modes/skate3/**/tests*`

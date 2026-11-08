@@ -248,6 +248,13 @@ fn query_edges() -> Vec<EdgeSegment> {
         .collect()
 }
 
+/// A network game's skater world contacts per tick (Step_Collision1 827641A0..4318): the
+/// online skater ground job gets the cap 0x51 - 1 = 80 (827642E0..F8), its one buffer for
+/// the board and skeleton assemblies together, inside the visual island's 80-contact
+/// ContactCacheWrapper (827631C8 slot 20, 82765AA0). Offline the job writes the solver's
+/// contact cache with no cap (-1).
+pub(super) const ONLINE_SKATER_GROUND_CONTACTS: u32 = 80;
+
 pub(super) fn query_settings() -> (WorldContactSettings, ContactRetentionSettings) {
     (
         WorldContactSettings {

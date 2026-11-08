@@ -32,7 +32,9 @@ Addresses below: Skate 2 functions for the host frame, TU3 functions for the Ska
 
 ## B. `Skate3Player::prepare_animation_tick` (`physics/skate3_player.rs`)
 
-1. Online flag → solver passes (25 online, 50 offline) and the turn bail limit (an online turn's
+1. Online flag → solver passes (25 online, 50 offline), the skeleton's self-collision tables (every
+   pair culled online), the world-contact cap (80 for the board and skeleton together online,
+   none offline) and the turn bail limit (an online turn's
    wipeout limit, or `SKATE2_DIAGNOSTIC_TURN_BAIL_LIMIT` offline).
 2. No resident collision → wait (no tick, no teleport consumed).
 3. A finished background terrain build swaps in; a changed resident set starts a new one

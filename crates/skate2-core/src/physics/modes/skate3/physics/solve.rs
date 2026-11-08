@@ -40,10 +40,37 @@ fn advance_inner(
     // Skeleton82BE5094 passes false to82768728: its edge threshold is -1,
     // whereas the board requests .999. GroundPipeline supplies the remaining
     // shared values. Do not let the second query overwrite the first's rows.
-    let mut contacts = physics
-        .world
-        .query_primitives(&board_volumes, physics.query, physics.retention)
-        .to_vec();
+    let mut skeleton_query = physics.query;
+    skeleton_query.edge_cos_bend_normal_threshold = -1.0;
+    let mut skeleton_world_volumes = skeleton_volumes.clone();
+    skeleton_colliders::retain_world_volumes(&mut skeleton_world_volumes, &skater.skeleton_collision);
+    let mut contacts = if physics.network_active {
+        // Online the board and skeleton (the skater pool's two assemblies, board first:
+        // Skateboard 82DB1F3C precedes Skeleton::Init 82DB2080) share one job and its
+        // 80-contact cap.
+        let retention = skate3_core::physics::board_world::ContactRetentionSettings {
+            capacity: super::ground::ONLINE_SKATER_GROUND_CONTACTS,
+            ..physics.retention
+        };
+        physics
+            .world
+            .query_primitive_groups(
+                &[(board_volumes.as_slice(), physics.query), (skeleton_world_volumes.as_slice(), skeleton_query)],
+                retention,
+            )
+            .to_vec()
+    } else {
+        let mut contacts = physics
+            .world
+            .query_primitives(&board_volumes, physics.query, physics.retention)
+            .to_vec();
+        contacts.extend_from_slice(physics.world.query_primitives(
+            &skeleton_world_volumes,
+            skeleton_query,
+            physics.retention,
+        ));
+        contacts
+    };
     // Puddle Physics: the player's wet wheels lose grip against the static map.
     if physics.puddle_decision.depths.iter().any(|&depth| depth > 0.003) {
         use skate3_core::physics::board_step::CollisionBody;
@@ -66,15 +93,6 @@ fn advance_inner(
             }
         }
     }
-    let mut skeleton_query = physics.query;
-    skeleton_query.edge_cos_bend_normal_threshold = -1.0;
-    let mut skeleton_world_volumes = skeleton_volumes.clone();
-    skeleton_colliders::retain_world_volumes(&mut skeleton_world_volumes, &skater.skeleton_collision);
-    contacts.extend_from_slice(physics.world.query_primitives(
-        &skeleton_world_volumes,
-        skeleton_query,
-        physics.retention,
-    ));
     assembly_contacts::append(
         &mut contacts,
         &board_volumes,

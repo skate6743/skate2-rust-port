@@ -255,8 +255,8 @@ impl Skate3ControllerState {
         let foot_ik = FootIk::load(&data, &animation.evaluator.frames, &animated_skeleton)?;
         let skeleton_output =
             SkeletonOutput::load(&data, &animation.evaluator.frames, &animated_skeleton)?;
-        // Actor82591448 passes network || ghost for self-pair suppression.
-        // This local game has neither networking nor a ghost actor.
+        // Actor82591448 passes network || ghost for self-pair suppression. An online
+        // game's value is applied by Skate3Player before the first step (set_cull_all_self_pairs).
         let skeleton_collision = skeleton_body::load_collision(
             asset_root,
             &data,

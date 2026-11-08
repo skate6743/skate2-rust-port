@@ -181,7 +181,12 @@ read by the shared Skate 2 systems from the same linked data.
   Truck Tightness and Wheel Stiffness (default 0.7/0.7 as TU3's new-skater record; profile leaf
   `SK82_PC::Skate3Equipment`), Gesture Set. Skate 3 physics plays the saved Skate 3 gestures.
 - **Online**: the solver runs 25 passes (`Skate3PhysicsState::set_online`, TU3
-  `Island::Step_UpdatePrePhysics1` 0x82763E00) and the clock ignores camera slow motion.
+  `Island::Step_UpdatePrePhysics1` 0x82763E00), the island culls boards and riders against
+  each other (`Island::InitCullingTable` 0x82765EF0), the skater's own parts never collide with
+  each other, riding or ragdoll (`SkeletonCollisionMode::set_cull_all_self_pairs`, TU3 Actor
+  0x82591448 to SkeletonBody byte 8227), the board and skeleton keep at most 80 world contacts
+  per tick between them (`BoardWorld::query_primitive_groups`, TU3 0x827641A0 and the visual
+  island's ContactCacheWrapper 0x827631C8), and the clock ignores camera slow motion.
 
 ## Physics mode changes
 

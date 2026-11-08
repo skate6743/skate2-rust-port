@@ -95,6 +95,8 @@ checked in a scripted run of the port. TU3 addresses throughout.
 | Camera stayed "further away" after switching back to Skate 2 | Skate 2's path never writes the frame field of view | the replaced value is kept and restored | |
 | Slow motion | OnRequestSetSimRate 0x82857EC8 sets a wall-clock timer, never the integration step | camera slow motion only through Skate 2's SetSimRate, only with the airtime option, never online | |
 | Online physics | Island::Step_UpdatePrePhysics1 0x82763E00: 25 passes off the single-player island | `set_online` | |
+| Online self-collision | Actor 0x82591448 passes IsNetworkGame or the ghost system to SkeletonBody byte 8227; CreateNormalCullingTable 0x82BE82C0 and CreateRagdollCullingTable 0x82BE8728 then cull every pair | `set_cull_all_self_pairs` from the online flag | unit test |
+| Online world-contact cap | 0x827641A0 gives the online skater ground job a cap of 80 (0x827642E0..F8) and an 80-contact buffer on the visual island (0x827631C8 slot 20); the job's one TempContactBuffer (0x8277C654..C6A8) holds the board and skeleton together, board first, and refuses records past the cap (0x82779D60) | `query_primitive_groups` with `ONLINE_SKATER_GROUND_CONTACTS` while online | unit test |
 
 ## Checked and found equal (no change needed)
 

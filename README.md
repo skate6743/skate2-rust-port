@@ -50,10 +50,7 @@ PC. Requires your own legally obtained Xbox 360 copy of Skate 2 to run, you will
   through packet loss and jitter, and challenge rules still run the same on every machine.
 - **Bigger lobbies.** Up to 8 skaters, a **Lobby Browser** that lists the games on the server,
   and **lobby chat** (press T).
-- **Watch a challenge in progress.** Join a game mid-challenge, or pick **Leave Challenge** in
-  the pause menu, and you wait in the pre-game lobby watching the players still in the challenge
-  as ghosts. They never see you. Online Settings' **Show Ghost Players in pregame lobby** turns
-  the ghosts off.
+- **More online features.** This include the ability to **spectate** other online players by pressing **LB+B**, also when joining challenges in progress you can see other players ghost skaters inside the challenge live.
 - **Display Settings.** A frame-rate cap (60, 120, your monitor's refresh rate or uncapped), VSync
   (on: no tearing; off: frames show at once, with the cap still applied), a resolution scale
   (50% to 200%: above 100% the world renders larger and is scaled down for a sharper picture,
@@ -64,6 +61,7 @@ PC. Requires your own legally obtained Xbox 360 copy of Skate 2 to run, you will
 - **Stick Settings.** Under Control Settings, each stick takes a multiplier (0.40 to 1.10), a
   deadzone and an anti-deadzone that work as RPCS3's do, with both sticks drawn live beside them.
   Out of the box, and after Reset To Default, the sticks feel exactly as the original's.
+- **Link Skate 3 data.** You can now link your own copy of Skate 3 data and play Port Carverton maps and hotswap between Skate 2/3 physics from the **Physics Settings** menu ingame.
 
 ## How to play
 
@@ -146,10 +144,7 @@ AAC: put `ffmpeg.exe` (`ffmpeg` on Linux and macOS) beside the game, or on your 
 ## Not done yet
 
 - [ ] Create-a-Spot
-- [ ] DLC support (perhaps even being able to link Skate 3 data)
 - [ ] Ranked online play
-- [ ] Online Freeskate activities
-- [ ] Controller vibration
 
 ## Building from source
 

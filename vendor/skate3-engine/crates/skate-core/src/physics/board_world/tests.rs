@@ -551,3 +551,51 @@ fn volume_query_shape_bounds_follow_the_retail_bounds_slots() {
     assert_eq!(b.min.y.to_bits(), (-ey).to_bits());
     assert_eq!(b.max.z.to_bits(), (0.2f32 + 0.03).to_bits());
 }
+
+#[test]
+fn one_job_buffer_caps_its_assemblies_together() {
+    let volume = |body, z: f32| BoardWorldVolume {
+        collision_group: 0,
+        body,
+        primitive: ContactPrimitive::Sphere(Sphere {
+            center: Vector3::new(-1., 0.15, z),
+            radius: 0.2,
+        }),
+        motion: VolumeMotion::default(),
+        material: material(),
+    };
+    let board: Vec<_> = (0..3)
+        .map(|i| volume(CollisionBody::Board(BodyId::Deck), -1.4 + 0.3 * i as f32))
+        .collect();
+    let skeleton: Vec<_> = (0..3)
+        .map(|i| volume(CollisionBody::Attached(i), -1.3 + 0.3 * i as f32))
+        .collect();
+    let query = WorldContactSettings {
+        volume_padding: 0.05,
+        maximum_separating_distance: 0.1,
+        edge_cos_bend_normal_threshold: -1.,
+        convexity_epsilon: 0.,
+        is_object: false,
+    };
+    let retention = |capacity| ContactRetentionSettings {
+        capacity,
+        duplicate_distance_squared: -1.,
+        deferred_reduction: false,
+    };
+    let is_board = |c: &BoardCollision| {
+        matches!((c.body_a, c.body_b), (CollisionBody::Board(_), _) | (_, CollisionBody::Board(_)))
+    };
+    let mut world = BoardWorld::new(vec![face(0., 17, 0.)]);
+    let board_alone = world.query_primitives(&board, query, retention(u32::MAX)).len();
+    let skeleton_alone = world.query_primitives(&skeleton, query, retention(u32::MAX)).len();
+    assert!(board_alone > 0 && skeleton_alone > 1);
+    let groups = [(board.as_slice(), query), (skeleton.as_slice(), query)];
+    let all = world.query_primitive_groups(&groups, retention(u32::MAX)).len();
+    assert_eq!(all, board_alone + skeleton_alone);
+    // A cap one past the board's rows keeps the board's, then one skeleton row.
+    let capped = world
+        .query_primitive_groups(&groups, retention(board_alone as u32 + 1))
+        .to_vec();
+    assert_eq!(capped.len(), board_alone + 1);
+    assert_eq!(capped.iter().filter(|c| is_board(c)).count(), board_alone);
+}

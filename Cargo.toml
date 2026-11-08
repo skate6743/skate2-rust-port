@@ -15,7 +15,7 @@ members = [
 [workspace.package]
 # The release version: with a release key it names the build's secret (apps/build_secret.rs), so a
 # new version's game and server meet only each other.
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 license = "GPL-3.0-only"
 rust-version = "1.85"

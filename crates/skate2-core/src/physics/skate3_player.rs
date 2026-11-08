@@ -487,6 +487,7 @@ impl Skate3Player {
         let _test_stage = crate::diagnostics::test_log::span("skate3_player_animation_prepare");
         let online = world.sim_rate.lock().map_err(|_| "simulation rate lock")?.online_game();
         self.physics.set_online(online);
+        self.skater.skeleton_collision.set_cull_all_self_pairs(online);
         self.physics.turn_bail_limit = match world.physical_world_services() {
             Some(services) => services.game_info().try_turn_bail_limit().map_err(|e| format!("{e:?}"))?,
             None => None,

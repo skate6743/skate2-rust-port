@@ -471,6 +471,19 @@ impl BoardWorld {
         query: WorldContactSettings,
         retention: ContactRetentionSettings,
     ) -> &[BoardCollision] {
+        self.query_primitive_groups(&[(volumes, query)], retention)
+    }
+
+    /// Ground job 8277C5D8 runs every assembly of one job through one TempContactBuffer:
+    /// it is set up once (8277C654..C6A8), each assembly's triangle tests append to it in
+    /// pool order, and with a non-positive flush threshold (8277C970) it publishes only when
+    /// its 50 records fill or the job ends. A capacity therefore counts the job's assemblies
+    /// together, and the later ones lose their contacts once it is reached.
+    pub fn query_primitive_groups(
+        &mut self,
+        groups: &[(&[BoardWorldVolume], WorldContactSettings)],
+        retention: ContactRetentionSettings,
+    ) -> &[BoardCollision] {
         self.contacts.clear();
         self.buffer.count = 0;
         self.buffer.flushed = 0;
@@ -479,6 +492,26 @@ impl BoardWorld {
         self.buffer.capacity = retention.capacity;
         self.buffer.distance_squared_threshold = retention.duplicate_distance_squared;
         self.buffer.deferred_reduction = u8::from(retention.deferred_reduction);
+        let mut output = std::mem::take(&mut self.contacts);
+        for &(volumes, query) in groups {
+            self.append_group(volumes, query, &mut output);
+        }
+        if self.buffer.full == 0 {
+            self.buffer
+                .flush(&mut |records: &[ContactRecord]| output.extend(records.iter().map(collision_from_record)));
+        }
+        self.contacts = output;
+        &self.contacts
+    }
+
+    /// One assembly's triangle tests (AssemblyTriangleIntersectionTester 8277BC58) into the
+    /// job's buffer. A refused record ends this assembly's tests.
+    fn append_group(
+        &mut self,
+        volumes: &[BoardWorldVolume],
+        query: WorldContactSettings,
+        output: &mut Vec<BoardCollision>,
+    ) {
         let padding =
             if query.volume_padding.is_finite() && query.maximum_separating_distance.is_finite() {
                 query.volume_padding.max(0.) + query.maximum_separating_distance.max(0.)
@@ -524,11 +557,10 @@ impl BoardWorld {
             .and_then(|b| Bounds::from_points(b.iter().flat_map(|b| [b.min, b.max])))
             .map(|b| b.expanded(padding));
         let ranges = self.candidate_ranges(bounds);
-        let mut output = std::mem::take(&mut self.contacts);
         let mut publish = |records: &[ContactRecord]| {
             output.extend(records.iter().map(collision_from_record));
         };
-        'triangles: for index in ranges.into_iter().flatten() {
+        for index in ranges.into_iter().flatten() {
             let entry = self.triangles[index];
             for (volume, volume_bounds) in volumes.iter().zip(&volume_bounds) {
                 // GroundPipeline8277BC58 checks the group/surface exclusion
@@ -563,7 +595,7 @@ impl BoardWorld {
                     };
                     let Some(slot) = self.buffer.allocate(&mut publish) else {
                         self.buffer.flush(&mut publish);
-                        break 'triangles;
+                        return;
                     };
                     self.buffer.records[slot] = retention_record(volume.body, contact);
                     //8277C23C removes the most recent record on rejection.
@@ -573,11 +605,6 @@ impl BoardWorld {
                 }
             }
         }
-        if self.buffer.full == 0 {
-            self.buffer.flush(&mut publish);
-        }
-        self.contacts = output;
-        &self.contacts
     }
 
     pub fn contacts(&self) -> &[BoardCollision] {
