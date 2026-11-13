@@ -3710,6 +3710,12 @@ impl<T, C> SelectedLiveSession<T, C> {
             None => return false,
         };
         let Ok(position) = position else { return false };
+        self.diagnostic_teleport_to(position, on_board, yaw)
+    }
+
+    /// Diagnostics: the local skater teleported to `position`, facing `yaw` radians about +y
+    /// from +z, on its board or off it.
+    pub fn diagnostic_teleport_to(&mut self, position: [f32; 3], on_board: bool, yaw: f32) -> bool {
         let (sin, cos) = yaw.sin_cos();
         let mut transform = [0.0; 16];
         transform[0] = cos;

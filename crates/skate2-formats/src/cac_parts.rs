@@ -1,6 +1,6 @@
 //! CACPartDB::Initialize82b6ca18, string table82b68590, part table82b6c828.
 //! Tables retain their authored order; slots index the original contiguous ranges.
-use crate::recipe::{CharacterRecipe, CharacterRecipeError};
+use crate::recipe::{CharacterModel, CharacterRecipe, CharacterRecipeError};
 use std::ops::Range;
 
 pub const DATABASE_PATH: &str = "data\\content\\recipe\\createacharacter\\cas_db_000.recipe";
@@ -44,6 +44,25 @@ const SKATE3_RECORD: usize = 208;
 /// `Unlock` and `SponsorUnlock` among the 43 string indices.
 const UNLOCK_INDEX: usize = 41;
 const SPONSOR_UNLOCK_INDEX: usize = 37;
+/// The DLC id list among the 43 string indices (`DLCFilter::AcceptImpl` 0x82670190): a part with
+/// one is not offered.
+const DLC_INDEX: usize = 7;
+
+/// PC port: the materials of `theirs` (the same model in another database) that `ours` lacks, each
+/// joining its level of detail's material instance of the same place (`compose_recipe` finds a
+/// part's material there by its id).
+fn join_materials(ours: &mut CharacterModel, theirs: &CharacterModel) {
+    for lod in &theirs.lods {
+        let Some(held) = ours.lods.iter_mut().find(|held| held.level == lod.level) else { continue };
+        for (instance, their_instance) in held.material_instances.iter_mut().zip(&lod.material_instances) {
+            for material in &their_instance.materials {
+                if !instance.materials.iter().any(|known| known.asset_id == material.asset_id) {
+                    instance.materials.push(material.clone());
+                }
+            }
+        }
+    }
+}
 
 fn skate3_part(b: &[u8]) -> CacPart {
     let index = |i: usize| u16::from_be_bytes([b[110 + i * 2], b[111 + i * 2]]);
@@ -146,21 +165,57 @@ impl CacPartDb {
     /// material), their strings joined to this one's table, and with no unlock (Skate 3's unlocks
     /// are not this game's). [`CacPartDb::is_skate3`] tells them apart.
     pub fn with_skate3(&self, skate3: &CacPartDb, slots: &[u8]) -> Result<Self, CacPartError> {
+        self.with_skate3_where(skate3, slots, |_, _| true, false)
+    }
+
+    /// PC port: [`CacPartDb::with_skate3`] with only the parts of `skate3` that `keep` takes (by
+    /// slot), and of the models `skate3`'s parts use, only those a part taken uses: a Skate 3
+    /// downloadable content pack's database also holds the parts of the packs before it, whose
+    /// files only those packs carry. With `available`, each part `keep` takes is offered whatever
+    /// downloadable content its DLC ids name (its files are there), this database's own copy of it
+    /// as well.
+    pub fn with_skate3_where(
+        &self,
+        skate3: &CacPartDb,
+        slots: &[u8],
+        keep: impl Fn(u8, &CacPart) -> bool,
+        available: bool,
+    ) -> Result<Self, CacPartError> {
+        let mut kept = vec![false; skate3.parts.len()];
+        for slot in 0..26_u8 {
+            for index in skate3.slot_range(slot) {
+                if let Some(part) = skate3.parts.get(index) {
+                    kept[index] = keep(slot, part);
+                }
+            }
+        }
         // The master recipe's components hold each part's model; the joined slots' models join
-        // this one's components (a slot it lacks joins whole).
+        // this one's components (a slot it lacks joins whole), but a model only parts left out use.
         let mut master = self.master.clone();
         for &slot in slots {
             let Some(name) = SLOT_NAMES.get(usize::from(slot)) else { continue };
             let Some(theirs) = skate3.master.components.iter().find(|component| component.name == *name) else { continue };
+            let range = skate3.slot_range(slot);
+            let wanted = |model: u64| {
+                let mut users = range.clone().filter(|&index| skate3.parts.get(index).is_some_and(|part| part.model_id == model)).peekable();
+                users.peek().is_none() || users.any(|index| kept[index])
+            };
             match master.components.iter_mut().find(|component| component.name == *name) {
                 Some(ours) => {
-                    for model in &theirs.models {
-                        if !ours.models.iter().any(|held| held.asset_id == model.asset_id) {
-                            ours.models.push(model.clone());
+                    for model in theirs.models.iter().filter(|model| wanted(model.asset_id)) {
+                        match ours.models.iter_mut().find(|held| held.asset_id == model.asset_id) {
+                            // A model this one holds already: theirs may name material variants
+                            // of it this one lacks (a pack's colourways of a shared model).
+                            Some(held) => join_materials(held, model),
+                            None => ours.models.push(model.clone()),
                         }
                     }
                 }
-                None => master.components.push(theirs.clone()),
+                None => {
+                    let mut component = theirs.clone();
+                    component.models.retain(|model| wanted(model.asset_id));
+                    master.components.push(component);
+                }
             }
         }
         let mut merged = Self { master, parts: Vec::with_capacity(self.parts.len() + skate3.parts.len()),
@@ -172,8 +227,13 @@ impl CacPartDb {
             merged.parts.extend(self.parts_in_slot(slot).cloned());
             let own = merged.parts.len();
             let joined = if slots.contains(&slot) { skate3.slot_range(slot) } else { 0..0 };
-            for part in &skate3.parts[joined] {
-                if self.find(slot, part.model_id, part.material_id).is_some() {
+            for at in joined {
+                let Some(part) = skate3.parts.get(at).filter(|_| kept[at]) else { continue };
+                let held = self.slot_range(slot).position(|i| self.parts.get(i).is_some_and(|q| q.model_id == part.model_id && q.material_id == part.material_id));
+                if let Some(held) = held {
+                    if available && let Some(copy) = merged.parts.get_mut(start + held) {
+                        copy.attributes[DLC_INDEX] = u16::MAX;
+                    }
                     continue;
                 }
                 let mut part = part.clone();
@@ -181,7 +241,7 @@ impl CacPartDb {
                     if *attribute == u16::MAX {
                         continue;
                     }
-                    if matches!(at, UNLOCK_INDEX | SPONSOR_UNLOCK_INDEX) {
+                    if matches!(at, UNLOCK_INDEX | SPONSOR_UNLOCK_INDEX) || (available && at == DLC_INDEX) {
                         *attribute = u16::MAX;
                         continue;
                     }

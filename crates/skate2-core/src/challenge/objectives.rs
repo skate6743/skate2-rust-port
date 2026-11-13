@@ -322,6 +322,9 @@ pub struct PlayerState {
     pub manual_time: f32,
     /// `PhysOut_Trick::mCurrentAnimData.mAnimTrickBits`.
     pub anim_trick_bits: u32,
+    /// `PhysOut_Animation::mIsRidingFakie` and `mIsRidingSwitch` (+0x97, +0x99).
+    pub riding_fakie: bool,
+    pub riding_switch: bool,
     /// `PhysOut_Filtered::mFilteredPhysicsState` is `WIPEOUT` (4).
     pub wiping_out: bool,
 }

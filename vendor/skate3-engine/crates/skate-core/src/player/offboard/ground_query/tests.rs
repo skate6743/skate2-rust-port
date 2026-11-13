@@ -136,3 +136,26 @@ fn seventh_hit_height_and_first_hit_material_reach_consumed_flags() {
     hits[6] = Some(hit(v(0., -0.9, 0.)));
     assert!(!interpret_hits(&packet, hits).flag26);
 }
+#[test]
+fn raised_cross_probe_not_centre_probe_blocks_the_edge() {
+    let packet = prepare_packet(
+        Frame::IDENTITY,
+        context(),
+        EdgeSelection {
+            edge: Edge {
+                start: v(0., 0., -1.),
+                end: v(0., 0., 1.),
+            },
+            closest: Vector3::ZERO,
+        },
+        0.25,
+    )
+    .unwrap();
+    let mut hits = [None; 7];
+    hits[0] = Some(hit(Vector3::ZERO));
+    hits[2] = Some(hit(Vector3::ZERO));
+    hits[4] = Some(hit(Vector3::ZERO));
+    assert_eq!(interpret_hits(&packet, hits).kind, 2);
+    hits[5] = Some(hit(v(0., 0.09, 0.)));
+    assert_eq!(interpret_hits(&packet, hits).kind, 3);
+}

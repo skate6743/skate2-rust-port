@@ -161,6 +161,57 @@ fn tail_manual_time(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R 
     Ok(vec![Value::Number(time)])
 }
 
+/// `ManualTime` (`0x82d453d0`): `PhysOut_Scoring2::mManualTime`.
+fn manual_time(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
+    Ok(vec![Value::Number(player(world).manual_time)])
+}
+
+/// `ManualDistance` (`0x82d454a0`): `mManualLength`.
+fn manual_distance(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
+    Ok(vec![Value::Number(player(world).manual_length)])
+}
+
+/// `IsNoseManualing` (`0x82d45570`): the current trick animation's `mIsNoseManual` bit (27)
+/// with `mManualLength > 0`.
+fn is_nose_manualing(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
+    let state = player(world);
+    boolean(state.anim_trick_bits & 0x0800_0000 != 0 && state.manual_length > 0.0)
+}
+
+/// `NoseManualDistance` (`0x82d45758`): `mManualLength` while `mIsNoseManual` (bit 27) is
+/// set, else 0.
+fn nose_manual_distance(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
+    let state = player(world);
+    let distance = if (state.anim_trick_bits >> 27) & 1 == 1 { state.manual_length } else { 0.0 };
+    Ok(vec![Value::Number(distance)])
+}
+
+/// `IsTailManualing` (`0x82d45848`): `mIsTailManual` (bit 26) with `mManualLength > 0`.
+fn is_tail_manualing(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
+    let state = player(world);
+    boolean(state.anim_trick_bits & 0x0400_0000 != 0 && state.manual_length > 0.0)
+}
+
+/// `TailManualDistance` (`0x82d45a30`): `mManualLength` while `mIsTailManual` (bit 26) is
+/// set, else 0.
+fn tail_manual_distance(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
+    let state = player(world);
+    let distance = if (state.anim_trick_bits >> 26) & 1 == 1 { state.manual_length } else { 0.0 };
+    Ok(vec![Value::Number(distance)])
+}
+
+// ---- Stance -----------------------------------------------------------------
+
+/// `IsFakie` (`0x82d44cb8`): `PhysOut_Animation::mIsRidingFakie` (+0x97).
+fn is_fakie(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
+    boolean(player(world).riding_fakie)
+}
+
+/// `IsSwitch` (`0x82d44d88`): `PhysOut_Animation::mIsRidingSwitch` (+0x99).
+fn is_switch(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
+    boolean(player(world).riding_switch)
+}
+
 // ---- Tricks -----------------------------------------------------------------
 
 /// `DidSpecificTrick(name)` (`0x82d4ae08`) ->
@@ -755,8 +806,16 @@ pub(crate) fn natives() -> Vec<(&'static str, &'static str, NativeFn<World>)> {
         ("ObjectiveHOM", "GetWipeoutDuration", get_wipeout_duration),
         ("Wipeout", "IsWipingOut", is_wiping_out),
         ("Manual", "IsManualing", is_manualing),
+        ("Manual", "ManualTime", manual_time),
+        ("Manual", "ManualDistance", manual_distance),
+        ("Manual", "IsNoseManualing", is_nose_manualing),
         ("Manual", "NoseManualTime", nose_manual_time),
+        ("Manual", "NoseManualDistance", nose_manual_distance),
+        ("Manual", "IsTailManualing", is_tail_manualing),
         ("Manual", "TailManualTime", tail_manual_time),
+        ("Manual", "TailManualDistance", tail_manual_distance),
+        ("Stance", "IsFakie", is_fakie),
+        ("Stance", "IsSwitch", is_switch),
         ("Tricks", "DidSpecificTrick", did_specific_trick),
         ("Tricks", "DidSpecificTrickThisFrame", did_specific_trick_this_frame),
         ("Tricks", "DidSpecificTrickGroup", did_specific_trick_group),

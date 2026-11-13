@@ -418,6 +418,16 @@ pub struct PauseMenuInput {
     /// stick navigation `AptUp` and `AptDown` take (PC port: the Stick Settings pages).
     pub dpad_up: bool,
     pub dpad_down: bool,
+    /// `AptDLeft` and `AptDRight` (states 152 and 153), the D-pad alone (PC port: Edit Skater's
+    /// colour picker, as each control below).
+    pub dpad_left: bool,
+    pub dpad_right: bool,
+    /// `ManualLStickY` (state 207): the left stick up, `morph_axis` being its right.
+    pub left_stick_y: f32,
+    /// `ManualRStickX` and `ManualRStickY` (states 204 and 206): the right stick right and up.
+    pub right_stick: [f32; 2],
+    /// `GP_LTrigger` and `GP_RTrigger` (input map states 80 and 81): the triggers' travel.
+    pub triggers: [f32; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -41,6 +41,15 @@ impl HookDriveState {
         self.enable_angular_soft();
     }
 
+    /// 82D75AC8's inline setup for a board resting on the ground (SkateboardController state
+    /// 5): the animated flag, a hard linear drive (maximum velocity 822F860C, no damping,
+    /// strength 822F8990), then 82C0D5C0.
+    pub fn enable_animation_on_ground(&mut self, animated: &mut u8) {
+        *animated = 1;
+        self.dynamics[..4].copy_from_slice(&[0x426f_ffff, 0, 0x4560_fffe, 2]);
+        self.enable_angular_soft();
+    }
+
     /// Complete 82C0D5C0. Other fields and the caller's animated flag survive.
     pub fn enable_angular_soft(&mut self) {
         self.dynamics[4..].copy_from_slice(&soft(20000.0, f32::from_bits(0x470c_9fff)));

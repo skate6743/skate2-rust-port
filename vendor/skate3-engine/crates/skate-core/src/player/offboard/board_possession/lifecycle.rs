@@ -37,6 +37,8 @@ pub struct Alignment {
 pub trait Effects {
     fn enable_animation_soft(&mut self);
     fn enable_animation_angular_only(&mut self);
+    ///82D75AC8's hard linear and soft angular hook drives for a board on the ground.
+    fn enable_animation_on_ground(&mut self);
     fn disable_animation(&mut self);
     fn disable_linear_drive(&mut self);
     ///82C03AF8 clears8384 bit7, executes091F8/090C0, enables selected volumes.
@@ -84,6 +86,17 @@ impl State {
         self.selected_hand_424 = (!o.processed.flags_2476 >> 2) & 1;
         self.hands[self.selected_hand_424 as usize].dynamics = [[0x4395ffff, 0, 0x468c9fff, 2]; 2];
         self.update_drive_frames(o);
+    }
+    ///75AC8, entered from BipedGround while BipedBoardOnGround is set (82D31D78): the hand
+    ///drive is released, the board stays on its animation target through the hook drives,
+    ///as a standard board with its collision volumes, and the state becomes 5.
+    pub fn rest_on_ground(&mut self, fields: &mut SkateboardControllerFields, e: &mut impl Effects) {
+        self.disable_hand();
+        e.enable_animation_on_ground();
+        e.standard_board();
+        e.collision_volumes(true);
+        self.selected_hand_424 = 2;
+        fields.state_448 = 5;
     }
     pub fn disable_hand(&mut self) {
         if self.selected_hand_424 != 2 {

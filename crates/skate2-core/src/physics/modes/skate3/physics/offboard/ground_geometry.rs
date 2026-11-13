@@ -36,6 +36,7 @@ impl State {
     pub(crate) fn submit(
         &mut self,
         world: &BoardWorld,
+        grind: &crate::skate3_native::grind_world::StaticProvider,
         vehicles: &[(usize, skate_dynamics::SolidBody)],
         frame: [[f32; 4]; 4],
         velocity: [f32; 4],
@@ -44,7 +45,7 @@ impl State {
     ) -> Result<(), String> {
         let frame = query_frame(frame);
         let search = query::edge_search(frame, context, xyz(velocity), flags_2488);
-        let mut service = SceneService { world, vehicles };
+        let mut service = SceneService { world, grind, vehicles };
         let candidates = service.edge_candidates(&search)?;
         if let Some(packet) = query::select_edge(search, &candidates)
             .and_then(|edge| query::prepare_packet(frame, context, edge, self.collision_offset))

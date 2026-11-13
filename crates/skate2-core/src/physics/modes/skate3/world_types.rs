@@ -410,6 +410,9 @@ pub struct GameplayOutput {
     pub stance: [bool; 4], // fakie, mirrored, switch, regular
     /// PhysOut_Animation mPushMongo/mPushRegular, set on a stroke's first pushing tick.
     pub push_style: [bool; 2],
+    /// PhysOut_Intents +0x3D and +0x3E (Update5 82DB7DA4, 82DB7DB8): a drop-in's tail locking on
+    /// the edge and letting go (the DropInLock and DropInRelease attributes), for its sounds.
+    pub drop_in_sounds: [bool; 2],
     pub board_ground: skate3_core::physics::board_ground::BoardGroundState,
     pub wheel_lines: skate3_core::physics::board_ground::WheelLineState,
     pub bone_contacts: [skate3_core::physics::skeleton_body::BoneContact; 24],

@@ -163,6 +163,11 @@ pub(crate) struct Intents {
     pub(crate) is_generally_doing_coffin: bool,
     pub(crate) is_generally_grabbing: bool,
     pub(crate) has_world_grab_intent: bool,
+    /// Skate 3 physics: TU3 `PhysOut_Intents` +0x3D and +0x3E (Update5 82DB7DA4, 82DB7DB8),
+    /// AnimOut's DropInLock and DropInRelease bits, which TU3's audio reads; false in Skate 2
+    /// physics.
+    pub(crate) skate3_drop_in_lock: bool,
+    pub(crate) skate3_drop_in_release: bool,
 }
 impl Intents {
     pub(crate) fn reset_values() -> Self {
@@ -175,6 +180,8 @@ impl Intents {
             is_generally_doing_coffin: false,
             is_generally_grabbing: false,
             has_world_grab_intent: false,
+            skate3_drop_in_lock: false,
+            skate3_drop_in_release: false,
         }
     }
 }

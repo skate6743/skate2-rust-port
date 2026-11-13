@@ -71,6 +71,7 @@ fn observations(
         air_grind_443: physical.air.flag_443 != 0,
         air_time_184: physical.air.scalar_184,
         dropping_in_324: physical.grinds.dropping_in_324 != 0,
+        drop_in_without_transition_325: physical.grinds.tipslide_325 != 0,
     };
     Ok((
         PhysicalStateInputs {

@@ -77,6 +77,8 @@ pub(crate) struct SkaterAnimation {
     pub attributes: PacketAttributes,
     pub action_controller: Controller,
     pub motion_controller: Controller,
+    /// The ActionGraph's OnBoardGeneral/TeleportOffBoard: an external reset's off-board dismount.
+    teleport_offboard: Option<usize>,
     state: state::AnimationState,
     pub ticks: u64,
 }
@@ -94,6 +96,11 @@ impl SkaterAnimation {
     pub fn request_checkpoint_stance(&mut self, foot: u32) {
         let natural = self.state.publication.natural_stance;
         self.motion.animation.requested_stance = u32::from(if foot == 0 { natural != 1 } else { natural == 1 });
+    }
+    /// Whether the ActionGraph is in OnBoardGeneral/TeleportOffBoard, an external reset's
+    /// off-board dismount (SpawnDismount) under way.
+    pub(crate) fn dismounting_after_teleport(&self) -> bool {
+        self.teleport_offboard.is_some() && self.action_controller.frame.current == self.teleport_offboard
     }
     /// Manual markers use the same native leading-foot query as bail checkpoints.
     pub fn foot_forward(&self) -> bool {
@@ -213,6 +220,8 @@ impl SkaterAnimation {
             state,
             action_controller: Controller::new(graphs.action.runtime.program.topology.states.len()),
             motion_controller: Controller::new(graphs.motion.runtime.program.topology.states.len()),
+            teleport_offboard: (0..graphs.action.binding.states.len())
+                .find(|&id| state_path(&graphs.action.binding, Some(id)) == "Action.OnBoardGeneral.TeleportOffBoard"),
             //Represented pose fields after AnimOutPhysIn Reset82590028.
             packet: PhysicsPosePacket {
                 bone_count: count as u32,
@@ -260,6 +269,14 @@ impl SkaterAnimation {
             .update(&graphs.action.runtime.program, dt, &mut self.action);
         if !self.action.errors.is_empty() {
             return Err(self.action.errors.join("\n"));
+        }
+        // SKATE2_TRACE_SKATE3_ACTION_EXITS=<text>: while the ActionGraph's state path holds the
+        // text, each transition out of it and its ancestors, with its conditions' activations.
+        if let Ok(filter) = std::env::var("SKATE2_TRACE_SKATE3_ACTION_EXITS")
+            && let Some(current) = self.action_controller.frame.current
+            && state_path(&graphs.action.binding, Some(current)).contains(filter.as_str())
+        {
+            trace_action_exits(graphs, &self.action_controller.frame, &mut self.action, current, tick);
         }
         let action_output = self.action.output();
         self.motion.animation.begin_graph_update();
@@ -314,6 +331,11 @@ impl SkaterAnimation {
         self.pose = self.evaluator.evaluate(&commands)?;
         self.body_commands = commands;
         let hierarchy = self.evaluator.hierarchy(&self.pose)?;
+        // SKATE2_TRACE_SKATE3_GRIND_GRAB: each tick in a grind, the motion state, the grab and
+        // crouch intents, the height the crouched-enough test reads and the hands' heights.
+        if std::env::var_os("SKATE2_TRACE_SKATE3_GRIND_GRAB").is_some() {
+            self.trace_grind_grab(graphs, tick, action_intents, &hierarchy);
+        }
         let local: Vec<_> = self
             .pose
             .iter()
@@ -344,6 +366,25 @@ impl SkaterAnimation {
         self.motion.animation.skater_animation_flags = Some(self.state.flags);
         self.ticks += 1;
         Ok(())
+    }
+
+    fn trace_grind_grab(&self, graphs: &StockGraphs, tick: u64, action_intents: &IntentMap, hierarchy: &[output::NativeMatrix]) {
+        let path = state_path(&graphs.motion.binding, self.motion_controller.frame.current);
+        if !path.contains("Grinding") {
+            return;
+        }
+        let short = path.rsplitn(3, '.').collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(".");
+        let intent = |map: &IntentMap, name: &str| map.get(name).copied().unwrap_or(0.0);
+        let mg = &self.motion.animation.motion_intents;
+        let height = self.motion.crouching_physical.map(|p| p.animation_height_72);
+        let bone = |name: &str| self.evaluator.frames.bone_names.iter().position(|n| n.eq_ignore_ascii_case(name))
+            .and_then(|i| hierarchy.get(i)).map(|m| m[3][1]);
+        eprintln!(
+            "skate3 grind_grab: tick={tick} state={short} ag=[{:.2},{:.2},{:.2}] mg=[{:.2},{:.2},{:.2},{:.2}] height72={height:?} grab={:?} hands=[{:?},{:?}] hips={:?}",
+            intent(action_intents, "LeftGroundGrab"), intent(action_intents, "RightGroundGrab"), intent(action_intents, "Crouch"),
+            intent(mg, "GrindFSGrab"), intent(mg, "GrindBSGrab"), intent(mg, "GrindDoubleGrab"), intent(mg, "Crouch"),
+            self.motion.animation.grab_type, bone("LeftHand"), bone("RightHand"), bone("Hips"),
+        );
     }
 
     fn publish_physical(&mut self, p: AnimationPhysical) -> Result<(), String> {
@@ -382,6 +423,60 @@ impl SkaterAnimation {
             (self.state.flags & !(1 << 17)) | (u32::from(board_attached_or_onboard) << 17);
         self.motion.animation.skater_animation_flags = Some(self.state.flags);
         Ok(())
+    }
+}
+
+/// Diagnostics: every transition out of `current` and its ancestors, with the activation of
+/// the transition, of its target and of each condition their expressions hold.
+fn trace_action_exits(
+    graphs: &StockGraphs,
+    frame: &skate3_core::graph::controller::Frame,
+    host: &mut crate::skate3_native::graph_host::action::ActionHost,
+    current: usize,
+    tick: u64,
+) {
+    use skate3_core::graph::{activation::{ActivationProgram, Child, ConditionHost}, selection::NodeId};
+    fn conditions(program: &ActivationProgram, expression: usize, out: &mut Vec<usize>) {
+        for child in &program.expressions[expression].children {
+            match *child {
+                Child::Expression(child) => conditions(program, child, out),
+                Child::Condition(condition) => out.push(condition),
+            }
+        }
+    }
+    let program = &graphs.action.runtime.program;
+    let mut state = Some(current);
+    while let Some(id) = state {
+        for &transition_id in &program.topology.states[id].transitions {
+            let transition = &program.topology.transitions[transition_id];
+            let active = program.activation.node_activation(NodeId::Transition(transition_id), 1, frame, host);
+            let target_active = program.activation.node_activation(NodeId::State(transition.target), 1, frame, host);
+            let mut held = Vec::new();
+            if let Some(expression) = program.activation.transition_expressions[transition_id] {
+                conditions(&program.activation, expression, &mut held);
+            }
+            let transition_conditions = held.len();
+            if let Some(expression) = program.activation.state_expressions[transition.target] {
+                conditions(&program.activation, expression, &mut held);
+            }
+            let labels: Vec<String> = held
+                .iter()
+                .enumerate()
+                .map(|(at, &condition)| {
+                    let side = if at < transition_conditions { "t" } else { "s" };
+                    format!("{side}:{}={}", host.condition_label(condition), host.condition_activation(condition, frame))
+                })
+                .collect();
+            eprintln!(
+                "action exit tick={tick} from={} to={} priority={} enabled={} active={active} target_active={target_active} [{}]",
+                state_path(&graphs.action.binding, Some(id)),
+                state_path(&graphs.action.binding, Some(transition.target)),
+                transition.priority,
+                transition.enabled,
+                labels.join("; ")
+            );
+        }
+        state = program.topology.states[id].parent;
     }
 }
 

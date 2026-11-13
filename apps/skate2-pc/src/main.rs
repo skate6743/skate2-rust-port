@@ -31,6 +31,11 @@ mod sdl_pad_platform;
 mod windows_selected_input;
 
 use rayon::prelude::*;
+
+/// mimalloc instead of the system heap: a gameplay tick and a frame make many short-lived
+/// allocations, and the system heap's calls took about a sixth of the tick.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use simulation_collection_runtime_probe::{
     NotificationRuntime as SimulationNotificationCorpusRuntime,
     Runtime as SimulationCollectionCorpusRuntime,
@@ -12866,8 +12871,9 @@ fn loose_world_id(paths: &[&str]) -> u64 {
 }
 
 /// PC port: the loose sky and water ([`LOOSE_PRESENTATION_ASSETS`]) of the world the scene
-/// stands in: a linked Skate 3 district's own (`skate2_core::skate3::DistrictSpec::loose`, read
-/// from its data) while one is selected, Skate 2's otherwise. True when they changed.
+/// stands in: a linked Skate 3 district's or downloadable content map's own
+/// (`skate2_core::skate3::DistrictSpec::loose`, read from its data) while one is selected, Skate
+/// 2's otherwise. True when they changed.
 pub(crate) fn sync_loose_world(
     scene: &mut PresentationScene,
     mounts: &MountSet,
@@ -12879,7 +12885,7 @@ pub(crate) fn sync_loose_world(
         return false;
     }
     let worlds: Vec<u64> = std::iter::once(&LOOSE_PRESENTATION_ASSETS[..])
-        .chain(skate2_core::skate3::DISTRICTS.iter().map(|spec| spec.loose))
+        .chain(skate2_core::skate3::district_specs().into_iter().map(|spec| spec.loose))
         .map(loose_world_id)
         .collect();
     let Some(index) = scene.loose.iter().position(|collection| worlds.contains(&collection.id)) else { return false };
@@ -12896,7 +12902,7 @@ pub(crate) fn sync_loose_world(
             true
         }
         Err(error) => {
-            eprintln!("loose world {} not loaded ({error}); the last one stays", paths[1]);
+            eprintln!("loose world {} not loaded ({error}); the last one stays", paths.get(1).or(paths.first()).copied().unwrap_or_default());
             false
         }
     }

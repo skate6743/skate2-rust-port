@@ -56,8 +56,8 @@ contexts (`ObjectiveContextual`, skaters aired over) and the big-trick records
 A free-skate activity's objective groups each read their own player, every player's group on
 every console, so its scope also carries the rest of the state the objective natives read of a
 player (`group::PLAYER_STATE`: on the ground, the sequence completed, the moving wipeout's
-duration, the manual's length and time, the animation's trick bits, wiping out); the natives
-read the group's player's state, not the local skater's.
+duration, the manual's length and time, the animation's trick bits, wiping out, riding fakie
+and riding switch); the natives read the group's player's state, not the local skater's.
 
 Every console runs the challenge on the *shared* frame (`FactsScope::shared`): out-of-scope
 groups at their defaults, the owner's console included. A wrong scope therefore cannot desync

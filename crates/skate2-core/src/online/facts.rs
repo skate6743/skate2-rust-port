@@ -88,8 +88,8 @@ mod group {
     /// `cMsgSkaterGrabbingObject`.
     pub const GRABBING: u32 = 1 << 27;
     /// The rest of the state the objective natives read of their player (`IsOnGround`,
-    /// `SequenceCompleted`, `GetWipeoutDuration`, `IsManualing`, `NoseManualTime`,
-    /// `TailManualTime`, `IsWipingOut`): a challenge whose objective groups each read their own
+    /// `SequenceCompleted`, `GetWipeoutDuration`, the `Manual` natives, `IsWipingOut`,
+    /// `Stance.IsFakie`, `Stance.IsSwitch`): a challenge whose objective groups each read their own
     /// player, every player's on every console (freeskate activities), reads it of every player.
     pub const PLAYER_STATE: u32 = 1 << 28;
     /// What a challenge's objective groups read of their player's messages.
@@ -264,6 +264,8 @@ impl FactsScope {
             shared.manual_time = frame.manual_time;
             shared.anim_trick_bits = frame.anim_trick_bits;
             shared.wiping_out = frame.wiping_out;
+            shared.is_riding_fakie = frame.is_riding_fakie;
+            shared.is_riding_switch = frame.is_riding_switch;
         }
         shared
     }
@@ -556,7 +558,7 @@ fn i32r(r: &mut Reader<'_>) -> DecodeResult<i32> {
 }
 
 /// The frame's flags, one bit each in this order.
-fn flags(frame: &MissionFrame) -> [bool; 38] {
+fn flags(frame: &MissionFrame) -> [bool; 40] {
     let [f0, f1, f2] = frame.finished_pattern_matches;
     let [c0, c1, c2] = frame.current_pattern_matches;
     [
@@ -598,6 +600,8 @@ fn flags(frame: &MissionFrame) -> [bool; 38] {
         frame.sequence_completed_successfully,
         frame.is_in_state_ground,
         frame.wiping_out,
+        frame.is_riding_fakie,
+        frame.is_riding_switch,
     ]
 }
 
@@ -846,6 +850,8 @@ fn read_layout(data: &[u8]) -> DecodeResult<MissionFrame> {
         sequence_completed_successfully,
         is_in_state_ground,
         wiping_out,
+        is_riding_fakie,
+        is_riding_switch,
     ] = unpack(r.u64()?);
     let big: [bool; 30] = unpack(u64::from(r.u32()?));
     let mut frame = MissionFrame {
@@ -873,6 +879,8 @@ fn read_layout(data: &[u8]) -> DecodeResult<MissionFrame> {
         sequence_completed_successfully,
         is_in_state_ground,
         wiping_out,
+        is_riding_fakie,
+        is_riding_switch,
         finished_pattern_matches: [f0, f1, f2],
         current_pattern_matches: [c0, c1, c2],
         big_trick_achieved: std::array::from_fn(|i| [big[2 * i], big[2 * i + 1]]),
@@ -952,6 +960,8 @@ mod tests {
             surface_speed: 4.4 + t * 0.01,
             is_in_state_ground: true,
             manual_time: t,
+            is_riding_fakie: tick % 3 == 1,
+            is_riding_switch: tick % 2 == 1,
             current_gesture: 35,
             current_air_initial_scorable: -1,
             ..MissionFrame::default()

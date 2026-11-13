@@ -29,6 +29,7 @@ stick, where it applies, the pages and their input, and the file that keeps them
   quarter of the stick's travel (above), so an anti-deadzone of 25% skips it, and a deadzone above
   zero alongside it keeps a resting stick still.
 - Ranges: the multiplier 0.40 to 1.10 in hundredths, the deadzone and the anti-deadzone 0% to 50%.
+  Since 2026-11-13 the multiplier goes to 1.20.
 
 ## The pages
 

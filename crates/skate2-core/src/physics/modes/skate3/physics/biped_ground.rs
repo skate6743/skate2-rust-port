@@ -524,6 +524,7 @@ pub(crate) fn submit_geometry(
         .ok_or("Ground geometry submission requires completed motion")?;
     owner.geometry.submit(
         &physics.world,
+        &physics.grind_world,
         &physics.world_proxies.solids,
         owner.ground.frame_80,
         result.velocity,

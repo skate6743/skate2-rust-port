@@ -257,6 +257,12 @@ impl CharacterCollisionPublication {
     pub(crate) fn stamp_bounds(&mut self, frame: SimulationRigidBodyFrameIdentity) {
         self.bounds_frame = Some(frame);
     }
+    /// `EndUpdate` after a skipped `BeginUpdate`: the records and bounds the last Update (or
+    /// Create) left are this frame's.
+    pub(crate) fn retain_for_frame(&mut self, frame: SimulationRigidBodyFrameIdentity) {
+        self.volume_frame = Some(frame);
+        self.bounds_frame = Some(frame);
+    }
     /// Actual backing of the copied inline aggregate record for this Part.
     /// Retained at Create, alongside the original Volume pointer projection.
     #[cfg(feature = "skate3-runtime")]

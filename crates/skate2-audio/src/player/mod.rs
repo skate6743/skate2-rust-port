@@ -1,17 +1,21 @@
 //! The PLAYER state (`eMAINMAPSTATES` 1): `CSTATEMGR_Player`, `CSTATE_Player`, the
 //! `SFXCTL_PlayerPhysics` / `SFXCTL_3DPlayerPos` / `SFXCTL_3DBoardPos` controllers and the skater
 //! SFX objects. `Setup(0xFFF)` creates objects 0-11 in id order (`CreateSFXObjs` 0x82a7f130);
-//! `SFXObj_PlayerSpeech` (7) needs the speech system and is not ported.
+//! `SFXObj_PlayerSpeech` (7) needs the speech system and is not ported. TU3's `SFXObj_DropIn`
+//! (its object 12) follows them for Skate 3 physics; `skate3_mix` gives the mixer its channels
+//! and those of TU3's darkcatch sounds.
 
 pub mod clothing;
 pub mod contacts;
 pub mod cracks;
+pub mod drop_in;
 pub mod hand_grabs;
 pub mod offboard;
 pub mod physics;
 pub mod pos3d;
 pub mod rail;
 pub mod sense_of_speed;
+pub mod skate3_mix;
 pub mod skateboard;
 pub mod treatments;
 pub mod tricks;
@@ -30,6 +34,7 @@ use crate::world::crowd::{CrowdEnv, CrowdManager};
 use clothing::Clothing;
 use contacts::Contacts;
 use cracks::Cracks;
+use drop_in::DropIn;
 use hand_grabs::HandGrabs;
 use offboard::OffBoard;
 use physics::{PhysicsInputs, PlayerPhysics};
@@ -252,6 +257,8 @@ pub struct PlayerState {
     pub sense_of_speed: SenseOfSpeed,
     pub offboard: OffBoard,
     pub hand_grabs: HandGrabs,
+    /// TU3's `SFXObj_DropIn` (its PLAYER object 12).
+    pub drop_in: DropIn,
     /// Whether the position controllers' `Ref3D` pointers are assigned (`InitSFX` assigns them,
     /// `Detach` clears position and direction).
     refs_assigned: bool,
@@ -292,6 +299,10 @@ impl PlayerState {
         offboard.io = io(0x4000_0000, 10);
         let mut hand_grabs = HandGrabs::default();
         hand_grabs.io = io(0x4000_0000, 11);
+        let mut drop_in = DropIn::default();
+        drop_in.io = io(0x4000_0000, skate3_mix::DROP_IN_SFX);
+        let mut contacts = Contacts::new(vault);
+        contacts.skate3_io = io(0x4000_0000, skate3_mix::DARKCATCH_SFX);
         Self {
             instance,
             attached: false,
@@ -303,7 +314,7 @@ impl PlayerState {
             player_pos,
             board_pos,
             skateboard,
-            contacts: Contacts::new(vault),
+            contacts,
             contacts_io: io(0x4000_0000, 1),
             wheels,
             rail,
@@ -314,6 +325,7 @@ impl PlayerState {
             sense_of_speed,
             offboard,
             hand_grabs,
+            drop_in,
             refs_assigned: false,
         }
     }
@@ -330,7 +342,7 @@ impl PlayerState {
             ctx.map.set_output_enabled(io, true);
         }
         self.skateboard.init_sfx(&self.physics, data.local, ctx);
-        if let Some(io) = self.contacts_io {
+        for io in [self.contacts_io, self.contacts.skate3_io].into_iter().flatten() {
             ctx.map.set_output_enabled(io, true);
         }
         self.wheels.init_sfx(ctx);
@@ -342,6 +354,7 @@ impl PlayerState {
         self.sense_of_speed.init_sfx(&self.physics, ctx);
         self.offboard.init_sfx(&self.physics, ctx);
         self.hand_grabs.init_sfx(&self.physics, ctx);
+        self.drop_in.init_sfx(ctx);
     }
 
     /// `CSTATE_Player::Detach` 0x82551630 / `CSTATE_Base::Detach` 0x82a7e350.
@@ -351,6 +364,7 @@ impl PlayerState {
         disconnect(self.skateboard.io, ctx.map);
         self.contacts.destroy(ctx);
         disconnect(self.contacts_io, ctx.map);
+        disconnect(self.contacts.skate3_io, ctx.map);
         self.wheels.destroy(ctx);
         disconnect(self.wheels.io, ctx.map);
         self.rail.destroy(ctx);
@@ -369,6 +383,8 @@ impl PlayerState {
         disconnect(self.offboard.io, ctx.map);
         self.hand_grabs.destroy(ctx);
         disconnect(self.hand_grabs.io, ctx.map);
+        self.drop_in.destroy(ctx);
+        disconnect(self.drop_in.io, ctx.map);
         self.physics.reset();
         self.refs_assigned = false;
         for io in [self.physics.io, self.player_pos.io, self.board_pos.io].into_iter().flatten() {
@@ -513,6 +529,7 @@ impl PlayerManager {
         state.sense_of_speed.update_params(t, &state.physics, ctx);
         state.offboard.update_params(t, &state.physics, ctx);
         state.hand_grabs.update_params(t, &state.physics, ctx);
+        state.drop_in.update_params(&state.physics, ctx);
     }
 
     /// `CSTATEMGR_Base::ProcessUpdate` 0x82a7dc40.
@@ -535,6 +552,7 @@ impl PlayerManager {
             state.sense_of_speed.process_update(&state.physics, ctx);
             state.offboard.process_update(&state.physics, ctx);
             state.hand_grabs.process_update(&state.physics, ctx);
+            state.drop_in.process_update(ctx);
         }
     }
 }

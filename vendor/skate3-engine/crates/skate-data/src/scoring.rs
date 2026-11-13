@@ -31,6 +31,9 @@ pub struct Definition {
     pub completion_delay: f32,
     pub variant: i32,
     pub flags: u32,
+    /// `IsGrindGrab` (layout byte 148): GrindCollector::Update2_TrickAnalysis 82DA9E34 scores a
+    /// grind as the animation's trick when that trick is a grind grab.
+    pub is_grind_grab: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +98,7 @@ impl ScoringData {
                 completion_delay: data.float(SCORABLE, identifier, "Hash_DC7F402E5680BA02")?,
                 variant: words("Hash_2E90BC04042A0B5A")? as i32,
                 flags: words("Hash_D34A84B044B60CE3")?,
+                is_grind_grab: data.boolean(SCORABLE, identifier, "IsGrindGrab")?,
             });
         }
         if definitions.is_empty() {

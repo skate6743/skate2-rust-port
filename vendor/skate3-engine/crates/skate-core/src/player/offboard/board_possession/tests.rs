@@ -12,6 +12,9 @@ impl Effects for Recorder {
     fn enable_animation_angular_only(&mut self) {
         self.calls.push("angular");
     }
+    fn enable_animation_on_ground(&mut self) {
+        self.calls.push("ground");
+    }
     fn disable_animation(&mut self) {
         self.calls.push("off");
     }

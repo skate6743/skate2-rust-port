@@ -228,6 +228,20 @@ impl ActionHost {
 
 }
 
+impl ActionHost {
+    /// Diagnostics: a bound condition's operation and stock name.
+    pub(crate) fn condition_label(&self, condition: usize) -> String {
+        self.remap
+            .conditions
+            .get(condition)
+            .and_then(|&id| self.instances.get(id))
+            .map_or_else(
+                || format!("unbound{condition}"),
+                |instance| format!("{}:{:?}", instance.config.name.as_deref().unwrap_or("?"), instance.operation),
+            )
+    }
+}
+
 impl ConditionHost for ActionHost {
     fn condition_activation(&mut self, condition: usize, frame: &Frame) -> u32 {
         let result = self

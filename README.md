@@ -58,7 +58,7 @@ PC. Requires your own legally obtained Xbox 360 copy of Skate 2 to run, you will
   borderless fullscreen (Alt+Enter works too), and switches for PostFX and the fisheye lens.
 - **Better Party Play.** No pedestrians or traffic in the way and your own career skater is in the
   list to choose from.
-- **Stick Settings.** Under Control Settings, each stick takes a multiplier (0.40 to 1.10), a
+- **Stick Settings.** Under Control Settings, each stick takes a multiplier (0.40 to 1.20), a
   deadzone and an anti-deadzone that work as RPCS3's do, with both sticks drawn live beside them.
   Out of the box, and after Reset To Default, the sticks feel exactly as the original's.
 - **Link Skate 3 data.** You can now link your own copy of Skate 3 data and play Port Carverton maps and hotswap between Skate 2/3 physics from the **Physics Settings** menu ingame.
@@ -112,8 +112,8 @@ What the build needs, and the parts of the game macOS does not have yet, are in
   message box for is written there too; run `Skate 2.app/Contents/MacOS/Skate 2` from a terminal
   to see what it prints.
 - To try the other graphics API, make a `.bat` file beside the game with `set WGPU_BACKEND=dx12`
-  (or `vulkan`) on one line and `skate2-pc.exe` on the next, and run it. `set SKATE2_NO_MSAA=1`
-  turns antialiasing off.
+  (or `vulkan`) on one line and `skate2-pc.exe` on the next, and run it. Display Settings'
+  Anti-Aliasing sets MSAA (Off, 2x or 4x); `set SKATE2_NO_MSAA=1` keeps it off whatever the setting.
 
 ### Online
 
@@ -124,8 +124,8 @@ game.
 **Hosting:** `skate2-pc --server <ip:port>` runs the game in dedicated server mode, on Windows,
 Linux or macOS. The Linux zip also holds `skate2-server`, the server alone, for a VPS or any machine
 without a display. Players join only a server of the same release; `--update` on either program
-puts the newest release in place. A server can also run a barebones moderation panel, with chat shadowbans
-and IP bans: see [the server's documentation](docs/online/implementation.md#the-server).
+puts the newest release in place. A server can also run a barebones moderation panel, with chat and
+matchmaking shadowbans and IP bans: see [the server's documentation](docs/online/implementation.md#the-server).
 
 ### Updates
 

@@ -61,6 +61,9 @@ pub struct Scene<'a> {
     pub island_pool: &'a [Mesh<'a>],
     pub conditional_pool: &'a [Mesh<'a>],
     pub island_flags: u32,
+    /// The grind data `GrindData::BoxTest` (82C1EAD8) walks before its moving providers: the
+    /// world's and the props' grind spline segments.
+    pub grind: Option<&'a crate::skate3_native::grind_world::StaticProvider>,
     pub static_edges: &'a [Segment],
     pub primary_edges: PrimaryEdges<'a>,
     pub indexed_edges: &'a [IndexedEdgeBody<'a>],
@@ -68,7 +71,7 @@ pub struct Scene<'a> {
 impl GroundQueryScene for Scene<'_> {
     type Error = &'static str;
     fn edge_candidates(&mut self, search: &EdgeSearch) -> Result<Vec<Edge>, Self::Error> {
-        Ok(edges::candidates(self, search))
+        edges::candidates(self, search)
     }
     fn query_lines(
         &mut self,

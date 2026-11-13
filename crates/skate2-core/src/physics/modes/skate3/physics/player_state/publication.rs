@@ -288,6 +288,8 @@ pub(super) fn publish(physics: &mut Skate3PhysicsState, skater: &mut Skate3Contr
     );
     // A manual target spans the initial reset and state702's continuation.
     // Release it only after the real source state has completed that reset.
-    skater.teleport_state.finish_manual_reset(state);
+    let dismount_requested = skater.player_state.state_flags[77 - 52];
+    let dismounting = skater.animation.dismounting_after_teleport();
+    skater.teleport_state.finish_manual_reset(state, dismount_requested, dismounting);
     Ok(())
 }

@@ -202,7 +202,7 @@ pub(super) fn finish(physics:&mut Skate3PhysicsState,skater:&mut Skate3Controlle
         skate3_core::player::state::PhysicalStateId::PhysicsGround => {
             let p = &skater.player_input.processed;
             let com = p.animation_com_to_deck_752.map(f32::from_bits);
-            physics.riding.update_ground_reckoning(
+            let reckoning_job = physics.riding.submit_ground_reckoning(
                 &physics.board,
                 super::riding_outputs::RidingPoseInputs {
                     com_to_deck: Vector3::new(com[0], com[1], com[2]),
@@ -219,6 +219,7 @@ pub(super) fn finish(physics:&mut Skate3PhysicsState,skater:&mut Skate3Controlle
             //after Reckoning; this frame's propulsion may then set it again.
             skater.ground.state.push_suppressed_2730 = false;
             ground_phase::advance(physics, skater)?;
+            physics.riding.complete_ground_reckoning(reckoning_job);
             super::handplant::ground_update(physics,skater)?;
             input_phase::update_ground(physics, skater)?;
         }
@@ -246,7 +247,10 @@ pub(super) fn finish(physics:&mut Skate3PhysicsState,skater:&mut Skate3Controlle
             skater.offboard_contact.submit(
                 input,
                 skater.player_input.processed.actor_query_2952 as i32,
-                &super::offboard::contact_toolkit::StaticScene::new(&physics.world)?,
+                &super::offboard::contact_toolkit::StaticScene::with_grind(
+                    &physics.world,
+                    &physics.grind_world,
+                )?,
             )?;
             super::biped_ground::submit_geometry(physics, skater)?;
         }
@@ -314,6 +318,8 @@ pub(super) fn finish(physics:&mut Skate3PhysicsState,skater:&mut Skate3Controlle
         skater.wipeout.state.request(12, deck_speed);
     }
     super::offboard_audit_trace::stage(tick, "solve", physics, skater, controls);
+    super::spin_trace::tick(tick, physics, skater, controls);
+    super::drop_in_trace::tick(tick, physics, skater);
     #[cfg(debug_assertions)]
     super::dev_trace::checkpoint("solve", physics, skater);
     #[cfg(any())]
@@ -400,6 +406,8 @@ pub(super) fn finish(physics:&mut Skate3PhysicsState,skater:&mut Skate3Controlle
     if teleported { camera.reset_after_teleport(); }
     camera_output::advance(physics, skater, &feedback, camera)?;
     super::climbing::approach::advance(physics, skater, controls);
+    let intents = skater.animation_input.output.flags;
+    skater.drop_in_sounds = [intents & 0x0100_0000 != 0, intents & 0x0080_0000 != 0];
     skater.animation_input.finish_output_publication();
     skater.player_input.player.update_count_1316 =
         skater.player_input.player.update_count_1316.wrapping_add(1);

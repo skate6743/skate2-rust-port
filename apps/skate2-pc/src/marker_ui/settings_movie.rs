@@ -449,6 +449,11 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
             Row::Weather => state.modes.weather.label(),
             Row::PuddlePhysics => on_off(state.modes.puddle_physics),
             Row::OnlineSpeed => on_off(state.modes.online_speed),
+            Row::Msaa => match state.values.msaa {
+                skate2_core::ui::options::Msaa::Off => "ID_COMMON_OFF",
+                skate2_core::ui::options::Msaa::X2 => "2x",
+                skate2_core::ui::options::Msaa::X4 => "4x",
+            },
             _ => match state.values.frame_rate_cap {
                 FrameRateCap::Unlimited => "Unlimited",
                 FrameRateCap::Fps60 => "60 (Vanilla)",

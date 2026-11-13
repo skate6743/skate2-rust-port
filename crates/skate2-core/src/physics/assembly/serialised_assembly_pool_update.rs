@@ -241,9 +241,57 @@ pub(crate) fn try_update_assembly_pool_entries<N: SerialisedAssemblyPartBBoxNume
             Entry::Character { assembly, .. } => assembly.publish_unstamped_bounds(bound),
         }
     }
+    collect_active_entries::<N::Error>(entries, pool, &mut active)?;
+    for entry in entries {
+        match entry {
+            Entry::Source { input, .. } => input.assembly.bounds_frame = Some(frame),
+            Entry::Character { assembly, .. } => assembly.stamp_bounds(frame),
+        }
+    }
+    Ok(active)
+}
+
+/// `EndUpdate` (0x82e0bb10) after a `BeginUpdate` that returned before the base update (a
+/// full `DynamicPool` mesh collection): no bounds job ran, so copying the retained bounds over
+/// the Header changes nothing, and every record keeps what the last Update (or Insert's Create)
+/// wrote. Those are this frame's records; the active list is rebuilt from live Part state.
+pub(crate) fn try_end_assembly_pool_entries_unrefreshed<N>(
+    entries: &mut [AssemblyPoolUpdateEntry<'_>],
+    pool: &SimulationRigidBodyPool,
+) -> Result<Vec<usize>, AssemblyPoolEntryUpdateError<N>> {
+    use AssemblyPoolEntryUpdateError as E;
+    use AssemblyPoolUpdateEntry as Entry;
+    let frame = pool.frame_identity().ok_or(E::Source(
+        SerialisedAssemblyPoolUpdateError::FrameUnavailable,
+    ))?;
+    let mut active = Vec::new();
+    active
+        .try_reserve_exact(entries.len())
+        .map_err(|_| E::Source(SerialisedAssemblyPoolUpdateError::Allocation))?;
+    collect_active_entries::<N>(entries, pool, &mut active)?;
+    for entry in entries {
+        match entry {
+            Entry::Source { input, .. } => {
+                input.assembly.volume_frame = Some(frame);
+                input.assembly.bounds_frame = Some(frame);
+            }
+            Entry::Character { assembly, .. } => assembly.retain_for_frame(frame),
+        }
+    }
+    Ok(active)
+}
+
+/// `EndUpdate` 0x82e0bbb4..bc38's active list: each assembly with a Part that is not frozen.
+fn collect_active_entries<N>(
+    entries: &[AssemblyPoolUpdateEntry<'_>],
+    pool: &SimulationRigidBodyPool,
+    active: &mut Vec<usize>,
+) -> Result<(), AssemblyPoolEntryUpdateError<N>> {
+    use AssemblyPoolEntryUpdateError as E;
+    use AssemblyPoolUpdateEntry as Entry;
     for (ordinal, entry) in entries.iter().enumerate() {
         let mut all_frozen = true;
-        let mut visit = |body| -> Result<(), AssemblyPoolEntryUpdateError<N::Error>> {
+        let mut visit = |body| -> Result<(), AssemblyPoolEntryUpdateError<N>> {
             let state = pool.try_raw_state(body).map_err(|source| {
                 E::Source(SerialisedAssemblyPoolUpdateError::Body {
                     assembly: ordinal,
@@ -269,13 +317,7 @@ pub(crate) fn try_update_assembly_pool_entries<N: SerialisedAssemblyPartBBoxNume
             active.push(ordinal);
         }
     }
-    for entry in entries {
-        match entry {
-            Entry::Source { input, .. } => input.assembly.bounds_frame = Some(frame),
-            Entry::Character { assembly, .. } => assembly.stamp_bounds(frame),
-        }
-    }
-    Ok(active)
+    Ok(())
 }
 
 /// Job output is separate from Header until every assembly has completed.

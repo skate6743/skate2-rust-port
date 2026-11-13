@@ -74,6 +74,9 @@ pub enum MotionCondition {
     /// Thin-ground branch of the stock BipedGround state.
     IsBipedGroundThin,
     IsHoldingSkateboard,
+    /// IsArmChannelPlaying (Activation 82BA84F0): a GestureBoth, GestureLeft, GestureRight or
+    /// Shove channel is playing.
+    ArmChannelPlaying,
     /// Static gameplay has no moving actors yet; the stock condition is a
     /// resolved physical flag and must remain false until a moving support is
     /// published by the collision owner.
@@ -186,6 +189,7 @@ impl MotionCondition {
             "GroundSlopeType" => Self::GroundSlopeType(super::motion_ground_slope::GroundSlopeType::parse(a)?),
             "IsBipedGroundThin" => Self::IsBipedGroundThin,
             "IsHoldingSkateboard" => Self::IsHoldingSkateboard,
+            "IsArmChannelPlaying" => Self::ArmChannelPlaying,
             "IsStandingOnMovingObject" => Self::IsStandingOnMovingObject,
             "AngleAdjustByAnimationEndLessThan" => Self::AngleAdjustByAnimationEndLessThan {
                 max_delta_angle: f32::from_bits(a.float_bits("MaxDeltaAngle", 0x4000_0000)),
@@ -261,6 +265,9 @@ impl MotionCondition {
                 .ok_or("IsBipedGroundThin requires the native ground geometry publication")?,
             Self::IsHoldingSkateboard => host.toggle_board_physical
                 .is_some_and(|p| p.holding_board),
+            Self::ArmChannelPlaying => ["GestureBoth", "GestureLeft", "GestureRight", "Shove"]
+                .iter()
+                .any(|channel| host.animation.channels.has(channel)),
             Self::IsStandingOnMovingObject => host
                 .gameplay_conditions
                 .ok_or("IsStandingOnMovingObject requires the physical state publication")?

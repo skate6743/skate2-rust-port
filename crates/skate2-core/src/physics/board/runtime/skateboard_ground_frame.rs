@@ -236,10 +236,11 @@ impl SimulationAssemblyConstraintSession<AssemblyPartMaterial, SkateboardHookDef
         // SimUpdate1's EndDMOUpdate 0x8289f6ac -> Island::Step_UpdatePrePhysics2
         // 0x827b28f0: the DMO pool's serialized EndUpdate, run once the body
         // pool has this frame's identity (no body moves before the solver).
+        // After a full mesh collection it publishes the retained records.
         if dmo_frame.is_some()
             && let Some(dmos) = self.dmos.as_mut()
         {
-            dmos.try_update_serialized(&self.backend, &mut HostSerialisedAssemblyBBoxNumeric)
+            dmos.try_end_update(&self.backend, &mut HostSerialisedAssemblyBBoxNumeric)
                 .map_err(Error::DmoUpdate)?;
         }
         // Native PrePhysics2 ends the pedestrian pool before the vehicle pool
@@ -259,7 +260,7 @@ impl SimulationAssemblyConstraintSession<AssemblyPartMaterial, SkateboardHookDef
                 .ok_or(Error::MissingWorldQueries)?;
             queries
                 .vehicle
-                .try_update_serialized(&self.backend, &mut HostSerialisedAssemblyBBoxNumeric)
+                .try_end_update(&self.backend, &mut HostSerialisedAssemblyBBoxNumeric)
                 .map_err(Error::VehicleUpdate)?;
         }
         if harvest {

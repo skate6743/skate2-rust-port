@@ -53,6 +53,12 @@ impl Effects for BoardEffects<'_> {
             .drive
             .enable_angular_only(self.animated);
     }
+    fn enable_animation_on_ground(&mut self) {
+        self.board
+            .hook_mut()
+            .drive
+            .enable_animation_on_ground(self.animated);
+    }
     fn disable_animation(&mut self) {
         self.board.hook_mut().drive.disable_animation(self.animated);
     }

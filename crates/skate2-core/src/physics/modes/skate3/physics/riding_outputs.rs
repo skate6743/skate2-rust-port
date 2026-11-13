@@ -36,6 +36,13 @@ pub(crate) struct RidingPoseInputs {
     pub body_spin: f32,
 }
 
+/// The Reckoning fields that PhysicsGround's job 82D4E250 computes on its own copy.
+pub(crate) struct GroundReckoningJob {
+    reckoning: GroundOrientation,
+    frames: ReckoningFrames,
+    body_spin: BodySpinState,
+}
+
 pub(crate) struct RidingOutputs {
     pub ground: BoardGroundState,
     pub wheel_lines: WheelLineState,
@@ -142,6 +149,40 @@ impl RidingOutputs {
 
     pub fn heading_adjust_factor(&self) -> f32 {
         self.heading_adjust_factor
+    }
+
+    /// PreUpdate 82D38018 copies the live Reckoning to PhysicsGround+896 (82D380E8) and runs
+    /// 82D4E250 on that copy, so Update 82D37C88 (the world's 3-State pass) still reads the
+    /// previous tick's Reckoning: CalcManualEffect's reference frame, the heading frame, the
+    /// ground normal and the pumping axes. This computes the job now and keeps its result aside;
+    /// the live fields stay as they were until `complete_ground_reckoning`.
+    pub fn submit_ground_reckoning(
+        &mut self,
+        board: &BoardRuntime,
+        pose: RidingPoseInputs,
+        processed_flags_2468: u32,
+        animation_balance: f32,
+        coffin: bool,
+        processed: &skate3_core::player::input_phase::ProcessedPhysicsInput,
+    ) -> GroundReckoningJob {
+        let reckoning = self.reckoning.clone();
+        let frames = self.reckoning_frames.clone();
+        let body_spin = self.body_spin.clone();
+        self.update_ground_reckoning(board, pose, processed_flags_2468, animation_balance, coffin, processed);
+        GroundReckoningJob {
+            reckoning: std::mem::replace(&mut self.reckoning, reckoning),
+            frames: std::mem::replace(&mut self.reckoning_frames, frames),
+            body_spin: std::mem::replace(&mut self.body_spin, body_spin),
+        }
+    }
+
+    /// The world's Post 3-State pass (PhysicsGround slot 3, 82D37F38) waits on the job and copies
+    /// PhysicsGround+896 back over the live Reckoning, before the hand plant IK and
+    /// UpdatePhysicsError, and before the engine step.
+    pub fn complete_ground_reckoning(&mut self, job: GroundReckoningJob) {
+        self.reckoning = job.reckoning;
+        self.reckoning_frames = job.frames;
+        self.body_spin = job.body_spin;
     }
 
     ///Ground preupdate82D37C50 ->82D38018 submits82D4E250. The host computes

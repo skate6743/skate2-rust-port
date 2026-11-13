@@ -128,12 +128,21 @@ fn init_voting(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
 
 /// `Online.DeInitVoting()` (`0x8288a8b0`): `ChallengeVotingManager::DeInit` (`0x825b1978`).
 fn deinit_voting(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
+    end(world);
+    none()
+}
+
+/// `ChallengeVotingManager::DeInit` (`0x825b1978`): the voting ends and its group goes, so the HUD's
+/// next update unbinds and hides the vote. Only the script's `DeInitVoting` calls it natively. A
+/// round the local player leaves before its script ends (PC port: Leave Challenge, or the server
+/// taking the player out) calls it too, where the original's only way out of a round, a game
+/// unload, takes every HUD screen down.
+pub(crate) fn end(world: &mut World) {
     if world.voting.initialized {
         world.voting.initialized = false;
         world.voting.clear();
         world.hud.delete_group(GROUP);
     }
-    none()
 }
 
 /// `Online.StartVoting(votee)` (`0x8288a960`): `ChallengeVotingManager::StartVoting`

@@ -12,6 +12,8 @@ pub struct PlaybackTransition {
     pub from: Box<PlaybackTree>,
     pub to: Box<PlaybackTree>,
     pub settings: TransitionSettings,
+    /// The owner's creation order, for its transition store; zero when no store tracks it.
+    pub serial: u64,
     elapsed: f32,
     sequence_complete: bool,
 }
@@ -21,6 +23,7 @@ impl PlaybackTransition {
             from: Box::new(from),
             to: Box::new(to),
             settings,
+            serial: 0,
             elapsed: 0.0,
             sequence_complete: false,
         }

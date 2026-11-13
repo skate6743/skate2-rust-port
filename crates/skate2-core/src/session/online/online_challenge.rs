@@ -500,10 +500,27 @@ impl Round {
                 return true;
             }
             if player == self.local {
-                return self.local_frames.contains_key(&tick);
+                return self.local_ready(tick);
             }
             self.remote_ready(index, user_id, tick)
         })
+    }
+
+    /// Whether the local skater lets `tick` run: its facts of the tick are in, or a later tick's
+    /// are (it skipped this one after a stall, [`Self::skip_ticks`]: it stands at it, as the
+    /// other consoles see it).
+    fn local_ready(&self, tick: u32) -> bool {
+        self.local_frames.contains_key(&tick) || self.local_frames.range(tick.saturating_add(1)..).next().is_some()
+    }
+
+    /// PC port (user request): this console let `ticks` of its clock go after a stall, so that
+    /// the game goes on at its pace rather than run them off in fast motion. While the local
+    /// skater paces the round its facts skip those ticks: every console runs them with the
+    /// skater standing at its last facts, as for a player whose run begins after a tick.
+    pub(super) fn skip_ticks(&mut self, ticks: u32) {
+        if self.running() && self.local_contributes() {
+            self.produced = self.produced.saturating_add(ticks);
+        }
     }
 
     /// Whether another player pacing the round lets `tick` run: its facts of the tick are in, it
@@ -529,7 +546,7 @@ impl Round {
                 continue;
             }
             if player == self.local {
-                if !self.local_frames.contains_key(&tick) {
+                if !self.local_ready(tick) {
                     return None;
                 }
             } else if awaited.is_none() && !self.remote_ready(index, user_id, tick) {
@@ -585,10 +602,15 @@ impl Round {
                 continue;
             }
             if player == self.local {
-                let (shared, whole, note) = self.local_frames.get(&tick)?.clone();
-                own = Some(whole);
-                frames.push(shared);
-                notes.push(note);
+                if let Some((shared, whole, note)) = self.local_frames.get(&tick).cloned() {
+                    own = Some(whole);
+                    frames.push(shared);
+                    notes.push(note);
+                } else if self.local_ready(tick) {
+                    frames.push(self.standing_frame(index));
+                } else {
+                    return None;
+                }
                 continue;
             }
             let stint = self.stints[index];
@@ -1066,7 +1088,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// `StateManagerFrontEndBase::PopAllStates` (`0x82d69f18`): back to the idle HUD state, each
     /// front-end state over the game leaving with its `OnLeave` (`UpdateOnLeave` 0x82d66300),
     /// which saves nothing, and a pausing state's pause going with it.
-    fn pop_all_front_end_states(&mut self) -> Result<(), SelectedLiveError> {
+    pub(in super::super) fn pop_all_front_end_states(&mut self) -> Result<(), SelectedLiveError> {
         // The music player, then Options (`OnLeave` 0x8266af70) under it or on its own.
         self.audio.menu.close();
         self.options_menu.leave();
@@ -1102,6 +1124,11 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.unload_career_living_world()?;
         self.unload_career_dynamic_hulls()?;
         self.unload_career_activities()?;
+        // A round left mid-vote (Leave Challenge) takes its vote down: no activity owns the
+        // voting group, which only the script's DeInitVoting ends.
+        if let Some(career) = self.career.as_mut() {
+            crate::challenge::voting::end(career.system.world_mut());
+        }
         self.end_career_hud();
         self.drop_career()?;
         // The lobby's own free-skate hulls, kept through the round, go as well: the travel waits
@@ -1134,6 +1161,11 @@ impl<T, C> SelectedLiveSession<T, C> {
             Some((location, file)) => self.world_operation(*location, Some(file.as_str())),
             None => self.world_operation(u64::MAX, None),
         };
+        // PC port: while the game is paused for the travel, Options and the Skate Profile end
+        // each frame before the travel's step, under a fade that covers them: they close, with
+        // the StartHub under them, as at a challenge's start. `HandleLobbySkateReset`
+        // (0x82776f90) pops none, its `ResetGame` and `WaitForStreamer` going on under them.
+        self.pop_all_front_end_states()?;
         self.start_world_travel(world.unwrap_or_default(), start, true);
         Ok(())
     }
@@ -1215,6 +1247,12 @@ impl<T, C> SelectedLiveSession<T, C> {
         let near_plane = match (view, self.career_nis_camera()) {
             (OnlineView::Scene, (Some(scene), _)) => scene.near_plane,
             _ => self.inner.world.as_ref()?.local.try_camera_producer_projection().ok()?.near_plane,
+        };
+        // PC port addition: another player's game camera shows at this console's Field of View, as
+        // the restored camera shows it (`CameraRestore::view`); a scene's camera keeps its own.
+        let fov = match view {
+            OnlineView::Scene => fov,
+            OnlineView::Player(_) | OnlineView::Spectate(_) => fov * crate::ui::options::field_of_view_scale(),
         };
         Some(crate::nis::manager::NisCamera { matrix: Some(matrix), fov, near_plane })
     }
@@ -1672,6 +1710,15 @@ impl<T, C> SelectedLiveSession<T, C> {
         round.input_hash = hasher.finish();
         if round.processed % 60 == 0 {
             trace(format_args!("inputs @{}: {:016x}", round.processed, round.input_hash));
+        }
+    }
+
+    /// PC port (user request): the game let `ticks` of its clock go after a stall instead of
+    /// running them off in fast motion; a round the local skater paces skips them
+    /// (`Round::skip_ticks`).
+    pub fn clock_ticks_dropped(&mut self, ticks: u32) {
+        if let Some(round) = self.online.round.as_mut() {
+            round.skip_ticks(ticks);
         }
     }
 
@@ -2190,6 +2237,38 @@ mod tests {
         round.leaving.clear();
         round.player_left(30);
         assert!(round.notes().left.is_empty());
+    }
+
+    /// A stall the console let go skips the local skater's facts over its ticks: every console,
+    /// this one too, runs those ticks with the skater standing at its last facts.
+    #[test]
+    fn ticks_a_stall_let_go_stand_at_the_last_facts() {
+        let stance = std::sync::Arc::new(std::sync::Mutex::new([true; super::MAX_PLAYERS]));
+        let mut round = super::Round::loading(1, 0, None, vec![10, 20], 0, super::FactsScope::ALL, false, stance);
+        round.start(vec![10, 20], 0);
+        round.contributors = 0b01;
+        let frame = |x: f32, pushing: bool| super::MissionFrame { player: 0, local: true, position: [x, 0.0, 0.0], is_pushing: pushing, ..Default::default() };
+        let produce = |round: &mut super::Round, frame: super::MissionFrame| {
+            round.local_frames.insert(round.produced, (frame.clone(), frame, super::FactsNotes::default()));
+            round.produced += 1;
+        };
+        produce(&mut round, frame(1.0, true));
+        assert_eq!(round.ready_lead(10), 1);
+        round.skip_ticks(2);
+        produce(&mut round, frame(4.0, false));
+        assert_eq!(round.ready_lead(10), 4, "the skipped ticks run");
+        let local = |round: &mut super::Round| round.next_tick().map(|(frames, ..)| frames.into_iter().find(|frame| frame.player == 0).map(|frame| (frame.position[0], frame.is_pushing)));
+        assert_eq!(local(&mut round), Some(Some((1.0, true))));
+        for _ in 0..2 {
+            assert_eq!(local(&mut round), Some(Some((1.0, false))), "standing at its last facts");
+        }
+        assert_eq!(local(&mut round), Some(Some((4.0, false))));
+        assert!(round.next_tick().is_none());
+        // While another player paces the round the local skater sends nothing to skip.
+        round.contributors = 0b10;
+        let produced = round.produced;
+        round.skip_ticks(5);
+        assert_eq!(round.produced, produced);
     }
 
     /// A round waiting at a tick for one other player's facts tells the server after

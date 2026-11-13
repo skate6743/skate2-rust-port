@@ -84,6 +84,7 @@ impl GroundQueryScene for WorldScene<'_> {
 /// Empty providers mean the authored scene actually has none, never a failed lookup.
 pub fn with_world_scene<T>(
     world: &BoardWorld,
+    grind: &crate::skate3_native::grind_world::StaticProvider,
     primary_edges: PrimaryEdges<'_>,
     indexed_edges: &[IndexedEdgeBody<'_>],
     operation: impl FnOnce(&mut WorldScene<'_>) -> Result<T, &'static str>,
@@ -108,6 +109,7 @@ pub fn with_world_scene<T>(
         island_pool: &[],
         conditional_pool: &[],
         island_flags: metadata.island_flags,
+        grind: Some(grind),
         static_edges: &edges,
         primary_edges,
         indexed_edges,

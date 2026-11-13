@@ -401,11 +401,10 @@ impl GroundCollector {
         Ok(maximum(finished_score, self.powerslide_tracker.score))
     }
 
+    /// EndCurrentManual 0x82df9f78: a manual that never validated ends as -1 (the debug build
+    /// asserts there, groundcollector.cpp line 248).
     fn end_manual(&mut self, db: &TrickDatabase, out: &mut Scoring2) -> Result<(), ScoreError> {
-        out.raw_finished_manual = self
-            .manual_scorable
-            .valid_id()
-            .ok_or(ScoreError::Invalid("ending invalid manual"))?;
+        out.raw_finished_manual = self.manual_scorable.valid_id().unwrap_or(-1);
         self.base
             .score_holder
             .as_ref()
@@ -541,26 +540,16 @@ impl GroundCollector {
                 out.raw_started_revert = 4 + i32::from(self.previous_animation_revert != 1);
             }
         }
-        // TU3 UpdateRevert 82DAAC10 starts a revert whatever side was last seen (an unseen side is
-        // id 5) and ends an invalid one without banking it; Skate 2 keeps its strict invariants.
-        #[cfg(feature = "skate3-runtime")]
-        let skate3 = self.base.states.skate3_enabled();
-        #[cfg(not(feature = "skate3-runtime"))]
-        let skate3 = false;
+        // UpdateRevert 0x82dfa598 (TU3 82DAAC10) starts a revert whatever side was last seen (an
+        // unseen side is id 5) and ends an invalid one without banking it (EndTrick ignores -1).
+        // The groundcollector.cpp asserts there (lines 435 and 371) are debug-build checks only.
         let active = f.is_reverting && f.enabled[11];
         let mut score = 0.0;
         if active && !self.reverting {
-            if self.most_recent_animation_revert == 0 && !skate3 {
-                return Err(ScoreError::Invalid("revert missing animation type"));
-            }
             let id = 4 + i32::from(self.most_recent_animation_revert != 1);
             self.start_ground_scorable(db, f, id, GroundScorable::Revert)?;
         } else if !active && self.reverting {
-            let id = match self.revert_scorable.valid_id() {
-                Some(id) => id,
-                None if skate3 => -1,
-                None => return Err(ScoreError::Invalid("ending invalid revert")),
-            };
+            let id = self.revert_scorable.valid_id().unwrap_or(-1);
             out.raw_finished_revert = id;
             let mut holder = self
                 .base
@@ -586,10 +575,9 @@ impl GroundCollector {
         Ok(score)
     }
 
+    /// EndCurrentGrab 0x82dfa788: only the announcement (the debug build asserts a valid grab
+    /// first, groundcollector.cpp line 462).
     fn end_grab(&mut self, db: &TrickDatabase) -> Result<(), ScoreError> {
-        if self.grab_scorable.valid_id().is_none() {
-            return Err(ScoreError::Invalid("ending invalid ground grab"));
-        }
         self.base
             .score_holder
             .as_ref()

@@ -19,15 +19,18 @@
 //!   trick area) draw in Skate 2's blue ribbon colour.
 //! - Skate 3's instance ids as Lua and the float lookups take them ([`id_float`]): exact, where
 //!   Skate 2's `(float)(double)` folds every one of them into one float.
+//! - Skate 3's downloadable content linked over it ([`dlc`]): its maps stand beside the districts,
+//!   with their teleports and online challenges, and its clothing joins Skate 3's.
 
 use crate::challenge::{
     attrib_db::{AttribDb, Element, ForeignNode, Synthesis},
     keys::{class, hash64, hash_value32},
     runtime::field::STATES,
 };
-use skate2_formats::cac_parts::CacPartDb;
+use skate2_formats::cac_parts::{CacPart, CacPartDb, SLOT_NAMES};
 use skate2_formats::{
     localization::{Histogram, LanguageCategory},
+    location::LocationTable,
     mount::{MountSet, MountedBig},
     pegasus::{LOCATION_DESC_DATA_TYPE_ID, LocationDescData, TABLE_OF_CONTENTS_TYPE_ID, TableOfContents},
     rw4::Arena,
@@ -35,20 +38,28 @@ use skate2_formats::{
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, PoisonError, RwLock},
+    sync::{Arc, Mutex, PoisonError, RwLock},
 };
+
+/// Skate 3's downloadable content packs.
+#[path = "skate3_dlc.rs"]
+pub mod dlc;
 
 /// One of Port Carverton's districts the link adds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DistrictSpec {
     /// The `fe_locations` (and `world`) collection prefix of its locations.
     pub key: &'static str,
+    /// Its `world` record's `Name`, which names its stream XMLs ([`world_stream_xml`]).
+    pub world: &'static str,
     /// Its world stream under `data\content\world\stream`, and its archive
     /// `data\content\world<stream>.big`.
     pub stream: &'static str,
-    /// Its `render_locations` collection.
+    /// Its `render_locations` collection; empty for a downloadable content map, whose world record
+    /// names its own by key ([`District::render_location`]).
     pub render_location: &'static str,
-    /// Its proxy stream (Skate 2's `PROXY`), in `data\content\proxy<proxy>.big`.
+    /// Its proxy stream (Skate 2's `PROXY`), in `data\content\proxy<proxy>.big`; empty for none
+    /// (a downloadable content map's).
     pub proxy: &'static str,
     /// What the challenge map and the online map pool call it.
     pub title: &'static str,
@@ -64,6 +75,7 @@ pub struct DistrictSpec {
 pub const DISTRICTS: [DistrictSpec; 3] = [
     DistrictSpec {
         key: "dist_university",
+        world: "dist_university",
         stream: "DIST_University",
         render_location: "university",
         proxy: "University_100_Proxy",
@@ -77,6 +89,7 @@ pub const DISTRICTS: [DistrictSpec; 3] = [
     },
     DistrictSpec {
         key: "dist_downtown",
+        world: "dist_downtown",
         stream: "DIST_DownTown",
         render_location: "downtown",
         proxy: "Downtown_100_Proxy",
@@ -90,6 +103,7 @@ pub const DISTRICTS: [DistrictSpec; 3] = [
     },
     DistrictSpec {
         key: "dist_industrial",
+        world: "dist_industrial",
         stream: "DIST_Industrial",
         render_location: "industrial",
         proxy: "Industrial_100_Proxy",
@@ -114,15 +128,47 @@ const LOAD_ARCHIVE: &str = "data\\big\\miscload.big";
 const THUMBNAIL_ARCHIVE: &str = "data\\big\\fedynamic.big";
 /// The scene archive: its scenes' animations and ICE cameras.
 const SCENE_ARCHIVE: &str = "data\\big\\scene.big";
-/// The part slots whose Skate 3 parts join Slappy's: the clothing, accessory and board slots
-/// its categories list, the inner torsos its shirts layer over, and the arm and leg models its
-/// shirts and pants require. Skate 3's bodies, heads, hair and faces stay out of Back Alley
-/// Pete's.
+/// The part slots whose Skate 3 parts join Skate 2's: the clothing, accessory and board slots
+/// Slappy's categories list, the inner torsos its shirts layer over, the arm and leg models its
+/// shirts and pants require, and the hair slot, of whose parts only [`JOINED_HAIR_STYLES`] join.
+/// Skate 3's bodies, heads and faces stay out of Back Alley Pete's.
 const MERCHANDISE_SLOTS: [u8; 16] = [0, 1, 2, 5, 6, 11, 12, 13, 15, 17, 18, 20, 21, 22, 23, 25];
+/// The hair slot (`Hair`, one of [`MERCHANDISE_SLOTS`]), and `HairStyle` among a part's string
+/// indices.
+const HAIR_SLOT: u8 = 2;
+const HAIR_STYLE: usize = 17;
+/// PC port addition (user request): the hair styles of Skate 3's that join Back Alley Pete's, the
+/// emo styles the Skate.Create Upgrade Pack adds, which fit Skate 2's heads where Skate 3's other
+/// hair does not. Each joins with its hat model (`HairModelType` hat), which a hat that needs hat
+/// hair swaps in as it swaps Skate 2's.
+const JOINED_HAIR_STYLES: [&str; 2] = ["emo short", "emo long"];
 
 /// `Attrib::Gen::fe_locations` and `render_locations` (the same keys as Skate 2's).
 const FE_LOCATIONS: u64 = 0xddcd_6bc2_3255_e508;
 const RENDER_LOCATIONS: u64 = 0x6a2b_5946_514b_8490;
+/// `Attrib::Gen::world`, the world an `fe_locations`' `World` names, and what a downloadable
+/// content map takes of it: its stream (`WorldStream`), its title, its `RenderLocation`, its sky
+/// and water models ([`DistrictSpec::loose`]'s four fields) and, for a world on Skate 3's disc,
+/// its archive (`worldDIST_BlackBoxPark.big`) under its folder (`data/content`).
+const WORLD: u64 = 0xbc69_c54e_6e10_2d88;
+const FE_WORLD: u64 = 0x7565_cd2a_80e9_3a5e;
+const WORLD_STREAM: u64 = 0x2a65_5e8a_29c1_f642;
+/// `world.Name`.
+const WORLD_NAME: u64 = 0x942a_b8ae_e4b4_14ed;
+const WORLD_TITLE: u64 = 0x095e_1d97_78f0_c6f4;
+const WORLD_RENDER_LOCATION: u64 = 0x7e23_d107_85c4_3717;
+const WORLD_MODELS: [u64; 4] = [0x2a0b_f629_355a_fb15, 0xc7a0_a84f_018e_87ba, 0xca5a_157a_65e7_5934, 0x9518_98f6_c0fa_6856];
+const WORLD_FOLDER: u64 = 0x3fb3_32c6_26ad_7c24;
+const WORLD_ARCHIVE: u64 = 0x295c_85d2_b299_7ed3;
+/// A world flag (its name unknown) that TU3 `0x8255b8c8` tests before it indexes a world's
+/// location activities: set on the four maps Skate 3's downloadable content streams, clear on its
+/// Skate.Park lots.
+const WORLD_OWN_ACTIVITIES: u64 = 0x1719_c577_673e_b7c3;
+/// The `render_locations` a downloadable content map's world names when Skate 3 holds none of
+/// its own (After Dark's `sanitarium`).
+const DEFAULT_RENDER_LOCATION: &str = "default";
+/// Every part slot: a pack's clothing joins Skate 3's in each.
+const ALL_SLOTS: [u8; 26] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25];
 /// Skate 3's challenge bank, beside its skater database.
 const CHALLENGE_BANK: &str = "data\\db\\challengebanks\\main.vlt";
 /// `challenges` and its `GlobalData` and `Name`; `challenge_global_data`'s online flag,
@@ -446,9 +492,28 @@ pub struct Skate3Data {
     locators: HashMap<u32, [f32; 16]>,
     /// Skate 3's clothing database.
     clothing: Option<Arc<CacPartDb>>,
-    /// The local data's shared records ([`LOCAL_DATA_FRAMEWORK`]), sorted: what a game's local
-    /// data inherits, which only a graph game's graft reads.
+    /// The local data's shared records ([`LOCAL_DATA_FRAMEWORK`] and the packs' frameworks),
+    /// sorted: what a game's local data inherits, which only a graph game's graft reads.
     framework_locals: Vec<u64>,
+    /// What each linked downloadable content pack added, in the order linked.
+    pub packs: Vec<PackContents>,
+    /// The packs' archives, which join the game's mounts through [`dlc::game_view`].
+    pack_archives: Vec<MountedBig>,
+    /// The worlds on Skate 3's disc the packs' unlocks open.
+    disc_worlds: Vec<PathBuf>,
+}
+
+/// What a linked downloadable content pack added, which the Downloadable Content screen shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackContents {
+    /// The pack ([`dlc::Pack::identity`]).
+    pub identity: String,
+    /// Its maps' titles.
+    pub maps: Vec<String>,
+    /// How many online games its maps host.
+    pub online: usize,
+    /// How many pieces of clothing it adds to Edit Skater's Merchandise.
+    pub clothing: usize,
 }
 
 impl std::fmt::Debug for Skate3Data {
@@ -522,11 +587,148 @@ fn open(path: &Path) -> Result<MountedBig, Skate3Error> {
     MountedBig::open(skate2_formats::host_path::on_disk(path), false).map_err(|e| Skate3Error::Read(format!("{}: {e}", path.display())))
 }
 
-/// The district whose own global locators a loose locator file holds
-/// (`global_locators\BAM\DIST_<district>\`): its index in [`DISTRICTS`].
-fn locator_district(path: &str) -> Option<usize> {
+/// The world whose own global locators a locator file holds: the folder it sits in under its
+/// group (`global_locators\BAM\DIST_University\`, `global_locators\DLC_BAM\DIST_AGPark\`),
+/// lowercase.
+fn locator_stream(path: &str) -> Option<String> {
+    const FOLDER: &str = "global_locators\\";
     let path = path.to_ascii_lowercase().replace('/', "\\");
-    DISTRICTS.iter().position(|spec| path.contains(&format!("\\bam\\{}\\", spec.stream.to_ascii_lowercase())))
+    let rest = &path[path.find(FOLDER)? + FOLDER.len()..];
+    let mut parts = rest.split('\\');
+    let (_group, stream, _file) = (parts.next()?, parts.next()?, parts.next()?);
+    Some(stream.to_owned())
+}
+
+/// The collection a reference field of `collection` names. A `ClassRefSpec_<class>` field
+/// (`fe_locations.World`, `world.RenderLocation`) names its own class, so its value holds the
+/// collection first; an `Attrib::RefSpec` holds the class, then the collection.
+fn referenced(db: &AttribDb, class: u64, collection: u64, field: u64) -> Option<u64> {
+    let value = db.attribute(class, collection, field)?;
+    let (first, second) = value.ref_spec(0)?;
+    let names_class = db.type_name(value.definition.type_id).is_some_and(|name| name.starts_with("Attrib::Gen::ClassRefSpec_"));
+    let key = if names_class { first } else { second };
+    (key != 0).then_some(key)
+}
+
+/// What a location's world record (`world`, the location's `World`) holds of it.
+struct WorldRecord {
+    name: String,
+    stream: String,
+    title: String,
+    render_location: u64,
+    models: Vec<String>,
+    folder: String,
+    archive: String,
+    own_activities: bool,
+}
+
+impl WorldRecord {
+    fn of(db: &AttribDb, location: u64) -> Option<Self> {
+        let world = referenced(db, FE_LOCATIONS, location, FE_WORLD)?;
+        let text = |field| db.attribute(WORLD, world, field).and_then(|value| value.text(0).map(str::to_owned)).unwrap_or_default();
+        let stream = text(WORLD_STREAM);
+        if stream.is_empty() {
+            return None;
+        }
+        Some(Self {
+            name: text(WORLD_NAME),
+            stream,
+            title: text(WORLD_TITLE),
+            render_location: referenced(db, WORLD, world, WORLD_RENDER_LOCATION).unwrap_or(0),
+            models: WORLD_MODELS.iter().map(|&field| text(field)).collect(),
+            folder: text(WORLD_FOLDER),
+            archive: text(WORLD_ARCHIVE),
+            own_activities: db.attribute(WORLD, world, WORLD_OWN_ACTIVITIES).and_then(|value| value.bool(0)) == Some(true),
+        })
+    }
+}
+
+/// A location as a map beside the districts: its world (an additional world standing where San
+/// Vanelona does) lit by its world's render location (`default` when Skate 3 holds none of that
+/// name), its loose sky and water its world record's, titled by the location's string (else its
+/// world's, else its name), the location itself its one teleport, at its global locator (else at
+/// its world's own location of that name). `None` without a locator to stand at.
+fn map_district(
+    db: &AttribDb,
+    mounts: &MountSet,
+    text: &dyn Fn(&str) -> Option<String>,
+    locators: &HashMap<u32, [f32; 16]>,
+    location: u64,
+    world: &WorldRecord,
+) -> Option<District> {
+    let name = db.layout_text(FE_LOCATIONS, location, 0)?.to_owned();
+    let locator = db.layout_text(FE_LOCATIONS, location, 1).map(str::to_owned).filter(|locator| !locator.is_empty())?;
+    let transform = match locators.get(&hash_value32(&locator)) {
+        Some(&transform) => transform,
+        None => {
+            let path = format!("data\\content\\world\\stream\\{0}\\{0}_Sim.loc", world.stream);
+            let found = mounts.read_path(&path).ok().and_then(|bytes| LocationTable::parse(&bytes).ok()).and_then(|table| table.find(&locator).map(|start| start.transform));
+            let Some(transform) = found else {
+                eprintln!("skate 3 dlc: {name}'s locator {locator} is no global locator");
+                return None;
+            };
+            transform
+        }
+    };
+    let title = db
+        .layout_text(FE_LOCATIONS, location, 2)
+        .and_then(text)
+        .filter(|title| !title.is_empty())
+        .or_else(|| text(&world.title).filter(|title| !title.is_empty()))
+        .unwrap_or_else(|| name.clone());
+    let folder = if world.folder.is_empty() { "data/content" } else { world.folder.as_str() };
+    let loose: Vec<String> = world
+        .models
+        .iter()
+        .filter(|model| !model.is_empty())
+        .map(|model| format!("{folder}/{model}.rx2").replace('/', "\\"))
+        .filter(|path| mounts.contains_path(path))
+        .collect();
+    let render_location = [world.render_location, hash64(DEFAULT_RENDER_LOCATION)]
+        .into_iter()
+        .find(|&key| key != 0 && db.has_collection(RENDER_LOCATIONS, key))
+        .unwrap_or(0);
+    // Its world's own name (`dist_artgallerydlc`) names its stream XMLs; the location's stands in
+    // for a record without one.
+    let world_name = if world.name.is_empty() { name.as_str() } else { world.name.as_str() };
+    let spec = kept_spec(&name, world_name, &world.stream, &title, &loose);
+    Some(District { spec: *spec, render_location, spots: vec![Spot { key: location, name, title, locator, transform }] })
+}
+
+/// The files a clothing database's part of `slot` loads, as Edit Skater composes it
+/// (`edit_skater_character::compose_recipe`): each level of detail of its model, and the
+/// textures there of its material (else of the first); none when the database's master recipe
+/// lacks its model.
+fn part_files(db: &CacPartDb, slot: u8, part: &CacPart) -> Option<Vec<String>> {
+    let name = SLOT_NAMES.get(usize::from(slot))?;
+    let component = db.master.components.iter().find(|component| component.name == *name)?;
+    let model = component.models.iter().find(|model| model.asset_id == part.model_id)?;
+    let mut files = Vec::new();
+    for lod in &model.lods {
+        files.push(format!("data\\content\\createacharacter\\model\\{}\\{}\\0x{:016x}.rx2", db.master.schema_name, component.name, lod.arena_asset_id));
+        for instance in &lod.material_instances {
+            let material = instance
+                .materials
+                .iter()
+                .find(|material| material.asset_id == part.material_id)
+                .or_else(|| instance.materials.iter().min_by_key(|material| material.asset_id));
+            files.extend(
+                material
+                    .into_iter()
+                    .flat_map(|material| &material.shader_parameters)
+                    .map(|parameter| format!("data\\content\\createacharacter\\texture\\0x{:016x}.rx2", parameter.asset_id)),
+            );
+        }
+    }
+    Some(files)
+}
+
+/// The Merchandise pieces ([`MERCHANDISE_SLOTS`]) `joined` holds past `before`.
+fn merchandise_added(joined: &CacPartDb, before: Option<&CacPartDb>) -> usize {
+    MERCHANDISE_SLOTS
+        .iter()
+        .map(|&slot| joined.slot_range(slot).len().saturating_sub(before.map_or(0, |before| before.slot_range(slot).len())))
+        .sum()
 }
 
 /// Every named location of a standalone locator arena (`tLocationDesc`s of its kind-21 assets).
@@ -552,18 +754,25 @@ fn locator_transforms(bytes: &[u8], found: &mut HashMap<u32, [f32; 16]>) -> Resu
 /// Skate 3's English strings: its Global category through its histogram.
 fn english(mounts: &MountSet) -> Result<HashMap<u32, String>, String> {
     let lang = "data\\fe\\languages\\english\\LANGUAGE_English";
-    let histogram = Histogram::parse(&mounts.read_path(&format!("{lang}_HISTOGRAM_skate3ng.BIN")).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let histogram = mounts.read_path(&format!("{lang}_HISTOGRAM_skate3ng.BIN")).map_err(|e| e.to_string())?;
     let global = mounts.read_path(&format!("{lang}_Global_skate3ng.BIN")).map_err(|e| e.to_string())?;
-    let category = LanguageCategory::parse(&global).map_err(|e| e.to_string())?;
     let mut strings = HashMap::new();
+    decode_strings(&histogram, &global, &mut strings)?;
+    Ok(strings)
+}
+
+/// A language category's strings through its histogram, each joining `strings` unless a string of
+/// its id is there.
+fn decode_strings(histogram: &[u8], category: &[u8], strings: &mut HashMap<u32, String>) -> Result<(), String> {
+    let histogram = Histogram::parse(histogram).map_err(|e| e.to_string())?;
+    let category = LanguageCategory::parse(category).map_err(|e| e.to_string())?;
     for (hash, packed) in category.packed_strings() {
         let Ok(decoded) = histogram.unpack(packed, 16384, false) else { continue };
         if decoded.valid && decoded.terminated {
-            strings.insert(hash, String::from_utf16_lossy(&decoded.units).trim_end_matches('\0').to_owned());
+            strings.entry(hash).or_insert_with(|| String::from_utf16_lossy(&decoded.units).trim_end_matches('\0').to_owned());
         }
     }
-    Ok(strings)
+    Ok(())
 }
 
 impl Skate3Data {
@@ -573,6 +782,17 @@ impl Skate3Data {
     ///
     /// [`Skate3Error`] when it is not Skate 3's, or its database or strings cannot be read.
     pub fn open(root: &Path) -> Result<Self, Skate3Error> {
+        Self::open_with(root, &[])
+    }
+
+    /// [`Self::open`] with Skate 3's downloadable content `packs` ([`dlc`]), in the order linked:
+    /// each pack's archive joins Skate 3's own mounts after the game's, its Vaults, strings and
+    /// clothing join Skate 3's, and its maps stand beside the districts.
+    ///
+    /// # Errors
+    ///
+    /// [`Skate3Error`] when the folder is not Skate 3's, or its database or strings cannot be read.
+    pub fn open_with(root: &Path, packs: &[Arc<dlc::Pack>]) -> Result<Self, Skate3Error> {
         validate(root)?;
         let mut mounts = MountSet::new();
         for relative in [DATABASE_ARCHIVE, BOOT_ARCHIVE] {
@@ -587,6 +807,10 @@ impl Skate3Data {
         for spec in &DISTRICTS {
             mounts.push(open(&district_archive(root, spec))?);
         }
+        // The packs' archives, whole, after the game's own (`dlcbig:`).
+        for archive in packs.iter().flat_map(|pack| &pack.archives) {
+            mounts.push(archive.clone());
+        }
         mounts.set_loose_root(root);
         mounts.join_skater_database().map_err(|e| Skate3Error::Read(format!("skater database: {e}")))?;
         // The challenge bank joins the skater database, whose schema its collections read with;
@@ -598,27 +822,81 @@ impl Skate3Data {
                 AttribDb::load(&mounts, &["data\\db\\skater.vlt"]).map_err(|e| Skate3Error::Read(format!("skater database: {e}")))?
             }
         };
-        let strings = english(&mounts).map_err(|e| Skate3Error::Read(format!("English strings: {e}")))?;
-        let mut locators = HashMap::new();
-        let mut districts_of = HashMap::new();
-        for name in mounts.loose_files("data\\content\\global_locators\\") {
-            if !name.to_ascii_lowercase().ends_with(".rx2") {
-                continue;
+        let mut strings = english(&mounts).map_err(|e| Skate3Error::Read(format!("English strings: {e}")))?;
+        // The packs' English after Skate 3's own.
+        for (histogram, category) in packs.iter().flat_map(|pack| &pack.archives).flat_map(dlc::english) {
+            if let Err(error) = decode_strings(&histogram, &category, &mut strings) {
+                eprintln!("skate 3 dlc: English strings: {error}");
             }
-            let bytes = mounts.read_path(&name).map_err(|e| Skate3Error::Read(format!("{name}: {e}")))?;
+        }
+        // Each global locator's transform, and the world whose own locators its file holds:
+        // Skate 3's loose files, then the packs'.
+        let mut locators = HashMap::new();
+        let mut locator_streams: HashMap<u32, String> = HashMap::new();
+        let mut take = |name: &str, bytes: &[u8]| {
             let mut found = HashMap::new();
-            if let Err(error) = locator_transforms(&bytes, &mut found) {
+            if let Err(error) = locator_transforms(bytes, &mut found) {
                 eprintln!("skate 3 data: {name}: {error}");
             }
-            if let Some(district) = locator_district(&name) {
+            if let Some(stream) = locator_stream(name) {
                 for &hash in found.keys() {
-                    districts_of.entry(hash).or_insert(district);
+                    locator_streams.entry(hash).or_insert_with(|| stream.clone());
                 }
             }
             for (hash, transform) in found {
                 locators.entry(hash).or_insert(transform);
             }
+        };
+        for name in mounts.loose_files("data\\content\\global_locators\\") {
+            if !name.to_ascii_lowercase().ends_with(".rx2") {
+                continue;
+            }
+            let bytes = mounts.read_path(&name).map_err(|e| Skate3Error::Read(format!("{name}: {e}")))?;
+            take(&name, &bytes);
         }
+        for archive in packs.iter().flat_map(|pack| &pack.archives) {
+            for name in dlc::locators(archive) {
+                match archive.read_path(&name) {
+                    Ok(bytes) => take(&name, &bytes),
+                    Err(error) => eprintln!("skate 3 dlc: {name}: {error}"),
+                }
+            }
+        }
+        let mut db = db;
+        // The state graphs Skate 3's own games run under, each in its Vault.
+        for graph in ONLINE_GRAFTS.iter().filter_map(|graft| graft.graph) {
+            let path = format!("{STATE_GRAPH_VAULTS}\\{graph}.vlt");
+            if let Err(error) = db.load_more(&mounts, &path) {
+                eprintln!("skate 3 data: {path}: {error}");
+            }
+        }
+        // The local data's shared records (`default`, `main`, `1ups` and the like), the parents of
+        // each game's local data, in a Vault of their own.
+        let before = db.collections(class::CHALLENGE_LOCAL_DATA).to_vec();
+        if let Err(error) = db.load_more(&mounts, LOCAL_DATA_FRAMEWORK) {
+            eprintln!("skate 3 data: {LOCAL_DATA_FRAMEWORK}: {error}");
+        }
+        let mut framework_locals: Vec<u64> =
+            db.collections(class::CHALLENGE_LOCAL_DATA).iter().copied().filter(|key| before.binary_search(key).is_err()).collect();
+        // The packs' Vaults, each pack's lists in turn (`cVaultListLoadCallback`): a pack's own
+        // local data framework shares its records as Skate 3's does. The locations each adds.
+        let mut added_locations = Vec::with_capacity(packs.len());
+        for pack in packs {
+            let locations_before = db.collections(FE_LOCATIONS).to_vec();
+            for path in pack.archives.iter().flat_map(dlc::vaults) {
+                let locals_before = db.collections(class::CHALLENGE_LOCAL_DATA).to_vec();
+                if let Err(error) = db.load_more(&mounts, &path) {
+                    eprintln!("skate 3 dlc {}: {path}: {error}", pack.title);
+                    continue;
+                }
+                if path.to_ascii_lowercase().contains("local_data_framework") {
+                    framework_locals.extend(db.collections(class::CHALLENGE_LOCAL_DATA).iter().copied().filter(|key| locals_before.binary_search(key).is_err()));
+                }
+            }
+            added_locations.push(db.table_order(FE_LOCATIONS).into_iter().filter(|key| locations_before.binary_search(key).is_err()).collect::<Vec<_>>());
+        }
+        framework_locals.sort_unstable();
+        framework_locals.dedup();
         let text = |id: &str| strings.get(&skate2_formats::localization::string_hash(id.as_bytes())).cloned();
         let mut districts = Vec::new();
         for spec in DISTRICTS {
@@ -641,22 +919,52 @@ impl Skate3Data {
             let render_location = if db.has_collection(RENDER_LOCATIONS, render_location) { render_location } else { 0 };
             districts.push(District { spec, render_location, spots });
         }
-        let mut db = db;
-        // The state graphs Skate 3's own games run under, each in its Vault.
-        for graph in ONLINE_GRAFTS.iter().filter_map(|graft| graft.graph) {
-            let path = format!("{STATE_GRAPH_VAULTS}\\{graph}.vlt");
-            if let Err(error) = db.load_more(&mounts, &path) {
-                eprintln!("skate 3 data: {path}: {error}");
+        // The packs' maps: each pack's own locations whose worlds it streams (not a Skate.Park
+        // lot), then the disc's worlds its unlocks open.
+        let mut contents = Vec::with_capacity(packs.len());
+        let mut pack_streams: Vec<Vec<&'static str>> = Vec::with_capacity(packs.len());
+        let mut disc_worlds = Vec::new();
+        for (pack, added) in packs.iter().zip(&added_locations) {
+            let mut pack_contents = PackContents { identity: pack.identity.clone(), ..PackContents::default() };
+            let mut streams = Vec::new();
+            for &location in added {
+                let Some(world) = WorldRecord::of(&db, location) else { continue };
+                if !world.own_activities || !pack.archives.iter().any(|archive| dlc::streams(archive, &world.stream)) {
+                    continue;
+                }
+                if let Some(district) = map_district(&db, &mounts, &text, &locators, location, &world) {
+                    eprintln!("skate 3 dlc {}: {} ({})", pack.title, district.spec.title, district.spec.stream);
+                    pack_contents.maps.push(district.spec.title.to_owned());
+                    streams.push(district.spec.stream);
+                    districts.push(district);
+                }
             }
+            for name in pack.archives.iter().flat_map(dlc::unlocked_locations) {
+                let location = hash64(&name);
+                if !db.has_collection(FE_LOCATIONS, location) || districts.iter().any(|district| district.spots.iter().any(|spot| spot.key == location)) {
+                    continue;
+                }
+                let Some(world) = WorldRecord::of(&db, location) else { continue };
+                let path = root.join(world.folder.replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR)).join(&world.archive);
+                if world.archive.is_empty() || !skate2_formats::host_path::is_file(&skate2_formats::host_path::on_disk(&path)) {
+                    eprintln!("skate 3 dlc {}: {name}'s world {} is not on the disc", pack.title, world.archive);
+                    continue;
+                }
+                if let Some(district) = map_district(&db, &mounts, &text, &locators, location, &world) {
+                    eprintln!("skate 3 dlc {}: {} ({}, on the disc)", pack.title, district.spec.title, district.spec.stream);
+                    pack_contents.maps.push(district.spec.title.to_owned());
+                    streams.push(district.spec.stream);
+                    districts.push(district);
+                    disc_worlds.push(path);
+                }
+            }
+            contents.push(pack_contents);
+            pack_streams.push(streams);
         }
-        // The local data's shared records (`default`, `main`, `1ups` and the like), the parents of
-        // each game's local data, in a Vault of their own.
-        let before = db.collections(class::CHALLENGE_LOCAL_DATA).to_vec();
-        if let Err(error) = db.load_more(&mounts, LOCAL_DATA_FRAMEWORK) {
-            eprintln!("skate 3 data: {LOCAL_DATA_FRAMEWORK}: {error}");
-        }
-        let framework_locals: Vec<u64> =
-            db.collections(class::CHALLENGE_LOCAL_DATA).iter().copied().filter(|key| before.binary_search(key).is_err()).collect();
+        let districts_of: HashMap<u32, usize> = locator_streams
+            .iter()
+            .filter_map(|(&hash, stream)| Some((hash, districts.iter().position(|district| district.spec.stream.eq_ignore_ascii_case(stream))?)))
+            .collect();
         let mut online = online_spots(&db, &text, &locators, &districts_of, &districts);
         // A challenge's game needs its spot's local data, in its own Vault.
         online.retain(|spot| {
@@ -672,9 +980,12 @@ impl Skate3Data {
                 }
             }
         });
-        let clothing = match mounts.read_path(skate2_formats::cac_parts::SKATE3_DATABASE_PATH) {
+        for (pack_contents, streams) in contents.iter_mut().zip(&pack_streams) {
+            pack_contents.online = online.iter().filter(|spot| streams.contains(&spot.stream)).count();
+        }
+        let mut clothing = match mounts.read_path(skate2_formats::cac_parts::SKATE3_DATABASE_PATH) {
             Ok(bytes) => match CacPartDb::parse(&bytes) {
-                Ok(parts) => Some(Arc::new(parts)),
+                Ok(parts) => Some(parts),
                 Err(error) => {
                     eprintln!("skate 3 data: clothing: {error}");
                     None
@@ -682,14 +993,76 @@ impl Skate3Data {
             },
             Err(_) => None,
         };
-        Ok(Self { root: root.to_owned(), mounts: Arc::new(mounts), db: Arc::new(db), strings, districts, online, locators, clothing, framework_locals })
+        // The packs' clothing, each database's parts after each slot's own (as Skate 2's take
+        // Skate 3's, [`Self::clothing_for`]). A pack's database also holds the parts of the packs
+        // before it, whose files only those packs carry: a pack joins the parts whose files Skate
+        // 3 or the pack itself carries, so each brings its own and none shows a part of a pack
+        // not linked; those it carries are offered, whatever DLC ids they hold.
+        let in_pack = |pack: &dlc::Pack, path: &str| pack.archives.iter().any(|archive| archive.archive().find_path(path).is_some());
+        let in_skate3 = |path: &str| mounts.contains_path(path) && !packs.iter().any(|pack| in_pack(pack, path));
+        for (pack, pack_contents) in packs.iter().zip(&mut contents) {
+            for archive in &pack.archives {
+                for path in dlc::clothing(archive) {
+                    let parts = match archive.read_path(&path).map_err(|e| e.to_string()).and_then(|bytes| CacPartDb::parse(&bytes).map_err(|e| e.to_string())) {
+                        Ok(parts) => parts,
+                        Err(error) => {
+                            eprintln!("skate 3 dlc {}: {path}: {error}", pack.title);
+                            continue;
+                        }
+                    };
+                    let Some(base) = clothing.as_ref() else {
+                        eprintln!("skate 3 dlc {}: {path} joins Skate 3's own clothing, which did not load", pack.title);
+                        continue;
+                    };
+                    let carried = |slot: u8, part: &CacPart| {
+                        part_files(&parts, slot, part).is_some_and(|files| files.iter().all(|file| in_skate3(file) || in_pack(pack, file)))
+                    };
+                    match base.with_skate3_where(&parts, &ALL_SLOTS, carried, true) {
+                        Ok(joined) => {
+                            pack_contents.clothing += merchandise_added(&joined, Some(base));
+                            clothing = Some(joined);
+                        }
+                        Err(error) => eprintln!("skate 3 dlc {}: {path} cannot join: {error}", pack.title),
+                    }
+                }
+            }
+        }
+        for (pack, pack_contents) in packs.iter().zip(&contents) {
+            eprintln!(
+                "skate 3 dlc {}: {} maps, {} online games, {} pieces of clothing",
+                pack.title,
+                pack_contents.maps.len(),
+                pack_contents.online,
+                pack_contents.clothing
+            );
+        }
+        let clothing = clothing.map(Arc::new);
+        let pack_archives = packs.iter().flat_map(|pack| pack.archives.iter().cloned()).collect();
+        Ok(Self {
+            root: root.to_owned(),
+            mounts: Arc::new(mounts),
+            db: Arc::new(db),
+            strings,
+            districts,
+            online,
+            locators,
+            clothing,
+            framework_locals,
+            packs: contents,
+            pack_archives,
+            disc_worlds,
+        })
     }
 
-    /// Slappy's parts with Skate 3's clothing joined ([`MERCHANDISE_SLOTS`]); `None` without it.
+    /// Slappy's parts with Skate 3's clothing joined ([`MERCHANDISE_SLOTS`]), and Back Alley
+    /// Pete's hair with Skate 3's of [`JOINED_HAIR_STYLES`]; `None` without it.
     #[must_use]
     pub fn clothing_for(&self, skate2: &CacPartDb) -> Option<CacPartDb> {
         let clothing = self.clothing.as_ref()?;
-        match skate2.with_skate3(clothing, &MERCHANDISE_SLOTS) {
+        let joins = |slot: u8, part: &CacPart| {
+            slot != HAIR_SLOT || clothing.string(part.attributes[HAIR_STYLE]).is_ok_and(|style| JOINED_HAIR_STYLES.contains(&style))
+        };
+        match skate2.with_skate3_where(clothing, &MERCHANDISE_SLOTS, joins, false) {
             Ok(joined) => Some(joined),
             Err(error) => {
                 eprintln!("skate 3 data: clothing cannot join: {error}");
@@ -1149,6 +1522,12 @@ impl Skate3Data {
                 archives.push(open(&path)?);
             }
         }
+        // The packs' worlds, challenge hulls and models ([`dlc::game_view`]), and the disc's worlds
+        // their unlocks open.
+        archives.extend(self.pack_archives.iter().map(dlc::game_view));
+        for path in &self.disc_worlds {
+            archives.push(open(path)?);
+        }
         Ok(archives)
     }
 
@@ -1207,14 +1586,131 @@ fn online_spots(
             Some(OnlineSpot { key, net_type, name, title, location, stream: district.spec.stream, render_location: district.render_location, transform })
         })
         .collect();
+    // A pack's Vault may hold one of Skate 3's own challenges again: one game each.
+    spots.sort_by_key(|spot| spot.key);
+    spots.dedup_by_key(|spot| spot.key);
     spots.sort_by(|a, b| a.title.to_ascii_lowercase().cmp(&b.title.to_ascii_lowercase()));
     spots
 }
 
-/// The district of a world stream name, linked or not.
+/// The district of a world stream name, linked or not, or a map downloadable content added this
+/// run ([`kept_spec`]).
 #[must_use]
 pub fn district_spec(stream: &str) -> Option<&'static DistrictSpec> {
-    DISTRICTS.iter().find(|spec| spec.stream.eq_ignore_ascii_case(stream))
+    DISTRICTS.iter().find(|spec| spec.stream.eq_ignore_ascii_case(stream)).or_else(|| {
+        MAP_SPECS.lock().unwrap_or_else(PoisonError::into_inner).iter().copied().find(|spec| spec.stream.eq_ignore_ascii_case(stream))
+    })
+}
+
+/// Every world [`district_spec`] knows: the districts, then the maps downloadable content added
+/// this run.
+#[must_use]
+pub fn district_specs() -> Vec<&'static DistrictSpec> {
+    let maps = MAP_SPECS.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    DISTRICTS.iter().chain(maps).collect()
+}
+
+/// The specs of the maps downloadable content added, each kept for the run once made
+/// ([`kept_spec`]): what [`district_spec`] finds beside [`DISTRICTS`].
+static MAP_SPECS: Mutex<Vec<&'static DistrictSpec>> = Mutex::new(Vec::new());
+
+/// A text kept for the run, made once.
+fn kept(text: &str) -> &'static str {
+    static KEPT: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(&found) = kept.iter().find(|&&held| held == text) {
+        return found;
+    }
+    let made: &'static str = Box::leak(text.to_owned().into_boxed_str());
+    kept.push(made);
+    made
+}
+
+/// A downloadable content map's spec, kept for the run: the one made before for the same world,
+/// else a new one. It has no `render_locations` name ([`District::render_location`] holds its key)
+/// and no proxy.
+fn kept_spec(key: &str, world: &str, stream: &str, title: &str, loose: &[String]) -> &'static DistrictSpec {
+    let mut specs = MAP_SPECS.lock().unwrap_or_else(PoisonError::into_inner);
+    let same = |spec: &&&'static DistrictSpec| {
+        spec.key == key
+            && spec.world == world
+            && spec.stream == stream
+            && spec.title == title
+            && spec.loose.len() == loose.len()
+            && spec.loose.iter().zip(loose).all(|(held, path)| *held == path.as_str())
+    };
+    if let Some(&found) = specs.iter().find(same) {
+        return found;
+    }
+    let loose: Vec<&'static str> = loose.iter().map(|path| kept(path)).collect();
+    let spec: &'static DistrictSpec = Box::leak(Box::new(DistrictSpec {
+        key: kept(key),
+        world: kept(world),
+        stream: kept(stream),
+        render_location: "",
+        proxy: "",
+        title: kept(title),
+        loose: Box::leak(loose.into_boxed_slice()),
+    }));
+    specs.push(spec);
+    spec
+}
+
+/// How many linked areas (the districts, then the downloadable content's maps) the challenge
+/// maps' downloaded content lists.
+pub const AREA_SLOTS: usize = 12;
+
+/// The challenge maps' label of linked area `index` (a district, then a downloadable content
+/// map, as [`Skate3Data::districts`] holds them): `#<title> (%d)`, its count of teleports at `%d`.
+#[must_use]
+pub fn area_label(index: usize) -> &'static str {
+    let title = linked()
+        .and_then(|data| data.districts.get(index).map(|district| district.spec.title))
+        .or_else(|| DISTRICTS.get(index).map(|spec| spec.title))
+        .unwrap_or_default();
+    kept(&format!("#{title} (%d)"))
+}
+
+/// Whether a linked area is one of Port Carverton's districts, not a downloadable content map.
+#[must_use]
+pub fn is_base_district(district: &District) -> bool {
+    DISTRICTS.iter().any(|spec| spec.key == district.spec.key)
+}
+
+/// Whether a world stream is one of Port Carverton's districts', not a downloadable content map's.
+#[must_use]
+pub fn is_district_stream(stream: &str) -> bool {
+    DISTRICTS.iter().any(|spec| spec.stream.eq_ignore_ascii_case(stream))
+}
+
+/// PC port: a linked Skate 3 world's stream XML of type `suffix` (`Pres` or `Sim`), which Skate
+/// 3's `cStreamFile::LoadStreamXml` (0x8247dbe0 in its title update 3) reads as
+/// `data\stream\<world>_<type>.xml` by the world record's `Name` (`dist_industrial`,
+/// `dist_artgallerydlc`; `cGameAssetManager::LoadGameStreamFile` 0x82477c40 keeps it), from Skate
+/// 3's own archives (`miscload.big`) or the world's downloadable content package. `None` for a
+/// world that ships none (Black Box Park), for a world not Skate 3's, or unlinked.
+#[must_use]
+pub fn world_stream_xml(stream: &str, suffix: &str) -> Option<Vec<u8>> {
+    let spec = district_spec(stream)?;
+    linked()?.mounts.read_path(&format!("data\\stream\\{}_{suffix}.xml", spec.world)).ok()
+}
+
+/// PC port: the records a linked Skate 3 world's stream file of type `suffix` selects from
+/// (`TileRecords`), with the world's stream XML of that type for Pres and Sim
+/// (`cGameAssetManager::UpdateGameStreamFileLoaded` 0x82477da8 loads none for textures). A
+/// malformed XML is reported and left out, as is one the world does not ship.
+#[must_use]
+pub fn world_records(stream: &str, space: &skate2_formats::stream::CollectionSpace, suffix: &str) -> skate2_formats::stream_xml::TileRecords {
+    let mut records = skate2_formats::stream_xml::TileRecords::new(space, suffix);
+    if suffix.eq_ignore_ascii_case("Tex") {
+        return records;
+    }
+    match world_stream_xml(stream, suffix).map(|bytes| records.apply_stream_xml(&bytes)) {
+        Some(Ok(())) => eprintln!("skate 3 world {stream}: {suffix} selects through its stream XML"),
+        Some(Err(error)) => eprintln!("skate 3 world {stream}: {suffix} stream XML: {error}"),
+        None => {}
+    }
+    records
 }
 
 /// Whether a world (`fe_locations.WorldFile`, an additional world's stream) is one of Skate 3's
@@ -1397,7 +1893,7 @@ pub fn set_linked(data: Option<Arc<Skate3Data>>) {
 
 /// The pack row the Downloadable Content screen lists for linked Skate 3 data.
 pub const PACK_TITLE: &str = "Skate 3";
-pub const PACK_DESCRIPTION: &str = "Port Carverton's University, Downtown and Industrial districts with their challenge map teleports, and Skate 3's clothing in Edit Skater's Merchandise.";
+pub const PACK_DESCRIPTION: &str = "Port Carverton's University, Downtown and Industrial districts with their challenge map teleports, and Skate 3's clothing in Edit Skater's Merchandise. Skate 3's downloadable content links through Link DLCs.";
 
 /// `challenge_objective` `ActivationMode` (`eTriggerActivationMode`).
 const ACTIVATION_MODE: u64 = crate::challenge::objectives::field::ACTIVATION_MODE;

@@ -2094,14 +2094,16 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.apply_career_fe_background();
         self.frontend_fade.update(fade_speed);
         self.update_online()?;
-        // ChallengeLoadState's kPAUSE_STATE_ONLINE: the round loads with the simulation paused.
-        // The asset stream manager updates whatever pauses the simulation, so the terrain's
-        // stream pass runs here, ahead of every screen's return below: a hull the lobby never
-        // loaded (a freeskate activity's, a linked Skate 3 game's) registers its collections
-        // through it, and the round's load waits for that hull, as every other player's waits
+        // ChallengeLoadState's kPAUSE_STATE_ONLINE: the round loads with the simulation paused,
+        // as it waits at a sync point (`FilterImpl` 0x82771530's `WaitForStreamer`). The asset
+        // stream manager updates whatever pauses the simulation, so the terrain's stream pass
+        // runs here, ahead of every screen's return below: a hull the lobby never loaded (a
+        // freeskate activity's, a linked Skate 3 game's) registers its collections through it,
+        // and the round's load or sync point waits for that hull, as every other player's waits
         // for this one's. The Replay Editor and a travel not yet dispatched stream for
         // themselves.
-        if self.online_round_loading()
+        let mut online_streamed = false;
+        if (self.online_round_loading() || self.online_round_syncing())
             && self.replay_editor.is_none()
             && self.map_travel.filter(|_| !self.map_travel_dispatched).is_none()
             && let Some(actor) = self.inner.player.as_ref().and_then(|player| player.selected.actor.as_deref())
@@ -2110,6 +2112,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             let terrain = self.inner.terrain.as_mut().ok_or_else(|| SelectedLiveError::failed(Stage::TerrainResident, "terrain absent"))?;
             terrain.try_advance_asset_release().map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
             terrain.try_update_focus(position).map_err(|e| SelectedLiveError::failed(Stage::TerrainResident, e))?;
+            online_streamed = true;
         }
         // TimerCallback polls once for both input groups. Frontend keeps its
         // PRES history alive while paused; SIM is drained but never enqueued.
@@ -2977,7 +2980,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             self.request_main_menu()?;
         }
 
-        if self.completed_frames != 0 {
+        if self.completed_frames != 0 && !online_streamed {
             let profile_release = crate::diagnostics::frame_profile::span(
                 crate::diagnostics::frame_profile::TICK_TERRAIN_RELEASE,
             );
@@ -4323,14 +4326,14 @@ impl<T, C> SelectedLiveSession<T, C> {
 
     /// PC port: the linked Skate 3 district the world shows, by its key less `dist_`
     /// (`downtown`, `industrial`, `university`): TU3 loads that district's own emitter files
-    /// (`reverb_<district>.ems`) there.
+    /// (`reverb_<district>.ems`) there. None in a downloadable content map, which has none.
     #[must_use]
     pub fn audio_skate3_district_name(&self) -> Option<&'static str> {
         let key = self.world_render_location()?;
         crate::skate3::linked()?
             .districts
             .iter()
-            .find(|district| district.render_location == key)?
+            .find(|district| district.render_location == key && crate::skate3::is_base_district(district))?
             .spec
             .key
             .strip_prefix("dist_")

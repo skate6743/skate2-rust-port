@@ -45,6 +45,11 @@ pub struct SkaterAudioPhysOut {
     /// Skate 3 physics: `PhysOut_State` +0x50 (a darkcatch), TU3 `FillSkaterData`'s SkaterData
     /// +0x98 bit 0x20; false in Skate 2 physics.
     pub skate3_dark_catch: bool,
+    /// Skate 3 physics: `PhysOut_Intents` +0x3D and +0x3E (a drop-in's lock and release), TU3
+    /// `FillSkaterData`'s SkaterData +0xA8 bit 0 and +0xAC bit 31 (0x827A2C0C, 0x827A2C1C);
+    /// false in Skate 2 physics.
+    pub skate3_drop_in_lock: bool,
+    pub skate3_drop_in_release: bool,
     pub skate3_physics: bool,
     pub is_left_foot_on_deck: bool,
     pub is_right_foot_on_deck: bool,
@@ -262,6 +267,8 @@ impl PhysicalPlayerPhysOut {
             is_generally_pushing_right_foot: state.is_generally_pushing_right_foot,
             is_wiping_out: state.is_wiping_out,
             skate3_dark_catch: state.skate3_dark_catch,
+            skate3_drop_in_lock: state.skate3_physics && concrete.intents.as_deref().is_some_and(|intents| intents.skate3_drop_in_lock),
+            skate3_drop_in_release: state.skate3_physics && concrete.intents.as_deref().is_some_and(|intents| intents.skate3_drop_in_release),
             skate3_physics: state.skate3_physics,
             is_manual: state.is_manual,
             is_reverting: state.is_reverting,

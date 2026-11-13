@@ -3,7 +3,7 @@
 use super::{
     assets::Assets,
     clips::{Child, Clip},
-    localizer,
+    colour_picker, localizer,
     pause_movie::{bounds, child},
 };
 use crate::gpu_renderer::RenderResult;
@@ -123,10 +123,12 @@ impl EditSkaterMovie {
     fn configure(&mut self, assets: &Assets, view: &EditSkaterView) -> RenderResult<()> {
         let mode = view.menu.movie_mode();
         self.root.named(&["mWallet"])?.visible = view.menu.banner() == "slappys";
-        let changed = self
-            .previous
-            .as_ref()
-            .is_none_or(|p| !p.visible || p.menu != view.menu);
+        // PC port: the colour picker opening or closing changes the screen as a menu does: the
+        // title flickers and the selection plays its mode again.
+        let picking = view.colour_picker.is_some();
+        let changed = self.previous.as_ref().is_none_or(|p| {
+            !p.visible || p.menu != view.menu || p.colour_picker.is_some() != picking
+        });
         if changed {
             let banner = view.menu.banner();
             self.root.named(&["mLogo"])?.visible = banner != "none";
@@ -171,7 +173,7 @@ impl EditSkaterMovie {
         buttons(
             self.root.named(&["mDone", "mButtonhelp", "mButtonmenu"])?,
             assets,
-            &[("B", &view.help_b), ("A", &view.help_a)],
+            &[("B", &view.help_b), ("A", &view.help_a), ("X", &view.help_x)],
             "Marker_streak", 24., 0xffff_ffec,
         )?;
         buttons(
@@ -180,6 +182,8 @@ impl EditSkaterMovie {
             &[("Start", &view.help_start)],
             "HelveticaPresto", 28., 0xff00_0000 | 12047872,
         )?;
+        // PC port: the colour picker takes no Start, so the Finished chevrons go with its help.
+        child(self.root.named(&["mDone"])?, "mBack")?.clip.visible = !picking;
         if mode != "style" && self.info_shifted {
             if let Some((_, _, info, _)) = self.style_layout {
                 child(self.root.named(&["mSelection"])?, "mInfopanelAnim")?.entry.matrix.ty = info;
@@ -189,6 +193,7 @@ impl EditSkaterMovie {
         match mode {
             "thumbs" => self.thumbnails(assets, view)?,
             "list" => self.list(assets, view)?,
+            "morph" if picking => self.colour_picker(assets, view)?,
             "morph" => self.morph(assets, view)?,
             "style" => self.style(assets, view)?,
             _ => return Err("unknown original CAC movie mode".into()),
@@ -407,6 +412,62 @@ impl EditSkaterMovie {
             y += height + 6.;
         }
         Ok(())
+    }
+    /// PC port: the colour picker (`skate2_core::ui::colour_picker`) in the morph menu's place: the
+    /// colour row, its custom swatch showing the colour picked; the hue and saturation wheel over
+    /// the middle of the Intensity row's line, the row's selected swatch its cursor; and that
+    /// Intensity morph row, whose line is the intensity's ramp. A new colour moves them without
+    /// playing their selection again.
+    fn colour_picker(&mut self, assets: &Assets, view: &EditSkaterView) -> RenderResult<()> {
+        let picker = view.colour_picker.ok_or("CAC colour picker absent")?;
+        let row = view.rows.get(view.selected).ok_or("CAC colour picker row absent")?;
+        let open = self.previous.as_ref().is_some_and(|p| p.visible && p.menu == view.menu && p.colour_picker.is_some());
+        let menu = self.root.named(&["mSelection", "mMorphmenu"])?;
+        let start = child(menu, "dummy0")?.entry.matrix;
+        if !open {
+            for i in 0..3 {
+                menu.named(&[&format!("dummy{i}")])?.visible = false;
+            }
+            menu.children.retain(|_, c| c.entry.name.as_deref().is_some_and(|n| n.starts_with("dummy")));
+            let mut colours = Clip::new(assets, 17, COLOUR_ROW)?;
+            highlight(&mut colours, assets, row, true)?;
+            arrows(&mut colours, false);
+            attach_named(menu, 100, PICKER_ROW, colours, start.tx, start.ty);
+            let mut intensity = Clip::new(assets, 16, MORPH)?;
+            let title = EditSkaterRow { kind: "morph".into(), title: INTENSITY.into(), ..Default::default() };
+            highlight(&mut intensity, assets, &title, true)?;
+            arrows(&mut intensity, false);
+            // The ramp takes the line's place: the colour under the knob's middle wherever it is.
+            let line = child(&mut intensity, "mMorphLine")?;
+            line.clip.visible = false;
+            let at = line.entry.matrix;
+            let width = morph_line_width(&mut intensity, assets)?;
+            let travel = morph_length(&mut intensity, assets)?;
+            let (left, right) = morph_knob_extent(&mut intensity, assets)?;
+            let middle = (left + right) / 2.;
+            let mut ramp = Clip::new(assets, 15, PICKER_CARRIER)?;
+            ramp.properties.insert("_type".into(), colour_picker::RAMP.into());
+            colour_picker::set_ramp_span(&mut ramp, width, middle, middle + travel);
+            attach_named(&mut intensity, 6, PICKER_RAMP, ramp, at.tx, at.ty);
+            let mut wheel = Clip::new(assets, 15, PICKER_CARRIER)?;
+            wheel.properties.insert("_type".into(), colour_picker::WHEEL.into());
+            attach_named(menu, 101, PICKER_WHEEL, wheel, start.tx + at.tx + width / 2., start.ty + WHEEL_Y);
+            let mut cursor = Clip::new(assets, 17, SWATCH)?;
+            cursor.goto(assets, "on")?;
+            attach_named(menu, 102, PICKER_CURSOR, cursor, 0., 0.);
+            attach_named(menu, 103, PICKER_INTENSITY, intensity, start.tx, start.ty + INTENSITY_Y);
+        }
+        colour_swatch_values(menu.named(&[PICKER_ROW])?, assets, row, true)?;
+        let colour = picker.colour;
+        let [x, y] = colour.cursor();
+        let wheel = child(menu, PICKER_WHEEL)?.entry.matrix;
+        let cursor = child(menu, PICKER_CURSOR)?;
+        cursor.entry.matrix.tx = wheel.tx + x * colour_picker::WHEEL_RADIUS - SWATCH_CENTRE;
+        cursor.entry.matrix.ty = wheel.ty + y * colour_picker::WHEEL_RADIUS - SWATCH_CENTRE;
+        cursor.clip.named(&["mSwatch"])?.properties.insert("cac_colour".into(), packed(colour.display_bytes()).to_string());
+        let intensity = menu.named(&[PICKER_INTENSITY])?;
+        colour_picker::set_ramp_colour(intensity.named(&[PICKER_RAMP])?, colour.hue, colour.saturation);
+        morph_knob_at(intensity, assets, colour.slider())
     }
     fn style(&mut self, assets: &Assets, view: &EditSkaterView) -> RenderResult<()> {
         let menu = self.root.named(&["mSelection", "mStylemenu"])?;
@@ -629,7 +690,8 @@ mod tests {
             title: "Edit Skater".into(), rows: vec![EditSkaterRow { kind: "option".into(),
                 title: "Body Mods".into(), ..Default::default() }, slider_row],
             selected: 0, window_start: 0, wallet: 0, help_a: "Select".into(),
-            help_b: "Back".into(), help_start: "Finished".into(), cash_popup: false, receipt: None };
+            help_b: "Back".into(), help_start: "Finished".into(), help_x: String::new(),
+            colour_picker: None, cash_popup: false, receipt: None };
         for visible in [true, false, true] {
             view.visible = visible;
             movie.update(&assets, &view).unwrap();
@@ -709,6 +771,9 @@ mod tests {
     }
 }
 pub(super) fn attach(parent: &mut Clip, depth: usize, clip: Clip, x: f32, y: f32) {
+    attach_named(parent, depth, &format!("item{depth}"), clip, x, y);
+}
+fn attach_named(parent: &mut Clip, depth: usize, name: &str, clip: Clip, x: f32, y: f32) {
     let mut matrix = IDENTITY;
     matrix.tx = x;
     matrix.ty = y;
@@ -724,7 +789,7 @@ pub(super) fn attach(parent: &mut Clip, depth: usize, clip: Clip, x: f32, y: f32
                 colour_scale: u32::MAX,
                 colour_bias: 0,
                 ratio: 0.,
-                name: Some(format!("item{depth}")),
+                name: Some(name.into()),
                 clip_depth: -1,
                 events: Vec::new(),
                 blend_mode: None,
@@ -807,14 +872,9 @@ pub(super) fn highlight(
                     let r = bounds(swatch, assets)?.ok_or("CAC colour swatch bounds")?;
                     arrow_x = Some(item.entry.matrix.tx
                         + (r.right - r.left) * item.entry.matrix.a.abs() - 8.);
-                    swatch.goto(
-                        assets,
-                        if first + i == row.value.max(0) as usize {
-                            if selected { "on" } else { "on_noglow" }
-                        } else {
-                            "off"
-                        },
-                    )?;
+                    let state = swatch_state(first + i, row, selected);
+                    swatch.goto(assets, state)?;
+                    swatch.properties.insert(SWATCH_STATE.into(), state.into());
                     swatch.named(&["mSwatch"])?.properties.insert(
                         "cac_colour".into(),
                         format!(
@@ -845,12 +905,119 @@ pub(super) fn highlight(
 }
 /// `highlight_morph`'s row (asset 16): Edit Skater's body and face morph knob.
 pub(super) const MORPH: u32 = 36;
+/// `highlight_color`'s row (asset 17) and its swatch item, whose square (`mSwatch`) is 16 units
+/// with its centre 8 in from the item's corner.
+const COLOUR_ROW: u32 = 33;
+const SWATCH: u32 = 32;
+const SWATCH_CENTRE: f32 = 8.;
+/// PC port: a swatch item's state as the row last set it.
+const SWATCH_STATE: &str = "cac_swatch_state";
+/// PC port: createskater's 32-unit square, which carries the colour picker's own drawing.
+const PICKER_CARRIER: u32 = 21;
+/// PC port: the colour picker's layout down from the morph menu's first row (`dummy0`): the row
+/// (58 units, as `morph` places it), the wheel's centre a clear gap under its swatches, and the
+/// Intensity row under the wheel, inside the card above its info panel.
+const WHEEL_Y: f32 = 168.;
+const INTENSITY_Y: f32 = 252.;
+const INTENSITY: &str = "Intensity";
+const PICKER_ROW: &str = "mPickerRow";
+const PICKER_WHEEL: &str = "mPickerWheel";
+const PICKER_CURSOR: &str = "mPickerCursor";
+const PICKER_INTENSITY: &str = "mPickerIntensity";
+const PICKER_RAMP: &str = "mPickerRamp";
+/// PC port: a morph row's `mMorphLength`, kept once measured.
+const MORPH_LENGTH: &str = "cac_morph_length";
+/// A swatch colour as `cac_colour` takes it.
+fn packed(rgb: [u8; 3]) -> u32 {
+    0xff00_0000 | (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2])
+}
+/// The state of a colour row's swatch `index`: the worn one lit (glowing on a selected row).
+fn swatch_state(index: usize, row: &EditSkaterRow, selected: bool) -> &'static str {
+    if index == row.value.max(0) as usize {
+        if selected { "on" } else { "on_noglow" }
+    } else {
+        "off"
+    }
+}
+/// PC port: a colour row's swatches refreshed without its selection played again: each swatch's
+/// colour, and the state of a swatch only when it changes.
+fn colour_swatch_values(clip: &mut Clip, assets: &Assets, row: &EditSkaterRow, selected: bool) -> RenderResult<()> {
+    let first = (row.value.max(0) as usize).saturating_sub(9);
+    for i in 0..10 {
+        let swatch = &mut child(clip, &format!("item{i}"))?.clip;
+        swatch.visible = first + i < row.colours.len();
+        let Some(&rgb) = row.colours.get(first + i) else { continue };
+        let state = swatch_state(first + i, row, selected);
+        if swatch.properties.get(SWATCH_STATE).map(String::as_str) != Some(state) {
+            swatch.goto(assets, state)?;
+            swatch.properties.insert(SWATCH_STATE.into(), state.into());
+        }
+        swatch.named(&["mSwatch"])?.properties.insert("cac_colour".into(), packed(rgb).to_string());
+    }
+    Ok(())
+}
+/// A highlight row's arrows shown or hidden.
+fn arrows(clip: &mut Clip, visible: bool) {
+    for child in clip.children.values_mut() {
+        if matches!(child.entry.name.as_deref(), Some("mArrowleft" | "mArrowright")) {
+            child.clip.visible = visible;
+        }
+    }
+}
 /// The morph knob at `value` (0 to 100) along its line.
 fn morph_knob(clip: &mut Clip, assets: &Assets, value: i32) -> RenderResult<()> {
-    let length = bounds(clip.named(&["mMorphLine"])?, assets)?.ok_or("CAC morph bounds")?;
+    morph_knob_at(clip, assets, value as f32 / 100.)
+}
+/// highlight_morph's `UpdateDisplay` (0x2414..0x2440): the knob's `_x` is the line's plus
+/// `mMorphLength` times the value (0 to 1 here), so at the top the knob ends on the line.
+fn morph_knob_at(clip: &mut Clip, assets: &Assets, at: f32) -> RenderResult<()> {
+    let length = morph_length(clip, assets)?;
     let line = child(clip, "mMorphLine")?.entry.matrix;
-    child(clip, "mKnob")?.entry.matrix.tx = line.tx + (length.right - length.left) * line.a * value as f32 / 100.;
+    child(clip, "mKnob")?.entry.matrix.tx = line.tx + length * at;
     Ok(())
+}
+/// highlight_morph's `mMorphLength` (its constructor, 0x20e4..0x20f5): the line's `_width` less the
+/// knob's. Kept on the row once measured.
+fn morph_length(clip: &mut Clip, assets: &Assets) -> RenderResult<f32> {
+    if let Some(length) = clip.properties.get(MORPH_LENGTH) {
+        return Ok(length.parse()?);
+    }
+    let (left, right) = morph_knob_extent(clip, assets)?;
+    let length = morph_line_width(clip, assets)? - (right - left);
+    clip.properties.insert(MORPH_LENGTH.into(), length.to_string());
+    Ok(length)
+}
+/// A morph row's line `_width`.
+fn morph_line_width(clip: &mut Clip, assets: &Assets) -> RenderResult<f32> {
+    let line = bounds(clip.named(&["mMorphLine"])?, assets)?.ok_or("CAC morph bounds")?;
+    Ok((line.right - line.left) * child(clip, "mMorphLine")?.entry.matrix.a)
+}
+/// A morph row's knob as its constructor measures it: the knob's first frame (lit), its left and
+/// right edges from its `_x`.
+fn morph_knob_extent(clip: &mut Clip, assets: &Assets) -> RenderResult<(f32, f32)> {
+    let knob = &child(clip, "mKnob")?.clip;
+    let knob = Clip::new(assets, knob.asset, knob.character)?;
+    extent(&knob, assets)?.ok_or_else(|| "CAC morph knob bounds".into())
+}
+/// A clip's horizontal extent through its children's matrices, as APT's `_width` takes it: a
+/// flipped child's too, whose edges `bounds` keeps in placement order.
+fn extent(clip: &Clip, assets: &Assets) -> RenderResult<Option<(f32, f32)>> {
+    let mut out = match clip.definition(assets)? {
+        skate2_formats::apt::Character::Shape { bounds: rect } => Some((rect.left, rect.right)),
+        skate2_formats::apt::Character::Text(text) => Some((text.bounds.left, text.bounds.right)),
+        _ => None,
+    };
+    for child in clip.children.values() {
+        if let Some((left, right)) = extent(&child.clip, assets)? {
+            let m = child.entry.matrix;
+            let (a, b) = (left.mul_add(m.a, m.tx), right.mul_add(m.a, m.tx));
+            out = Some(match out {
+                Some((l, r)) => (l.min(a.min(b)), r.max(a.max(b))),
+                None => (a.min(b), a.max(b)),
+            });
+        }
+    }
+    Ok(out)
 }
 /// PC port: a morph row's title and knob refreshed without replaying its
 /// selection, as a Stick Settings deadzone moves.

@@ -55,6 +55,12 @@ impl TrickDatabase {
         let key = skate2_formats::attrib::string_hash64(item.name);
         let attr = self.vault.instance(TRICK_CLASS, key);
         if attr.is_null() {
+            // A Skate 3-only trick (the darkslide grabs): TU3 reads the same byte of its own
+            // scoring_trick record (82DA9E34).
+            #[cfg(feature = "skate3-runtime")]
+            if self.use_skate3 {
+                return super::skate3_catalog::is_grind_grab(item.name).map_err(ScoreError::NativeCatalog);
+            }
             return Ok(false);
         }
         Ok(attr

@@ -12,6 +12,7 @@ use skate3_core::{
 
 pub(crate) struct SceneService<'a> {
     pub world: &'a BoardWorld,
+    pub grind: &'a crate::skate3_native::grind_world::StaticProvider,
     pub vehicles: &'a [(usize, skate_dynamics::SolidBody)],
 }
 
@@ -26,6 +27,7 @@ impl GroundQueryScene for SceneService<'_> {
         let vehicles = cache.vehicles();
         ground_query::with_world_scene(
             self.world,
+            self.grind,
             cache.primary_edges(&vehicles),
             &[] as &[IndexedEdgeBody<'_>],
             |scene| scene.edge_candidates(search),
@@ -40,6 +42,7 @@ impl GroundQueryScene for SceneService<'_> {
         let vehicles = cache.vehicles();
         let mut hits = ground_query::with_world_scene(
             self.world,
+            self.grind,
             cache.primary_edges(&vehicles),
             &[] as &[IndexedEdgeBody<'_>],
             |scene| scene.query_lines(packet),

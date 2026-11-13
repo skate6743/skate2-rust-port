@@ -688,7 +688,7 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
     /// (`0x824df068`), BAM's first, then a loaded additional world's merged in, nearest first, at
     /// most `cap`. `xml` is BAM's stream XML when `kEnableStreamXml` has its file select through
     /// it; the additional worlds ship none (no `data\stream\<world>_Sim.xml`), so theirs is the
-    /// radius query.
+    /// radius query. A linked Skate 3 world selects from its records instead, as Skate 3 does.
     fn spatial_selection(
         &self,
         space: &skate2_formats::stream::CollectionSpace,
@@ -698,6 +698,10 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
         cap: usize,
     ) -> Vec<skate2_formats::stream::FocusCollection> {
         use skate2_formats::stream::{MAX_FOCUS_ENTRIES, merge_focus_collections};
+        // PC port: a Skate 3 world's records, as Skate 3 selects, with no cap but theirs.
+        if let Some((district, records)) = self.additional.as_ref().and_then(additional::AdditionalWorld::exclusive_records) {
+            return records.focus_collections(district, position);
+        }
         if let Some(district) = self.additional.as_ref().and_then(additional::AdditionalWorld::exclusive) {
             let mut selected = district.focus_collections(position, radius, MAX_FOCUS_ENTRIES);
             selected.truncate(cap);

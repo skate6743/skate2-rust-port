@@ -18,7 +18,7 @@ use crate::{
     selected_world_stream::SelectedWorldStream,
     world_stream_runtime::WorldStreamEffects,
 };
-use skate2_formats::stream::CollectionSpace;
+use skate2_formats::{stream::CollectionSpace, stream_xml::TileRecords};
 use std::sync::Arc;
 
 /// The additional worlds' `AddHighCollection`s: no PROXY collection stands at any of their
@@ -48,6 +48,8 @@ pub(crate) struct AdditionalWorld {
     /// Its Sim file's collections once the stream is in: the spatial ones, and every one its
     /// map lists (the global collection the cells stand under as well).
     space: Option<Arc<CollectionSpace>>,
+    /// PC port: a linked Skate 3 world's Sim records, which its selection takes from.
+    records: Option<Arc<TileRecords>>,
     collections: Arc<[u64]>,
     phase: Phase,
 }
@@ -63,6 +65,12 @@ impl AdditionalWorld {
     /// departing collection does.
     pub(super) fn exclusive(&self) -> Option<&CollectionSpace> {
         self.selectable().filter(|_| crate::skate3::is_district_world(&self.file))
+    }
+
+    /// PC port: that Skate 3 world's Sim space and records, as Skate 3's `FindCollections`
+    /// (0x8247b3a0 in its title update 3) selects from them.
+    pub(super) fn exclusive_records(&self) -> Option<(&CollectionSpace, &TileRecords)> {
+        Some((self.exclusive()?, self.records.as_deref()?))
     }
 }
 
@@ -83,7 +91,7 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
             NoProxies,
         )
         .map_err(E::Stream)?;
-        self.additional = Some(AdditionalWorld { file: file.to_owned(), stream, space: None, collections: Arc::from([]), phase: Phase::Loading });
+        self.additional = Some(AdditionalWorld { file: file.to_owned(), stream, space: None, records: None, collections: Arc::from([]), phase: Phase::Loading });
         Ok(())
     }
 
@@ -132,6 +140,7 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
         }
         let paths = StreamPaths::derive(WORLD_STREAM_PATH, &world.file, StreamKind::Simulation)
             .map_err(|_| E::Focus("additional world stream path"))?;
+        let name = world.file.clone();
         let file = self
             .source
             .stream
@@ -140,8 +149,11 @@ impl<Effects: WorldStreamEffects> SelectedSessionTerrain<Effects> {
             .map_err(E::Catalog)?
             .ok_or(E::Focus("additional world simulation stream missing"))?;
         let space = file.collection_space.ok_or(E::Focus("additional world simulation XSS missing"))?;
+        let records = crate::skate3::is_district_world(&name)
+            .then(|| Arc::new(crate::skate3::world_records(&name, &space, StreamKind::Simulation.suffix())));
         let world = self.additional.as_mut().expect("held above");
         world.space = Some(space);
+        world.records = records;
         world.collections = file.collection_ids;
         Ok(true)
     }

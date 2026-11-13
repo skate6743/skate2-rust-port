@@ -20,9 +20,12 @@ pub const FREESKATE_TYPES: [&str; 2] = ["ID_UNRANKEDFREESKATE_TYPE_JOIN", "ID_UN
 /// `mDefaultImage`: the location image of "any location".
 pub const ANY_LOCATION_IMAGE: &str = "fe\\source\\images\\locations\\any_location";
 /// PC port: with Skate 3 data linked (`crate::skate3`), the first row picks the maps the screen
-/// lists: Skate 2's or Skate 3's (literal text, `#`).
+/// lists (literal text, `#`): Skate 2's, Skate 3's districts', or the maps Skate 3's downloadable
+/// content adds. A pool without games of the screen's is left out.
 pub const MAP_POOL_TITLE: &str = "#Map Pool";
-pub const MAP_POOLS: [&str; 2] = ["#Skate 2", "#Skate 3"];
+pub const SKATE2_POOL: &str = "#Skate 2";
+pub const SKATE3_POOL: &str = "#Skate 3";
+pub const SKATE3_DLC_POOL: &str = "#Skate 3 DLC";
 
 /// What the screen's A asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,8 +85,9 @@ pub struct CustomMatch {
     host: Option<bool>,
     pub ready: bool,
     sounds: Vec<&'static str>,
-    /// PC port: each Map Pool's types and their challenges, and the one shown.
-    pools: Option<[(Vec<u8>, Vec<Vec<OnlineChallenge>>); 2]>,
+    /// PC port: each Map Pool's name, types and their challenges (Skate 2's first), and the one
+    /// shown; none without the Map Pool row.
+    pools: Vec<(&'static str, Vec<u8>, Vec<Vec<OnlineChallenge>>)>,
     pool: usize,
 }
 
@@ -105,31 +109,39 @@ impl CustomMatch {
     #[must_use]
     pub fn new(types: Vec<(u8, Vec<OnlineChallenge>)>) -> Self {
         let (types, locations) = types.into_iter().unzip();
-        Self { types, locations, selector: 0, type_index: 0, challenge_index: 0, location_index: 0, matchmaking: false, host: None, ready: false, sounds: Vec::new(), pools: None, pool: 0 }
+        Self { types, locations, selector: 0, type_index: 0, challenge_index: 0, location_index: 0, matchmaking: false, host: None, ready: false, sounds: Vec::new(), pools: Vec::new(), pool: 0 }
     }
 
-    /// PC port: the Map Pool row over Skate 2's and Skate 3's types, `skate3` shown first.
+    /// PC port: the Map Pool row over Skate 2's types and each pool of `more` (named; one without
+    /// types is left out), the pool named `shown` shown first, else Skate 2's. Without another
+    /// pool there is no row.
     #[must_use]
-    pub fn with_pools(mut self, skate3_types: Vec<(u8, Vec<OnlineChallenge>)>, skate3: bool) -> Self {
-        let skate2 = (std::mem::take(&mut self.types), std::mem::take(&mut self.locations));
-        let skate3_types: (Vec<u8>, Vec<Vec<OnlineChallenge>>) = skate3_types.into_iter().unzip();
-        self.pools = Some([skate2, skate3_types]);
+    pub fn with_pools(mut self, more: Vec<(&'static str, Vec<(u8, Vec<OnlineChallenge>)>)>, shown: &str) -> Self {
+        let more: Vec<_> = more.into_iter().filter(|(_, types)| !types.is_empty()).collect();
+        if more.is_empty() {
+            return self;
+        }
+        self.pools.push((SKATE2_POOL, std::mem::take(&mut self.types), std::mem::take(&mut self.locations)));
+        for (name, types) in more {
+            let (types, locations) = types.into_iter().unzip();
+            self.pools.push((name, types, locations));
+        }
         self.selector += 1;
-        self.show_pool(usize::from(skate3));
+        self.show_pool(self.pools.iter().position(|(name, ..)| *name == shown).unwrap_or(0));
         self
     }
 
     fn show_pool(&mut self, pool: usize) {
-        let Some(pools) = self.pools.as_ref() else { return };
+        let Some((_, types, locations)) = self.pools.get(pool) else { return };
+        (self.types, self.locations) = (types.clone(), locations.clone());
         self.pool = pool;
-        (self.types, self.locations) = pools[pool].clone();
         self.challenge_index = 0;
         self.location_index = 0;
     }
 
     /// The Map Pool row's offset: the type, event and location rows follow it.
     fn pool_rows(&self) -> usize {
-        usize::from(self.pools.is_some())
+        usize::from(!self.pools.is_empty())
     }
 
     /// The rows up and down move between: the Map Pool, the type (not in the host state), the
@@ -189,8 +201,8 @@ impl CustomMatch {
             }
             self.sounds.push(if step < 0 { "FE_SOUND_CORE_NAV_LEFT" } else { "FE_SOUND_CORE_NAV_RIGHT" });
             let wrap = |value: usize, count: usize| (value.cast_signed() + step).rem_euclid(count.max(1).cast_signed()).cast_unsigned();
-            if self.pools.is_some() && self.selector == 0 {
-                self.show_pool(wrap(self.pool, MAP_POOLS.len()));
+            if !self.pools.is_empty() && self.selector == 0 {
+                self.show_pool(wrap(self.pool, self.pools.len()));
                 continue;
             }
             match self.selector - self.pool_rows() {
@@ -252,8 +264,8 @@ impl CustomMatch {
             None => selector(0, "ID_UNRANKEDCUSTOMMATCH_TYPE", MATCH_TYPES[self.type_index].to_owned()),
         };
         let mut selectors = Vec::with_capacity(4);
-        if self.pools.is_some() {
-            selectors.push(Selector { title: MAP_POOL_TITLE.to_owned(), subtitle: MAP_POOLS[self.pool].to_owned(), selected: self.selector == 0 });
+        if let Some((name, ..)) = self.pools.get(self.pool) {
+            selectors.push(Selector { title: MAP_POOL_TITLE.to_owned(), subtitle: (*name).to_owned(), selected: self.selector == 0 });
         }
         selectors.extend([
             first,
@@ -283,36 +295,44 @@ pub struct FreeskateMatch {
     host: Option<bool>,
     pub ready: bool,
     sounds: Vec<&'static str>,
-    /// PC port: each Map Pool's locations, and the one shown.
-    pools: Option<[Vec<OnlineChallenge>; 2]>,
+    /// PC port: each Map Pool's name and locations (Skate 2's first), and the one shown; none
+    /// without the Map Pool row.
+    pools: Vec<(&'static str, Vec<OnlineChallenge>)>,
     pool: usize,
 }
 
 impl FreeskateMatch {
     #[must_use]
     pub fn new(locations: Vec<OnlineChallenge>) -> Self {
-        Self { locations, selector: 0, type_index: 0, location_index: 0, matchmaking: false, host: None, ready: false, sounds: Vec::new(), pools: None, pool: 0 }
+        Self { locations, selector: 0, type_index: 0, location_index: 0, matchmaking: false, host: None, ready: false, sounds: Vec::new(), pools: Vec::new(), pool: 0 }
     }
 
-    /// PC port: the Map Pool row over Skate 2's and Skate 3's locations, `skate3` shown first.
+    /// PC port: the Map Pool row over Skate 2's locations and each pool of `more` (named; one
+    /// without locations is left out), the pool named `shown` shown first, else Skate 2's.
+    /// Without another pool there is no row.
     #[must_use]
-    pub fn with_pools(mut self, skate3_locations: Vec<OnlineChallenge>, skate3: bool) -> Self {
-        self.pools = Some([std::mem::take(&mut self.locations), skate3_locations]);
+    pub fn with_pools(mut self, more: Vec<(&'static str, Vec<OnlineChallenge>)>, shown: &str) -> Self {
+        let more: Vec<_> = more.into_iter().filter(|(_, locations)| !locations.is_empty()).collect();
+        if more.is_empty() {
+            return self;
+        }
+        self.pools.push((SKATE2_POOL, std::mem::take(&mut self.locations)));
+        self.pools.extend(more);
         self.selector += 1;
-        self.show_pool(usize::from(skate3));
+        self.show_pool(self.pools.iter().position(|(name, _)| *name == shown).unwrap_or(0));
         self
     }
 
     fn show_pool(&mut self, pool: usize) {
-        let Some(pools) = self.pools.as_ref() else { return };
+        let Some((_, locations)) = self.pools.get(pool) else { return };
+        self.locations = locations.clone();
         self.pool = pool;
-        self.locations = pools[pool].clone();
         self.location_index = 0;
     }
 
     /// The Map Pool row's offset: the type and location rows follow it.
     fn pool_rows(&self) -> usize {
-        usize::from(self.pools.is_some())
+        usize::from(!self.pools.is_empty())
     }
 
     /// `SetHostState`: Change Location over the hub, on the location selector.
@@ -342,8 +362,8 @@ impl FreeskateMatch {
             self.sounds.push(if step < 0 { "FE_SOUND_CORE_NAV_LEFT" } else { "FE_SOUND_CORE_NAV_RIGHT" });
             let wrap = |value: usize, count: usize| (value.cast_signed() + step).rem_euclid(count.max(1).cast_signed()).cast_unsigned();
             let pool = self.pool_rows();
-            if self.pools.is_some() && self.selector == 0 {
-                self.show_pool(wrap(self.pool, MAP_POOLS.len()));
+            if !self.pools.is_empty() && self.selector == 0 {
+                self.show_pool(wrap(self.pool, self.pools.len()));
             } else if self.selector == pool {
                 self.type_index = wrap(self.type_index, FREESKATE_TYPES.len());
             } else {
@@ -383,8 +403,8 @@ impl FreeskateMatch {
             None => selector(0, "ID_UNRANKEDFREESKATE_TYPE", FREESKATE_TYPES[self.type_index].to_owned()),
         };
         let mut selectors = Vec::with_capacity(3);
-        if self.pools.is_some() {
-            selectors.push(Selector { title: MAP_POOL_TITLE.to_owned(), subtitle: MAP_POOLS[self.pool].to_owned(), selected: self.selector == 0 });
+        if let Some((name, _)) = self.pools.get(self.pool) {
+            selectors.push(Selector { title: MAP_POOL_TITLE.to_owned(), subtitle: (*name).to_owned(), selected: self.selector == 0 });
         }
         selectors.extend([
             first,
@@ -436,6 +456,35 @@ mod tests {
         assert!(choice.create);
         assert_eq!(choice.challenge_key, Some(1));
         assert_eq!(screen.update(press(|i| i.cancel = true)), Action::None);
+    }
+
+    #[test]
+    fn the_map_pool_steps_through_skate2_skate3_and_skate3_dlc() {
+        let skate3 = vec![(challenge::SKATE, vec![challenge(7)])];
+        let dlc = vec![(challenge::SKATE, vec![challenge(9)])];
+        let mut screen = CustomMatch::new(vec![(challenge::SKATE, vec![challenge(1)])]).with_pools(vec![(SKATE3_POOL, skate3), (SKATE3_DLC_POOL, dlc)], SKATE3_DLC_POOL);
+        screen.ready = true;
+        let pool = |screen: &CustomMatch| screen.snapshot().selectors[0].subtitle.clone();
+        assert_eq!(pool(&screen), SKATE3_DLC_POOL, "the game's own pool shows first");
+        screen.update(press(|i| i.up = true));
+        screen.update(press(|i| i.right = true));
+        assert_eq!(pool(&screen), SKATE2_POOL, "the pools wrap");
+        screen.update(press(|i| i.left = true));
+        screen.update(press(|i| i.left = true));
+        assert_eq!(pool(&screen), SKATE3_POOL);
+        screen.update(press(|i| i.down = true));
+        screen.update(press(|i| i.right = true));
+        screen.update(press(|i| i.down = true));
+        screen.update(press(|i| i.down = true));
+        screen.update(press(|i| i.right = true));
+        let Action::Start(choice) = screen.update(press(|i| i.select = true)) else { panic!("start") };
+        assert_eq!((choice.challenge_key, choice.candidates), (Some(7), vec![7]));
+        // Without downloadable content maps, two pools.
+        let free = FreeskateMatch::new(vec![challenge(1)]).with_pools(vec![(SKATE3_POOL, vec![challenge(7)]), (SKATE3_DLC_POOL, Vec::new())], SKATE2_POOL);
+        assert_eq!(free.pools.iter().map(|(name, _)| *name).collect::<Vec<_>>(), [SKATE2_POOL, SKATE3_POOL]);
+        // Without any other, no row.
+        let alone = FreeskateMatch::new(vec![challenge(1)]).with_pools(vec![(SKATE3_POOL, Vec::new())], SKATE2_POOL);
+        assert_ne!(alone.snapshot().selectors[0].title, MAP_POOL_TITLE);
     }
 
     #[test]

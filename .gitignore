@@ -38,6 +38,8 @@ server-config.json
 moderation-key.txt
 chat-shadowbans.json
 chat-shadowbans.json.new
+matchmaking-shadowbans.json
+matchmaking-shadowbans.json.new
 ip-bans.json
 ip-bans.json.new
 

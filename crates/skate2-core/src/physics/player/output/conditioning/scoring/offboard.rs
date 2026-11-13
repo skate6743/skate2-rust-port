@@ -184,9 +184,8 @@ impl OffboardCollector {
             if !self.hippy_jump_scorable.had_object_between_board_and_skater {
                 self.base.check_hippy_flip(f.ground, out)?;
                 if out.is_hippy_flipping {
-                    if !self.skate3() && !self.hippy_jump_scorable.trick_scoring_settings.is_valid {
-                        return Err(ScoreError::Invalid("hippy flip bonus on invalid trick"));
-                    }
+                    // GetRawBaseScore 0x82de8e88 returns the base score whether or not the
+                    // jump validated (its assert is a debug-build check).
                     let raw = self.hippy_jump_scorable.trick_scoring_settings.base_score as f32;
                     let bonus = scalar(&self.base.states, 0x1ca6_3104_2d29_2121)? * raw;
                     self.hippy_jump_scorable.score = self
@@ -226,10 +225,9 @@ impl OffboardCollector {
                 .lock()
                 .map_err(|_| ScoreError::Poisoned)?;
             if score_in_progress {
-                let id = self
-                    .hippy_jump_scorable
-                    .valid_id()
-                    .ok_or(ScoreError::Invalid("ending invalid hippy jump"))?;
+                // EndCurrentHippyJump 0x82dfb130: a jump that never validated ends as -1,
+                // which EndTrick ignores (the debug build asserts, offboardcollector.cpp 90).
+                let id = self.hippy_jump_scorable.valid_id().unwrap_or(-1);
                 holder.announce_ending(db, &mut self.hippy_jump_scorable)?;
                 holder.end_trick(id, self.hippy_jump_scorable.score);
                 out.finished_hippy_jump180_count = self.hippy_jump180_count;

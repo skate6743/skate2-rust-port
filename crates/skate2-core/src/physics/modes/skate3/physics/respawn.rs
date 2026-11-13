@@ -120,6 +120,7 @@ fn answer(physics: &Skate3PhysicsState, skater: &mut Skate3ControllerState, host
         stance,
         &mut Scene {
             world: &physics.world,
+            grind: &physics.grind_world,
             settings,
             host,
         },
@@ -166,6 +167,7 @@ pub(super) fn post_update(physics: &Skate3PhysicsState, skater: &mut Skate3Contr
             settings.minimum_frames,
             &mut Scene {
                 world: &physics.world,
+                grind: &physics.grind_world,
                 settings,
                 host,
             },
@@ -200,6 +202,7 @@ pub(super) fn suggested(physics: &Skate3PhysicsState, skater: &Skate3ControllerS
         stance,
         &mut Scene {
             world: &physics.world,
+            grind: &physics.grind_world,
             settings: &runtime.settings,
             host: Some(host),
         },
@@ -215,6 +218,7 @@ pub(super) fn pop_suggested(physics: &Skate3PhysicsState, skater: &mut Skate3Con
         stance,
         &mut Scene {
             world: &physics.world,
+            grind: &physics.grind_world,
             settings,
             host: Some(host),
         },
@@ -226,6 +230,7 @@ pub(super) fn pop_suggested(physics: &Skate3PhysicsState, skater: &mut Skate3Con
 pub(super) fn position_ok(physics: &Skate3PhysicsState, skater: &Skate3ControllerState, transform: &Matrix, host: &mut dyn RespawnHost) -> Result<bool, String> {
     let mut scene = Scene {
         world: &physics.world,
+        grind: &physics.grind_world,
         settings: &skater.respawn.settings,
         host: Some(host),
     };
@@ -296,6 +301,7 @@ fn heading(mut matrix: Matrix, velocity: [f32; 4]) -> Matrix {
 
 struct Scene<'a, 'h> {
     world: &'a BoardWorld,
+    grind: &'a crate::skate3_native::grind_world::StaticProvider,
     settings: &'a Settings,
     host: Option<&'a mut (dyn RespawnHost + 'h)>,
 }
@@ -366,15 +372,33 @@ impl Validation for Scene<'_, '_> {
             max: Vector3::new(p[0] + 0.3, p[1] + 0.6, p[2] + 0.3),
         };
         let metadata = self.world.query_metadata().map_err(str::to_owned)?;
-        //82C1EAD8: authored static order, shared capacity40; no triangle diagonals.
-        for edge in metadata
+        //82C1EAD8: the grind data's static pass, then any authored static edges, at most
+        //forty in all; no triangle diagonals.
+        let grind = self.grind.box_test(
+            [bounds.min.x, bounds.min.y, bounds.min.z],
+            [bounds.max.x, bounds.max.y, bounds.max.z],
+        )?;
+        let authored = metadata
             .static_edges
             .iter()
             .filter(|e| e.local_bounds.overlaps(bounds))
+            .map(|edge| {
+                (
+                    [edge.start.x, edge.start.y, edge.start.z],
+                    [edge.end.x, edge.end.y, edge.end.z],
+                )
+            });
+        for (start, end) in grind
+            .into_iter()
+            .map(|primitive| {
+                (
+                    [primitive.start[0], primitive.start[1], primitive.start[2]],
+                    [primitive.end[0], primitive.end[1], primitive.end[2]],
+                )
+            })
+            .chain(authored)
             .take(40)
         {
-            let start = [edge.start.x, edge.start.y, edge.start.z];
-            let end = [edge.end.x, edge.end.y, edge.end.z];
             let delta: [f32; 3] = std::array::from_fn(|i| end[i] - start[i]);
             let square: f32 = delta.iter().map(|v| v * v).sum();
             let along: f32 = (0..3).map(|i| (p[i] - start[i]) * delta[i]).sum();
@@ -416,8 +440,10 @@ mod tests {
             pedestrian_radius: 1.,
             vehicle_radius: 2.,
         };
+        let grind = crate::skate3_native::grind_world::StaticProvider::new(None).unwrap();
         let mut scene = Scene {
             world: &world,
+            grind: &grind,
             settings: &settings,
             host: None,
         };

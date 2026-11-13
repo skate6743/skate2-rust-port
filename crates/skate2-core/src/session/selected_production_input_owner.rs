@@ -482,8 +482,9 @@ impl<C> SelectedProductionInputOwner<C> {
         ).map_err(ProductionInputFrameError::Device)?;
         let pad = self.input.cache(SelectedInputGroup::Presentation).pad(self.controller)
             .map_err(|e| ProductionInputFrameError::Device(SelectedDeviceInputError::Cache(e)))?;
-        let mut values = [0.0; 20];
-        for (result, state) in values.iter_mut().zip([134, 136, 137, 146, 147, 148, 149, 205, 35, 139, 144, 141, 138, 164, 165, 135, 188, 185, 150, 151]) {
+        let mut values = [0.0; 27];
+        for (result, state) in values.iter_mut().zip([134, 136, 137, 146, 147, 148, 149, 205, 35, 139, 144, 141, 138, 164, 165, 135, 188, 185, 150, 151,
+            152, 153, 207, 204, 206, 80, 81]) {
             *result = self.input.map().try_value(state, &mut RetainedPadView(pad))
                 .map_err(ProductionInputFrameError::FrontendMap)?;
         }
@@ -494,6 +495,8 @@ impl<C> SelectedProductionInputOwner<C> {
             option: values[12] != 0.0, left_released: values[13] != 0.0, right_released: values[14] != 0.0,
             back: values[15] != 0.0, left_shift_released: values[16] != 0.0, right_shift_released: values[17] != 0.0,
             dpad_up: values[18] != 0.0, dpad_down: values[19] != 0.0,
+            dpad_left: values[20] != 0.0, dpad_right: values[21] != 0.0, left_stick_y: values[22],
+            right_stick: [values[23], values[24]], triggers: [values[25], values[26]],
         })
     }
 

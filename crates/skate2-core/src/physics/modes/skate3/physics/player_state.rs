@@ -173,7 +173,7 @@ pub(crate) fn resume_after_climb(physics: &mut Skate3PhysicsState, skater: &mut 
             animation_right: frame[0], animation_up: frame[1], velocity: [0.; 4],
         },
         skater.player_input.processed.actor_query_2952 as i32,
-        &super::offboard::contact_toolkit::StaticScene::new(&physics.world)?,
+        &super::offboard::contact_toolkit::StaticScene::with_grind(&physics.world, &physics.grind_world)?,
     )?;
 
     Ok(())

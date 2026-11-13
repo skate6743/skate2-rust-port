@@ -18,6 +18,8 @@ use skate3_core::{
 pub struct StaticScene<'a> {
     world: &'a BoardWorld,
     metadata: &'a QueryMetadata,
+    /// The grind data `GrindData::BoxTest` (82C1EAD8) walks for the edge collection.
+    grind: Option<&'a crate::skate3_native::grind_world::StaticProvider>,
 }
 impl<'a> StaticScene<'a> {
     ///82C20728/82764AB0: caller-sized lines, poolmask7, facing3, no mesh or
@@ -111,7 +113,14 @@ impl<'a> StaticScene<'a> {
     }
     pub fn new(world: &'a BoardWorld) -> Result<Self, &'static str> {
         let metadata = world.query_metadata()?;
-        Ok(Self { world, metadata })
+        Ok(Self { world, metadata, grind: None })
+    }
+    /// The analyzer's scene, whose edge collection also walks the grind data.
+    pub fn with_grind(
+        world: &'a BoardWorld,
+        grind: &'a crate::skate3_native::grind_world::StaticProvider,
+    ) -> Result<Self, &'static str> {
+        Ok(Self { grind: Some(grind), ..Self::new(world)? })
     }
     fn pools(&self) -> impl Iterator<Item = QueryPool> {
         [
@@ -323,13 +332,14 @@ impl Scene for StaticScene<'_> {
         Ok(QueryResults {
             trajectories,
             lines,
-            edges: self.edges(batch),
+            edges: self.edges(batch)?,
         })
     }
 }
 impl StaticScene<'_> {
-    /// 82D81610 bounds and 82C1EAD8 ordinary static-edge traversal/capacity.
-    fn edges(&self, batch: &Batch) -> Vec<[Vector; 2]> {
+    /// 82D81610 bounds and 82C1EAD8: the grind data's static pass first, then any authored
+    /// static edges, at most forty in all.
+    fn edges(&self, batch: &Batch) -> Result<Vec<[Vector; 2]>, &'static str> {
         let input = batch.input;
         let center: Vector = std::array::from_fn(|i| {
             input.up[i].mul_add(
@@ -345,17 +355,34 @@ impl StaticScene<'_> {
                     .mul_add(1.1, input.right[i].abs() * 0.037500001),
             )
         });
-        self.metadata
-            .static_edges
-            .iter()
-            .filter(|edge| {
-                let min = lanes(edge.local_bounds.min);
-                let max = lanes(edge.local_bounds.max);
-                (0..3).all(|i| center[i] - extent[i] <= max[i] && min[i] <= center[i] + extent[i])
-            })
-            .take(40)
-            .map(|edge| [lanes(edge.start), lanes(edge.end)])
-            .collect()
+        let mut edges = Vec::with_capacity(40);
+        if let Some(grind) = self.grind {
+            let primitives = grind
+                .box_test(
+                    std::array::from_fn(|i| center[i] - extent[i]),
+                    std::array::from_fn(|i| center[i] + extent[i]),
+                )
+                .map_err(|_| "Invalid grind edge query bounds")?;
+            edges.extend(primitives.into_iter().map(|primitive| {
+                [
+                    [primitive.start[0], primitive.start[1], primitive.start[2], 0.],
+                    [primitive.end[0], primitive.end[1], primitive.end[2], 0.],
+                ]
+            }));
+        }
+        edges.extend(
+            self.metadata
+                .static_edges
+                .iter()
+                .filter(|edge| {
+                    let min = lanes(edge.local_bounds.min);
+                    let max = lanes(edge.local_bounds.max);
+                    (0..3).all(|i| center[i] - extent[i] <= max[i] && min[i] <= center[i] + extent[i])
+                })
+                .map(|edge| [lanes(edge.start), lanes(edge.end)]),
+        );
+        edges.truncate(40);
+        Ok(edges)
     }
 }
 fn vector4(v: [f32; 3]) -> Vector {

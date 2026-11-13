@@ -12,7 +12,8 @@ pub fn interpret_hits(packet: &GroundQueryPacket, hits: [Option<LineHit>; 7]) ->
             cross(Vector3::new(0., 1., 0.), packet.tangent),
         )),
     );
-    let kind = if (h(0) && h(1)) || h(4) {
+    // 82C20ECC: the raised cross probe (5) blocks the section; the centre probe (4) does not.
+    let kind = if (h(0) && h(1)) || h(5) {
         3
     } else if h(0) {
         if hits[2].is_some_and(|v| !(v.fraction >= 0.65)) {

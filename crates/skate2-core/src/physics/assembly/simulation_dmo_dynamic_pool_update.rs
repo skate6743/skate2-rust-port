@@ -3,7 +3,8 @@
 //! `DynamicPool::BeginUpdate` 0x827c93f0 empties the mesh collection, then
 //! for every assembly in pool order and every Part in order hands the Part
 //! volume and `Part::GetTransform` to `DynamicPool::AddVolume` 0x827c86d0; a
-//! refused add abandons the walk AND the base `AssemblyPool::BeginUpdate`.
+//! refused add abandons the walk AND the base `AssemblyPool::BeginUpdate`, so
+//! that frame's `EndUpdate` publishes the records and bounds already there.
 //! The serialized half runs later in the frame, once the body pool has its
 //! frame identity; no body moves between the two (bodies integrate only in
 //! the solver).
@@ -37,7 +38,7 @@ use crate::{
         pool_update::{
             AssemblyPoolEntryUpdateError, AssemblyPoolUpdateEntry,
             SerialisedAssemblyPoolUpdateError, SerialisedAssemblyPoolUpdateInput,
-            try_update_assembly_pool_entries,
+            try_end_assembly_pool_entries_unrefreshed, try_update_assembly_pool_entries,
         },
     },
     simulation_assembly_backend::source::SimulationAssemblySourceError,
@@ -213,9 +214,22 @@ impl MeshWalk<'_> {
 impl SimulationDmoAssemblyPool {
     /// `DynamicPool::BeginUpdate` 0x827c93f0's mesh half: the collection is
     /// emptied and every Part volume of every member is offered to
-    /// `AddVolume` at its `Part::GetTransform`. `Ok(false)` is a capacity
-    /// refusal, after which native skips the base `AssemblyPool::BeginUpdate`.
+    /// `AddVolume` at its `Part::GetTransform`. A capacity refusal (the add
+    /// that fills the collection) keeps the meshes added so far and returns
+    /// before the base `AssemblyPool::BeginUpdate`; the pool keeps that for
+    /// this frame's `EndUpdate` (`try_end_update`).
     pub(crate) fn try_rebuild_meshes<N>(
+        &mut self,
+        backend: &SourceBackend,
+        ignore_volume_enable: bool,
+    ) -> Result<(), SimulationDmoPoolUpdateError<N>> {
+        let walked = self.try_walk_meshes(backend, ignore_volume_enable)?;
+        self.base_update_skipped = !walked;
+        Ok(())
+    }
+
+    /// The `AddVolume` walk; `Ok(false)` is its capacity refusal.
+    fn try_walk_meshes<N>(
         &mut self,
         backend: &SourceBackend,
         ignore_volume_enable: bool,
@@ -307,6 +321,31 @@ impl SimulationDmoAssemblyPool {
         backend: &SourceBackend,
         numeric: &mut N,
     ) -> Result<Vec<usize>, SimulationDmoPoolUpdateError<N::Error>> {
+        self.try_end_update_with(backend, numeric, true)
+    }
+
+    /// `EndUpdate` 0x82e0bb10 for the frame whose `BeginUpdate` rebuilt the
+    /// meshes. After a full walk the base `BeginUpdate` ran, so this is
+    /// `try_update_serialized`. After a refused walk it did not: no
+    /// `SerialisedAssembly::Update` and no bounds job, so the retained bounds
+    /// copied over the Header change nothing and every record stays as the
+    /// last Update (or Insert's Create) left it. That is what the frame's
+    /// pipelines read; the active list is rebuilt from live Part state.
+    pub(crate) fn try_end_update<N: SerialisedAssemblyPartBBoxNumeric>(
+        &mut self,
+        backend: &SourceBackend,
+        numeric: &mut N,
+    ) -> Result<Vec<usize>, SimulationDmoPoolUpdateError<N::Error>> {
+        let refreshed = !std::mem::take(&mut self.base_update_skipped);
+        self.try_end_update_with(backend, numeric, refreshed)
+    }
+
+    fn try_end_update_with<N: SerialisedAssemblyPartBBoxNumeric>(
+        &mut self,
+        backend: &SourceBackend,
+        numeric: &mut N,
+        refreshed: bool,
+    ) -> Result<Vec<usize>, SimulationDmoPoolUpdateError<N::Error>> {
         if backend.authority() != self.backend {
             return Err(SimulationDmoPoolUpdateError::ForeignBackend);
         }
@@ -372,16 +411,18 @@ impl SimulationDmoAssemblyPool {
                 }
             }
         }
-        let active =
-            try_update_assembly_pool_entries(&mut entries, backend.collision_body_pool(), numeric)
-                .map_err(|error| match error {
-                    AssemblyPoolEntryUpdateError::Source(error) => {
-                        SimulationDmoPoolUpdateError::Update(error)
-                    }
-                    AssemblyPoolEntryUpdateError::Character { assembly, source } => {
-                        SimulationDmoPoolUpdateError::Character { assembly, source }
-                    }
-                })?;
+        let pool = backend.collision_body_pool();
+        let active = if refreshed {
+            try_update_assembly_pool_entries(&mut entries, pool, numeric)
+        } else {
+            try_end_assembly_pool_entries_unrefreshed::<N::Error>(&mut entries, pool)
+        }
+        .map_err(|error| match error {
+            AssemblyPoolEntryUpdateError::Source(error) => SimulationDmoPoolUpdateError::Update(error),
+            AssemblyPoolEntryUpdateError::Character { assembly, source } => {
+                SimulationDmoPoolUpdateError::Character { assembly, source }
+            }
+        })?;
         drop(entries);
         for member in &mut self.members {
             member.bounds = match &member.content {

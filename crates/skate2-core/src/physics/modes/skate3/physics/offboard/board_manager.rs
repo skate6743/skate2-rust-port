@@ -77,6 +77,15 @@ impl Owner {
             .stop(fields, observation, &self.settings, effects);
     }
 
+    ///82D75AC8: the board left on the ground, animated, while BipedBoardOnGround is set.
+    pub(crate) fn rest_on_ground(
+        &mut self,
+        fields: &mut SkateboardControllerFields,
+        effects: &mut Effects<'_>,
+    ) {
+        self.state.rest_on_ground(fields, effects);
+    }
+
     ///82DB8CE4..8D1C and82DB8D6C..8DA4: clear countdown even when
     ///already off, Stop, then74D30 resets retrieval only (not hand frames).
     pub(crate) fn reset_for_teleport(

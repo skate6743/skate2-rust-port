@@ -205,11 +205,13 @@ pub fn unlink_report(title: &str, save_error: Option<&str>) -> String {
     text
 }
 
-/// sk8popup's text after a link: the packs linked, the files that were already linked and the
-/// files that are no downloadable content, `^` breaking lines as `SkateAptString` does.
+/// sk8popup's text after a link: the packs linked, a blank line between each, then those already
+/// linked, `^` breaking lines as `SkateAptString` does, and why `config.json` could not be saved
+/// when it was not (the packs then stay linked until the game closes). The files that could not
+/// be linked are left to the host's log.
 #[must_use]
-pub fn link_report(linked: &[String], already: &[String], failed: &[(String, String)]) -> String {
-    fn section(text: &mut String, heading: &str, lines: &[String]) {
+pub fn link_report(linked: &[String], already: &[String], save_error: Option<&str>) -> String {
+    fn section(text: &mut String, heading: &str, lines: &[String], bullet: &str) {
         if lines.is_empty() {
             return;
         }
@@ -218,17 +220,18 @@ pub fn link_report(linked: &[String], already: &[String], failed: &[(String, Str
         }
         text.push_str(heading);
         for line in lines {
-            text.push_str("^- ");
+            text.push_str(bullet);
             text.push_str(line);
         }
     }
     let mut text = String::from("#");
-    section(&mut text, "The following DLCs were linked:^", linked);
-    section(&mut text, "Already linked:^", already);
-    let failed: Vec<String> = failed.iter().map(|(file, reason)| format!("{file} {reason}")).collect();
-    section(&mut text, "These files were not linked:^", &failed);
+    section(&mut text, "The following DLCs were linked:", linked, "^^- ");
+    section(&mut text, "Already linked:^", already, "^- ");
     if text.len() == 1 {
         text.push_str("No DLCs were linked.");
+    }
+    if let Some(error) = save_error {
+        text.push_str(&format!("^^config.json could not be saved ({error}): the DLCs stay linked until the game closes."));
     }
     text
 }
@@ -273,7 +276,7 @@ mod tests {
         assert_eq!(press(&mut menu, PauseMenuInput { cancel: true, ..Default::default() }), Action::None, "the picker is open");
         menu.picked(true);
         assert_eq!(menu.state.page, Page::Registering);
-        menu.linked(packs(2), link_report(&["Pack 1".into()], &[], &[]));
+        menu.linked(packs(2), link_report(&["Pack 1".into()], &[], None));
         assert_eq!(menu.state.page, Page::Result("#The following DLCs were linked:^^- Pack 1".into()));
         assert_eq!(menu.take_sounds(), ["FE_SOUND_CORE_POPUP"]);
         assert_eq!(press(&mut menu, PauseMenuInput { cancel: true, ..Default::default() }), Action::None, "only A closes it");
@@ -327,11 +330,15 @@ mod tests {
     }
 
     #[test]
-    fn the_report_names_what_was_linked_and_why_others_were_not() {
+    fn the_report_spaces_the_packs_linked_and_names_those_already_linked() {
         assert_eq!(
-            link_report(&["Maloof Money Cup Pack".into()], &["Throwback Pack".into()], &[("anim.big".into(), "is not a Skate 2 downloadable content file".into())]),
-            "#The following DLCs were linked:^^- Maloof Money Cup Pack^^Already linked:^^- Throwback Pack^^These files were not linked:^^- anim.big is not a Skate 2 downloadable content file"
+            link_report(&["Maloof Money Cup Pack".into(), "Skate 3: After Dark".into()], &["Throwback Pack".into(), "Skate 3: Danny Way's Hawaiian Dream".into()], None),
+            "#The following DLCs were linked:^^- Maloof Money Cup Pack^^- Skate 3: After Dark^^Already linked:^^- Throwback Pack^- Skate 3: Danny Way's Hawaiian Dream"
         );
-        assert_eq!(link_report(&[], &[], &[]), "#No DLCs were linked.");
+        assert_eq!(
+            link_report(&["Throwback Pack".into()], &[], Some("denied")),
+            "#The following DLCs were linked:^^- Throwback Pack^^config.json could not be saved (denied): the DLCs stay linked until the game closes."
+        );
+        assert_eq!(link_report(&[], &[], None), "#No DLCs were linked.");
     }
 }

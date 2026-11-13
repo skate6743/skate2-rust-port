@@ -1,10 +1,14 @@
-//! Windows API boundary only; native mapping, polling cadence and caches live in core.
+//! Windows API boundary only; native mapping, polling cadence and caches live in core. The one
+//! host-side cache: a slot XInput found empty is asked again after a second (`poll_xinput`).
 use crate::{pad_sticks::PadSticks, sdl_pads::SdlPads};
 use skate2_core::{
     PadCapabilitiesResult, PadPlatform, PadStateResult, PadVibration, XboxPadSample,
 };
+use std::time::{Duration, Instant};
 
 const STILL: PadVibration = PadVibration { left: 0, right: 0 };
+/// How long a slot XInput found empty goes without another XInput call.
+const EMPTY_SLOT_RECHECK: Duration = Duration::from_secs(1);
 
 pub(crate) struct WindowsPadPlatform {
     /// Explicit diagnostic replay sample for controller zero; None reads XInput.
@@ -18,10 +22,40 @@ pub(crate) struct WindowsPadPlatform {
     focused: bool,
     /// PC: the stick settings on each sample, and each slot's sample as its pad reported it.
     sticks: PadSticks,
+    /// When XInput last found each slot empty.
+    empty_since: [Option<Instant>; 4],
 }
 impl WindowsPadPlatform {
     pub(crate) fn new(demo_sample: Option<XboxPadSample>, sdl: Option<SdlPads>) -> Self {
-        Self { demo_sample, sdl, requested: [STILL; 4], focused: false, sticks: PadSticks::default() }
+        Self {
+            demo_sample,
+            sdl,
+            requested: [STILL; 4],
+            focused: false,
+            sticks: PadSticks::default(),
+            empty_since: [None; 4],
+        }
+    }
+    /// One XInput call for a slot, or its status code. An XInput call on an empty slot looks
+    /// through the system's devices (about 0.1 ms) and the game asks every slot every tick, so a
+    /// slot found empty answers device-not-connected, as XInput did, until `EMPTY_SLOT_RECHECK`
+    /// has passed; a pad plugged in meanwhile is found then.
+    fn poll_xinput<T>(&mut self, index: u32, call: impl FnOnce() -> Result<T, xinput::Error>) -> Result<T, u32> {
+        let slot = usize::try_from(index).ok().filter(|slot| *slot < self.empty_since.len());
+        let now = Instant::now();
+        if let Some(slot) = slot
+            && self.empty_since[slot].is_some_and(|since| now.saturating_duration_since(since) < EMPTY_SLOT_RECHECK)
+        {
+            return Err(xinput::error::DEVICE_NOT_CONNECTED.to_u32());
+        }
+        let result = call();
+        if let Some(slot) = slot {
+            self.empty_since[slot] = match &result {
+                Err(error) if error.kind() == xinput::error::DEVICE_NOT_CONNECTED => Some(now),
+                _ => None,
+            };
+        }
+        result.map_err(|error| error.kind().to_u32())
     }
     /// The stick settings the next samples take.
     pub(crate) fn set_stick_settings(&mut self, settings: skate2_core::stick_settings::ControllerSettings) {
@@ -44,10 +78,10 @@ impl WindowsPadPlatform {
         }
     }
     fn send(&mut self, index: u32, vibration: PadVibration) -> u32 {
-        match xinput::set_state(index, [vibration.left, vibration.right]) {
+        match self.poll_xinput(index, || xinput::set_state(index, [vibration.left, vibration.right])) {
             Ok(()) => 0,
             Err(_) if self.sdl.as_mut().is_some_and(|sdl| sdl.vibrate(index, vibration)) => 0,
-            Err(error) => error.kind().to_u32(),
+            Err(status) => status,
         }
     }
 }
@@ -93,7 +127,7 @@ impl PadPlatform for WindowsPadPlatform {
                 });
             }
         }
-        let state = match xinput::get_state(index) {
+        let state = match self.poll_xinput(index, || xinput::get_state(index)) {
             Ok(state) => {
                 if let Some(sdl) = &mut self.sdl {
                     sdl.release(index);
@@ -116,7 +150,7 @@ impl PadPlatform for WindowsPadPlatform {
                 }
                 (state.packet_number, self.sticks.apply(index, sample))
             }
-            Err(error) => match self.sdl.as_mut().and_then(|sdl| sdl.claim(index)) {
+            Err(status) => match self.sdl.as_mut().and_then(|sdl| sdl.claim(index)) {
                 Some((packet, sample)) => {
                     if index == 0 && std::env::var_os("SKATE2_TRACE_XINPUT").is_some() {
                         eprintln!("sdl slot=0 packet={packet} sample={sample:?}");
@@ -126,7 +160,7 @@ impl PadPlatform for WindowsPadPlatform {
                 None => {
                     self.sticks.clear(index);
                     return Ok(PadStateResult {
-                        status: error.kind().to_u32(),
+                        status,
                         state: None,
                     });
                 }
@@ -158,7 +192,7 @@ impl PadPlatform for WindowsPadPlatform {
                 flags: Some(0),
             });
         }
-        let caps = match xinput::get_capabilities(index, flags) {
+        let caps = match self.poll_xinput(index, || xinput::get_capabilities(index, flags)) {
             Ok(caps) => {
                 if let Some(sdl) = &mut self.sdl {
                     sdl.release(index);
@@ -182,8 +216,8 @@ impl PadPlatform for WindowsPadPlatform {
             }
             // The safe wrapper does not expose failed-call output. Preserve
             // that uncertainty instead of claiming its initialized local survived.
-            Err(error) => PadCapabilitiesResult {
-                status: error.kind().to_u32(),
+            Err(status) => PadCapabilitiesResult {
+                status,
                 device_type: None,
                 subtype: None,
                 flags: None,

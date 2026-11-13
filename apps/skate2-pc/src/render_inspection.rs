@@ -483,9 +483,12 @@ impl Inspection {
         self.update_city_streaming_at(renderer, scene, position, disabled, xml_enabled)?;
         // An additional world's location can select no texture collection: its Pres files carry
         // its textures.
+        // A Skate 3 world's tile can hold no collection, its selection there empty.
         Ok(self.pending_gpu.is_none()
             && self.streaming.as_ref().is_some_and(|stream| !stream.is_pending())
-            && self.scene.as_ref().is_some_and(|scene| scene.focus == position && !scene.collections.is_empty())
+            && self.scene.as_ref().is_some_and(|scene| scene.focus == position
+                && (!scene.collections.is_empty()
+                    || self.streaming.as_ref().is_some_and(|stream| stream.presentation_selection_empty(position, xml_enabled))))
             && self.textures.as_ref().is_some_and(|textures| textures.focus == position
                 && (!textures.collections.is_empty()
                     || self.streaming.as_ref().is_some_and(|stream| stream.texture_selection_empty(position, xml_enabled)))))
@@ -495,33 +498,8 @@ impl Inspection {
         position: [f32; 3], disabled: bool, xml_enabled: bool,
     ) -> RenderResult<()> {
         self.city_focus = Some(position);
-        if let Some(pending) = &self.pending_gpu {
-            match pending.try_recv() {
-                Ok(result) => {
-                    self.pending_gpu = None;
-                    let (build, replacement) = result?;
-                    let Some(current) = scene.map.replace(replacement) else {
-                        return Err("city swap lost current map objects".into());
-                    };
-                    let retired = RetiredMap {
-                        map: current,
-                        queue: std::mem::take(&mut self.queue),
-                        techniques: std::mem::take(&mut self.diagnostic_techniques),
-                    };
-                    self.install_map_build(build);
-                    // Destruction of thousands of old bindings also belongs off-frame.
-                    if let Some(retire) = self.retire_gpu.take() {
-                        retire
-                            .send(retired)
-                            .map_err(|_| "city GPU retirement worker stopped")?;
-                    }
-                    return Ok(());
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    return Err("city GPU builder stopped without completion".into());
-                }
-            }
+        if self.pending_gpu.is_some() {
+            return self.poll_map_build(scene);
         }
         // PC weather picked over a map built without the rain's world model, or Vanilla over one
         // built with it: the same draws build again in the background, as a streaming change
@@ -551,6 +529,51 @@ impl Inspection {
             return Ok(());
         };
         self.spawn_map_build(renderer, queue, techniques)
+    }
+    /// The pending map build's draw list in place of the current one once it is done.
+    fn poll_map_build(&mut self, scene: &mut GpuScene) -> RenderResult<()> {
+        let Some(pending) = &self.pending_gpu else { return Ok(()) };
+        match pending.try_recv() {
+            Ok(result) => {
+                self.pending_gpu = None;
+                let (build, replacement) = result?;
+                let Some(current) = scene.map.replace(replacement) else {
+                    return Err("city swap lost current map objects".into());
+                };
+                let retired = RetiredMap {
+                    map: current,
+                    queue: std::mem::take(&mut self.queue),
+                    techniques: std::mem::take(&mut self.diagnostic_techniques),
+                };
+                self.install_map_build(build);
+                // Destruction of thousands of old bindings also belongs off-frame.
+                if let Some(retire) = self.retire_gpu.take() {
+                    retire
+                        .send(retired)
+                        .map_err(|_| "city GPU retirement worker stopped")?;
+                }
+                Ok(())
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(()),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("city GPU builder stopped without completion".into())
+            }
+        }
+    }
+    /// PC port: Display Settings' Anti-Aliasing changed the renderer's samples. The draw list
+    /// built for the old count no longer draws; the same draws build again in the background, as
+    /// a weather change's do, without the diagnostic pipelines kept for the old count.
+    fn follow_sample_count(&mut self, renderer: &GpuRenderer, scene: &mut GpuScene) -> RenderResult<()> {
+        if self.pending_gpu.is_some() {
+            return self.poll_map_build(scene);
+        }
+        if self.scene.is_some() && scene.map.as_ref().is_some_and(|map| map.sample_count != renderer.sample_count()) {
+            self.diagnostic_pipelines.clear();
+            let queue = std::mem::take(&mut self.queue);
+            let techniques = std::mem::take(&mut self.diagnostic_techniques);
+            return self.spawn_map_build(renderer, queue, techniques);
+        }
+        Ok(())
     }
     /// A map build of the draws on the city GPU builder thread.
     fn spawn_map_build(&mut self, renderer: &GpuRenderer, queue: NativeRenderQueue, techniques: DiagnosticTechniques) -> RenderResult<()> {
@@ -648,6 +671,7 @@ impl RenderWindowClient for Inspection {
         scene: &mut GpuScene,
         now: Instant,
     ) -> RenderResult<()> {
+        self.follow_sample_count(renderer, scene)?;
         match self.scene_delta.take() {
             Some(delta) => self.animation_clock.advance_scene(delta),
             None => self.animation_clock.update(self.simulation_tick, self.simulation_fraction),

@@ -17,7 +17,7 @@ const MAX_UNPACKED: u64 = 4 << 30;
 /// Top-level names in the game's folder an update never replaces: the player's settings and
 /// saves, the dedicated server's private word list, settings, moderation key and ban lists, and
 /// the update's own files.
-const PROTECTED: [&str; 11] = [
+const PROTECTED: [&str; 12] = [
     "config.json",
     "online-config.json",
     "controller_config.json",
@@ -26,6 +26,7 @@ const PROTECTED: [&str; 11] = [
     "server-config.json",
     "moderation-key.txt",
     "chat-shadowbans.json",
+    "matchmaking-shadowbans.json",
     "ip-bans.json",
     DOWNLOAD,
     CLEANUP,

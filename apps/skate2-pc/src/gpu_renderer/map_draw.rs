@@ -16,9 +16,11 @@
 //! clip volume the rasterizer applies (wgpu's 0 <= z <= w near plane, not the
 //! reference's w+z) with a conservative tolerance. A rejected mesh or island
 //! could not have produced a fragment, so the presented image is unchanged.
-//! The reference's anti-frustum occluders and minimum pixel-size/area rejection
-//! (`Frustum::UpdateCullParams` 0x82853970) remove visible geometry and are
-//! deliberately not applied. Submission order is the retained render-queue
+//! After that test, as in the reference, the view's anti-frustum occluders
+//! (`Frustum::UpdateCullParams` 0x82853970) drop the entities and islands they
+//! hide, and the island area rule drops small far islands
+//! (`presentation_scene_culling`; the shipped `minPixelSize` is zero, so the
+//! pixel test keeps everything). Submission order is the retained render-queue
 //! order; nothing is re-sorted.
 
 use super::{
@@ -300,6 +302,18 @@ impl ClipVolume {
 pub(crate) fn world_box_in_view(clip_from_world: &[f32; 16], bounds: [[f32; 3]; 2]) -> bool {
     let bounds = Bounds { min: bounds[0].map(f64::from), max: bounds[1].map(f64::from) };
     ClipVolume::new(clip_from_world).classify(&bounds) != Containment::Outside
+}
+
+/// `world_box_in_view` for an entity box that does not turn with the entity. A
+/// SkaterPresEntity's, pedestrian's or cPresVehicle's world `m_BB` is its model box
+/// moved to the entity without rotation (`SceneRenderView::Cull` 0x828501c0), so a
+/// turned skater or car reaches outside it. Grown on every side by its own diagonal,
+/// the box holds the model turned any way about any point inside it, so an entity
+/// this rejects has nothing in view.
+pub(crate) fn widened_box_in_view(clip_from_world: &[f32; 16], bounds: [[f32; 3]; 2]) -> bool {
+    let [min, max] = bounds;
+    let diagonal = (0..3).map(|lane| (max[lane] - min[lane]).powi(2)).sum::<f32>().sqrt();
+    world_box_in_view(clip_from_world, [min.map(|value| value - diagonal), max.map(|value| value + diagonal)])
 }
 
 /// A diagnostic draw's pixel program: the explicit solid colour, the raw
@@ -881,6 +895,7 @@ impl GpuMapBuilder {
             rain_surface: Arc::default(),
             rain_location: String::new(),
             rain_gathered: false,
+            sample_count: self.pipelines.sample_count,
         }
     }
 }
@@ -1090,6 +1105,8 @@ pub(crate) struct GpuMap {
     pub(crate) rain_location: String,
     /// The rain's world model was gathered for this map generation (a weather was picked).
     pub(crate) rain_gathered: bool,
+    /// The main pass's samples its pipelines were made for (PC Anti-Aliasing setting).
+    pub(crate) sample_count: u32,
 }
 
 impl GpuMap {
@@ -1263,6 +1280,11 @@ impl GpuMap {
     /// This frame's shadow cascades.
     pub(super) fn shadows(&self) -> &ShadowCascades {
         &self.frame.shadows
+    }
+
+    /// This frame's world-to-clip matrix, or the stereo eye's.
+    pub(super) fn view_clip(&self, eye: Option<&super::stereoscopy::Eye>) -> [f32; 16] {
+        eye.map_or(self.clip_from_world, |eye| eye.clip)
     }
 
     /// `g_vViewPos`, the camera every GPU position is relative to.

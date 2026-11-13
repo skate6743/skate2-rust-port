@@ -1,2 +1,12 @@
-Added "Online Speed" toggle to Gameplay Settings, which forces your game to always be slightly faster just like lobbies on original game were
-Fixed an animation related issue causing parity mistakes on Skate 3 Physics, this made mongo pushes, etc. feel off previously
+Skate 3 DLCs can now be linked in the Downloadable Content section (using the "Link DLCs" button)
+Added drop ins and darkslide grabs to Skate 3 Physics mode
+Fixed parity mistakes with manuals and air for Skate 3 Physics
+Skate 3's emo short and emo long hair can be picked in Back Alley Pete's (Hair > Skate 3) when the Skate.Create Upgrade Pack is linked
+Stick Multiplier in Stick Settings now goes up to 1.20
+Spectating another player online now uses your own Field of View setting instead of stacking it with theirs
+Fixed the game sometimes closing with "the GPU device was lost" after alt-tabbing out of it
+Edit Skater has a color picker: press A on a clothing, hair or skin color, pick on the wheel with the left stick, set the intensity with the right stick or the triggers, then A to keep it or B to cancel
+Changing a clothing color in Edit Skater no longer reloads the whole skater
+Slider knobs (Edit Skater's body and face sliders, Field of View, Brightness, stick deadzones) now stop at the end of their line as in the original game
+Fixed the game freezing for good after a file was dragged over its window
+Fixed Spot Battle's voting HUD staying on screen in the pre-game lobby after Leave Challenge during a vote

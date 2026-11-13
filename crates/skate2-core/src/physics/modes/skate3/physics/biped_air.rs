@@ -38,6 +38,7 @@ pub(crate) fn consume_selector(
         .offboard_air_selector
         .consume(
             &physics.world,
+            &physics.grind_world,
             &physics.world_proxies.solids,
             context,
             clearance,

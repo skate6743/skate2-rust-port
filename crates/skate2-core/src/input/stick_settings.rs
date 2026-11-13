@@ -11,7 +11,7 @@ use crate::input_pad::XboxPadSample;
 use std::ops::RangeInclusive;
 
 /// The multipliers a stick takes, in hundredths.
-pub const MULTIPLIERS: RangeInclusive<u8> = 40..=110;
+pub const MULTIPLIERS: RangeInclusive<u8> = 40..=120;
 /// The deadzones and anti-deadzones a stick takes, in percent of its travel.
 pub const DEADZONES: RangeInclusive<u8> = 0..=50;
 
@@ -209,6 +209,7 @@ mod tests {
         // stick's maximum.
         assert_eq!(settings(110, 0, 0).apply(31130, 31130), (32767, 32767));
         assert_eq!(settings(110, 0, 0).apply(-32768, 0), (-32768, 0));
+        assert_eq!(settings(120, 0, 0).apply(13653, -13653), (16384, -16384));
     }
 
     #[test]
@@ -217,6 +218,7 @@ mod tests {
             settings(100, 0, 0),
             settings(40, 0, 0),
             settings(110, 0, 0),
+            settings(120, 0, 0),
             settings(100, 20, 0),
             settings(100, 0, 25),
             settings(100, 10, 25),
@@ -243,7 +245,7 @@ mod tests {
     #[test]
     fn settings_out_of_range_are_kept_to_it() {
         assert_eq!(settings(0, 90, 51).clamped(), settings(40, 50, 50));
-        assert_eq!(settings(255, 0, 0).clamped(), settings(110, 0, 0));
+        assert_eq!(settings(255, 0, 0).clamped(), settings(120, 0, 0));
         assert_eq!(StickSettings::VANILLA.clamped(), StickSettings::VANILLA);
     }
 }

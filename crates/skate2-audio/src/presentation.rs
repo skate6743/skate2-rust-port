@@ -45,6 +45,10 @@ pub struct PhysOutView {
     pub is_wipeout_over: bool,
     /// PC port: a Skate 3 physics darkcatch (TU3 `PhysOut_State` +0x50).
     pub skate3_dark_catch: bool,
+    /// PC port: a Skate 3 physics drop-in's tail locking on the edge and letting go (TU3
+    /// `PhysOut_Intents` +0x3D and +0x3E).
+    pub skate3_drop_in_lock: bool,
+    pub skate3_drop_in_release: bool,
     /// PC port: the skater runs Skate 3 physics.
     pub skate3_physics: bool,
     pub is_left_foot_on_deck: bool,
@@ -173,6 +177,10 @@ pub struct SkaterData {
     pub is_wiping_out: bool,
     /// TU3 SkaterData +0x98 bit 0x20 (`SFXCTL_PlayerPhysics` +0x301).
     pub skate3_dark_catch: bool,
+    /// TU3 SkaterData +0xA8 bit 0 and +0xAC bit 31 (`FillSkaterData` 0x827a2c0c, 0x827a2c1c):
+    /// the drop-in's lock and release (`SFXCTL_PlayerPhysics` +0x329, +0x32A).
+    pub skate3_drop_in_lock: bool,
+    pub skate3_drop_in_release: bool,
     /// PC port: the trick is a Skate 3-only scorable, whose audio types name TU3's sounds.
     pub skate3_only_trick: bool,
     /// PC port: the skater runs Skate 3 physics.
@@ -398,6 +406,8 @@ pub fn fill_skater_data(
     data.is_wiping_out = view.is_wiping_out;
     data.is_wipe_out_over = view.is_wipeout_over;
     data.skate3_dark_catch = view.skate3_dark_catch;
+    data.skate3_drop_in_lock = view.skate3_drop_in_lock;
+    data.skate3_drop_in_release = view.skate3_drop_in_release;
     data.skate3_physics = view.skate3_physics;
     data.front_truck_in_contact = view.is_front_truck_in_contact;
     data.back_truck_in_contact = view.is_back_truck_in_contact;

@@ -279,6 +279,9 @@ impl PhysicalPlayerPhysOut {
         // TU3 State+0x45 is mPhysicsRequestedTeleport: the score collector's Wipeout pick
         // (CalculateScoreCollectorType 0x82da3de4), IsSafeToUseSessionMarker and cMsgWipeout read it.
         state.physics_requested_teleport = flag(69);
+        if let Some(intents) = self.concrete.intents.as_deref_mut() {
+            [intents.skate3_drop_in_lock, intents.skate3_drop_in_release] = facts.drop_in_sounds;
+        }
         let animation = self.concrete.animation.as_deref_mut().expect("constructed");
         animation.is_generally_pushing = flag(56);
         [animation.push_mongo, animation.push_regular] = facts.push_style;

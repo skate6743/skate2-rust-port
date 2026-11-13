@@ -419,7 +419,7 @@ pub fn collection_stream_order(position: [f32; 3]) -> i32 {
     10_000 * x + z / 10
 }
 
-fn aabb_overlaps(
+pub(crate) fn aabb_overlaps(
     left_min: [f32; 4],
     left_max: [f32; 4],
     right_min: [f32; 3],

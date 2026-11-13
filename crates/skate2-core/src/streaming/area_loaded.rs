@@ -9,7 +9,7 @@ use skate2_formats::{
         CollectionSpace, DEFAULT_PRESENTATION_FOCUS_COLLECTIONS, MAX_FOCUS_ENTRIES, high_detail_collection_filename, merge_focus_collections,
         skate3_high_detail_tile, tiled_high_detail_collection_filename,
     },
-    stream_xml::StreamXml,
+    stream_xml::{StreamXml, TileRecords},
 };
 use std::sync::Arc;
 
@@ -31,6 +31,9 @@ pub struct PresentationStreamArea {
     /// PC port: the additional world is a linked Skate 3 district standing in San Vanelona's
     /// place: its collections alone are known and wanted, on Skate 3's tiles.
     pub exclusive: bool,
+    /// PC port: that district's Pres records, which Skate 3's `FindCollections` (0x8247b3a0 in its
+    /// title update 3) selects from.
+    pub records: Option<Arc<TileRecords>>,
 }
 
 impl PresentationStreamArea {
@@ -46,8 +49,14 @@ impl PresentationStreamArea {
                 Ok::<_, std::convert::Infallible>(!known || self.resident.contains(&id))
             };
             let wanted = |at: [f32; 3]| {
-                let mut picked = district.focus_collections(at, self.radius, MAX_FOCUS_ENTRIES);
-                picked.truncate(DEFAULT_PRESENTATION_FOCUS_COLLECTIONS);
+                let picked = match self.records.as_deref() {
+                    Some(records) => records.focus_collections(district, at),
+                    None => {
+                        let mut picked = district.focus_collections(at, self.radius, MAX_FOCUS_ENTRIES);
+                        picked.truncate(DEFAULT_PRESENTATION_FOCUS_COLLECTIONS);
+                        picked
+                    }
+                };
                 Ok(picked.iter().map(|collection| collection.id).collect())
             };
             return match is_area_loaded_tiled(position, radius, StreamKind::Presentation, true, loaded, wanted) {

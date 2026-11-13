@@ -57,6 +57,11 @@ impl LiveState {
         })
     }
 
+    /// The hand alignment the held board keeps (Skateboard +1008..+1044), when one is set.
+    pub(crate) fn alignment(&self) -> Option<&Alignment> {
+        self.alignment_active.then_some(&self.alignment)
+    }
+
     pub(crate) fn effects<'a>(
         &'a mut self,
         physics: &'a mut Skate3PhysicsState,

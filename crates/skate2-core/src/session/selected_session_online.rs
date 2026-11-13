@@ -1261,6 +1261,9 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.online.notices.push(notice);
         self.online_clear_area()?;
         if entered && !self.main_menu_pending {
+            // Once the game no longer simulates, Options and the Skate Profile end each frame
+            // before the way to the main menu, under the fade that covers them: they close.
+            self.pop_all_front_end_states()?;
             self.request_main_menu()?;
         }
         Ok(())
@@ -1366,7 +1369,9 @@ impl<T, C> SelectedLiveSession<T, C> {
             matches!(player.selected.owners.loader.phase(), crate::player::PlayerLoadPhase::Loaded { .. })
         });
         let game = self.online.game.as_mut().expect("checked");
-        let camera = projection.map(|projection| remote_skater::camera_values(&projection.camera_matrix, projection.chosen_fov_y_degrees, game.last_camera_rotation));
+        // The camera frame's own field of view: Gameplay Settings' Field of View (PC port addition)
+        // is each console's, applied to what it shows, so a watched player's never reaches another.
+        let camera = projection.map(|projection| remote_skater::camera_values(&projection.camera_matrix, projection.frame_fov_y_degrees, game.last_camera_rotation));
         if let Some(values) = camera {
             game.last_camera_rotation = Some([values[3], values[4], values[5], values[6]]);
         }

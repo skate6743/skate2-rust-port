@@ -79,7 +79,8 @@ pub fn detect_hung_geometry(
     Ok(hung_classification(fractions))
 }
 fn hung_classification(hits: [Option<f32>; 6]) -> bool {
-    if (hits[0].is_some() && hits[1].is_some()) || hits[4].is_some() {
+    // 82C20ECC: the raised cross probe (5) blocks the section; the centre probe (4) does not.
+    if (hits[0].is_some() && hits[1].is_some()) || hits[5].is_some() {
         return false;
     }
     let kind = if hits[0].is_some() {
@@ -177,13 +178,21 @@ mod tests {
             None,
             None
         ]));
-        assert!(!hung_classification([
+        assert!(hung_classification([
             None,
             None,
             None,
             None,
             Some(0.5),
             None
+        ]));
+        assert!(!hung_classification([
+            None,
+            None,
+            None,
+            None,
+            Some(0.5),
+            Some(0.5)
         ]));
     }
 }

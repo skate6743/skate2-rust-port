@@ -137,6 +137,10 @@ pub struct RenderWindowOptions {
 
 /// How often a minimized window runs its client's frame.
 const MINIMIZED_FRAME: Duration = Duration::from_micros(8_333);
+/// A redraw the window asked for and never got is asked for again after this long. Each frame asks
+/// for the next (`request_redraw`, Windows' internal `WM_PAINT`), and a message loop other than
+/// winit's that takes that `WM_PAINT` without dispatching it would stop the frames for good.
+const REDRAW_WATCHDOG: Duration = Duration::from_millis(250);
 
 /// An unfocused window's frame that waits this long for its swapchain image or present, or
 /// gets none, moves the client's frames to the minimized window's timer: a window another one
@@ -220,6 +224,10 @@ pub fn run_with_options(
         use winit::platform::windows::{IconExtWindows, WindowBuilderExtWindows};
         let icon = || winit::window::Icon::from_resource(1, None).ok();
         builder = builder.with_window_icon(icon()).with_taskbar_icon(icon());
+        // The game takes no dropped files. winit's drop target (OLE `RegisterDragDrop`) answered a
+        // file dragged over the window with COM calls on the window thread, after which its frames
+        // stopped for good; without one, Windows offers no drop over the window.
+        builder = builder.with_drag_and_drop(false);
     }
     // SKATE2_DIAGNOSTIC_WINDOW_SIZE=WxH: a scripted run's logical window size.
     if let Some((width, height)) = std::env::var("SKATE2_DIAGNOSTIC_WINDOW_SIZE")
@@ -268,6 +276,8 @@ pub fn run_with_options(
     // Unfocused and its swapchain stalled: the client's frames run on the minimized timer and
     // draw nothing until the window is focused again or the cursor moves over it.
     let mut background = false;
+    // When the window thread last began a frame's redraw (`REDRAW_WATCHDOG`).
+    let mut last_redraw = Instant::now();
     event_loop.run(move |event, target| {
         target.set_control_flow(ControlFlow::Wait);
         if let Event::WindowEvent { window_id, event } = event {
@@ -321,6 +331,7 @@ pub fn run_with_options(
                     }
                     WindowEvent::RedrawRequested if background => {}
                     WindowEvent::RedrawRequested => {
+                        last_redraw = Instant::now();
                         renderer.wait_for_frame_cap();
                         let redraw_start = Instant::now();
                         client.frame(&renderer, &mut scene, Instant::now())?;
@@ -577,6 +588,13 @@ pub fn run_with_options(
                     return;
                 }
                 target.set_control_flow(ControlFlow::WaitUntil(Instant::now() + MINIMIZED_FRAME));
+            } else if !(options.hold_at_completion && client.completion_reached()) {
+                // A frame's request for the next that never arrived is made again.
+                if last_redraw.elapsed() >= REDRAW_WATCHDOG {
+                    last_redraw = Instant::now();
+                    window.request_redraw();
+                }
+                target.set_control_flow(ControlFlow::WaitUntil(last_redraw + REDRAW_WATCHDOG));
             }
         }
     })?;

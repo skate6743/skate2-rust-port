@@ -26,11 +26,38 @@ pub struct PcDisplaySettings {
     /// The Brightness row's percent, from `BRIGHTNESSES`: the scene on screen (not the HUD) as a
     /// multiple of the game's own (`VANILLA_BRIGHTNESS`), with or without PostFX.
     pub brightness: u8,
+    /// The 3D scene's multisample anti-aliasing: samples per pixel. Saved in its own leaf
+    /// (`SK82_PC::Antialiasing`), so builds before it read and write the display settings as they
+    /// did.
+    pub msaa: Msaa,
 }
 impl Default for PcDisplaySettings {
     fn default() -> Self {
         Self { postfx: true, fisheye: true, frame_rate_cap: FrameRateCap::RefreshRate, fps_counter: false, fullscreen: false,
-            resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS }
+            resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS, msaa: Msaa::X4 }
+    }
+}
+/// The multisample anti-aliasing Display Settings offers: none, or 2 or 4 samples per pixel (the
+/// port's own, which it always drew with before the setting).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Msaa {
+    Off = 1,
+    X2 = 2,
+    X4 = 4,
+}
+impl Msaa {
+    /// Samples per pixel.
+    #[must_use]
+    pub const fn samples(self) -> u32 {
+        self as u32
+    }
+    const fn from_samples(samples: u8) -> Option<Self> {
+        match samples {
+            1 => Some(Self::Off),
+            2 => Some(Self::X2),
+            4 => Some(Self::X4),
+            _ => None,
+        }
     }
 }
 /// The fields of view Gameplay Settings offers, in percent of the shot's: a little narrower than
@@ -747,16 +774,34 @@ impl SkaterProfile {
                     }
                 } else { VANILLA_BRIGHTNESS };
                 return Ok(PcDisplaySettings { postfx, fisheye, frame_rate_cap, fps_counter, fullscreen, resolution_scale, vsync, field_of_view,
-                    brightness });
+                    brightness, msaa: self.msaa()? });
             }
         }
-        Ok(PcDisplaySettings::default())
+        Ok(PcDisplaySettings { msaa: self.msaa()?, ..PcDisplaySettings::default() })
+    }
+    /// The `SK82_PC::Antialiasing` leaf's samples; 4 without one (a save from before it).
+    fn msaa(&self) -> Result<Msaa> {
+        for chunk in self.chunks.iter().skip(1) {
+            if read32(chunk, 0)? != name_hash("SK82_PC") { continue; }
+            for leaf in split_chunks(&chunk[16..])? {
+                if read32(&leaf, 0)? != name_hash("SK82_PC::Antialiasing") { continue; }
+                if read32(&leaf, 4)? != 1 { return Err(ProfileError("unsupported PC anti-aliasing version")); }
+                let mut r = Reader { bytes: &leaf[16..], pos: 0 };
+                return match r.tuple()? {
+                    [samples] => Msaa::from_samples(*samples).ok_or(ProfileError("invalid PC anti-aliasing samples")),
+                    _ => Err(ProfileError("invalid PC anti-aliasing samples")),
+                };
+            }
+        }
+        Ok(Msaa::X4)
     }
     pub fn set_display_settings(&mut self, settings: PcDisplaySettings) -> Result<()> {
         let id = name_hash("SK82_PC::DisplaySettings");
         let leaf = leaf_chunk(id, 9, &[vec![u8::from(settings.postfx)], vec![u8::from(settings.fisheye)],
             vec![settings.frame_rate_cap as u8], vec![u8::from(settings.fps_counter)], vec![u8::from(settings.fullscreen)],
             vec![settings.resolution_scale], vec![u8::from(settings.vsync)], vec![settings.field_of_view], vec![settings.brightness]]);
+        let msaa_id = name_hash("SK82_PC::Antialiasing");
+        let msaa_leaf = leaf_chunk(msaa_id, 1, &[vec![settings.msaa as u8]]);
         for chunk in self.chunks.iter_mut().skip(1) {
             if read32(chunk, 0)? != name_hash("SK82_PC") { continue; }
             let mut children = split_chunks(&chunk[16..])?;
@@ -765,10 +810,14 @@ impl SkaterProfile {
                 if !matches!(read32(old, 4)?, 1..=9) { return Err(ProfileError("unsupported PC display settings version")); }
                 *old = leaf;
             } else { children.push(leaf); }
+            if let Some(old) = children.iter_mut().find(|c| read32(c, 0).ok() == Some(msaa_id)) {
+                if read32(old, 4)? != 1 { return Err(ProfileError("unsupported PC anti-aliasing version")); }
+                *old = msaa_leaf;
+            } else { children.push(msaa_leaf); }
             *chunk = nested_chunk(name_hash("SK82_PC"), &children.concat());
             return Ok(());
         }
-        self.chunks.push(nested_chunk(name_hash("SK82_PC"), &leaf));
+        self.chunks.push(nested_chunk(name_hash("SK82_PC"), &[leaf, msaa_leaf].concat()));
         Ok(())
     }
     /// PC port addition: Physics Settings and Weather Settings, `SK82_PC::GameplayModes`.
@@ -1197,7 +1246,7 @@ mod display_tests {
         for (postfx, frame_rate_cap) in [(false, FrameRateCap::Unlimited), (true, FrameRateCap::Fps60), (false, FrameRateCap::Fps120)] { for fisheye in [true, false] {
             let expected = PcDisplaySettings { postfx, fisheye, frame_rate_cap, fps_counter: fisheye, fullscreen: postfx,
                 resolution_scale: if fisheye { 200 } else { 50 }, vsync: !postfx, field_of_view: if fisheye { 130 } else { 90 },
-                brightness: if fisheye { 150 } else { 75 } };
+                brightness: if fisheye { 150 } else { 75 }, msaa: if postfx { Msaa::Off } else { Msaa::X2 } };
             profile.set_display_settings(expected).unwrap();
             profile.set_cac_record(&record).unwrap();
             profile = SkaterProfile::parse(&profile.encode().unwrap()).unwrap();
@@ -1235,17 +1284,17 @@ mod display_tests {
         };
         assert_eq!(saved(1, &[vec![0], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { postfx: false, fisheye: true, frame_rate_cap: FrameRateCap::RefreshRate, fps_counter: false, fullscreen: false,
-                resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS });
+                resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS, msaa: Msaa::X4 });
         for (vsync, frame_rate_cap) in [(0, FrameRateCap::Unlimited), (1, FrameRateCap::Fps60), (2, FrameRateCap::RefreshRate)] {
             assert_eq!(saved(2, &[vec![1], vec![1], vec![vsync]]).display_settings().unwrap().frame_rate_cap, frame_rate_cap);
         }
         assert!(saved(2, &[vec![1], vec![1], vec![3]]).display_settings().is_err());
         assert_eq!(saved(3, &[vec![1], vec![0], vec![2]]).display_settings().unwrap(),
             PcDisplaySettings { postfx: true, fisheye: false, frame_rate_cap: FrameRateCap::Fps120, fps_counter: false, fullscreen: false,
-                resolution_scale: 100, vsync: false, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS });
+                resolution_scale: 100, vsync: false, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS, msaa: Msaa::X4 });
         assert_eq!(saved(4, &[vec![1], vec![0], vec![2], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { postfx: true, fisheye: false, frame_rate_cap: FrameRateCap::Fps120, fps_counter: true, fullscreen: false,
-                resolution_scale: 100, vsync: false, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS });
+                resolution_scale: 100, vsync: false, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS, msaa: Msaa::X4 });
         assert_eq!(saved(5, &[vec![1], vec![1], vec![3], vec![0], vec![1]]).display_settings().unwrap(),
             PcDisplaySettings { fullscreen: true, ..PcDisplaySettings::default() });
         assert_eq!(saved(6, &[vec![1], vec![1], vec![3], vec![0], vec![1], vec![140]]).display_settings().unwrap(),
@@ -1277,6 +1326,30 @@ mod display_tests {
         profile.set_display_settings(capped).unwrap();
         let profile = SkaterProfile::parse(&profile.encode().unwrap()).unwrap();
         assert_eq!(profile.display_settings().unwrap(), capped);
+    }
+    #[test]
+    fn anti_aliasing_has_its_own_leaf_beside_the_version_9_settings() {
+        // A save from before the setting reads 4 samples, the port's own.
+        let mut profile = SkaterProfile::new_empty();
+        profile.chunks.push(nested_chunk(name_hash("SK82_PC"),
+            &leaf_chunk(name_hash("SK82_PC::DisplaySettings"), 9, &[vec![1], vec![1], vec![3], vec![0], vec![0], vec![100], vec![1], vec![100], vec![100]])));
+        assert_eq!(profile.display_settings().unwrap(), PcDisplaySettings::default());
+        for msaa in [Msaa::Off, Msaa::X2, Msaa::X4] {
+            let settings = PcDisplaySettings { msaa, resolution_scale: 200, ..PcDisplaySettings::default() };
+            profile.set_display_settings(settings).unwrap();
+            profile = SkaterProfile::parse(&profile.encode().unwrap()).unwrap();
+            assert_eq!(profile.display_settings().unwrap(), settings);
+        }
+        // The display settings leaf stays version 9, which earlier builds read and replace.
+        let chunk = profile.chunks.iter().skip(1).find(|chunk| read32(chunk, 0).ok() == Some(name_hash("SK82_PC"))).unwrap();
+        let leaves = split_chunks(&chunk[16..]).unwrap();
+        let display = leaves.iter().find(|leaf| read32(leaf, 0).ok() == Some(name_hash("SK82_PC::DisplaySettings"))).unwrap();
+        assert_eq!(read32(display, 4).unwrap(), 9);
+        assert_eq!(leaves.iter().filter(|leaf| read32(leaf, 0).ok() == Some(name_hash("SK82_PC::Antialiasing"))).count(), 1);
+        // Samples other than 1, 2 and 4 are refused.
+        let mut odd = SkaterProfile::new_empty();
+        odd.chunks.push(nested_chunk(name_hash("SK82_PC"), &leaf_chunk(name_hash("SK82_PC::Antialiasing"), 1, &[vec![8]])));
+        assert!(odd.display_settings().is_err());
     }
     #[test]
     fn unsupported_extension_version_is_not_silently_replaced() {

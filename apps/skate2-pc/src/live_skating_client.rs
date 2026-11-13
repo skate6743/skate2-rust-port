@@ -73,10 +73,15 @@ fn spawn_sim_collection(mounts: &MountSet) -> RenderResult<CollectionId> {
 /// The Downloadable Content screen's packs: the linked downloadable content's, then linked Skate
 /// 3 data's.
 fn linked_packs(dlc: &crate::dlc_link::DlcLinks, skate3: &crate::skate3_link::Skate3Link) -> Vec<skate2_core::ui::dlc_menu::Pack> {
-    dlc.packs().into_iter().chain(skate3.pack()).collect()
+    dlc.packs().into_iter().chain(skate3.pack()).chain(skate3.dlc_packs()).collect()
 }
 
 const MAX_TICKS_PER_REDRAW: u32 = 4;
+/// The most host timer debt the clock carries: a late frame's ticks (a long frame, a late timer)
+/// still run, at once. PC port (user request): wall time past this (a stall: the system or a load
+/// held the game) is let go, so the game goes on at its normal pace after it instead of running
+/// the stall off in fast motion.
+const MAX_TIMER_DEBT_TICKS: u32 = MAX_TICKS_PER_REDRAW;
 
 // Keep one timer period of overlap for SIM and consume older debt within the
 // existing redraw budget. This never changes dt or discards an elapsed slot.
@@ -223,6 +228,7 @@ pub(crate) fn run(root: &std::path::Path) -> RenderResult<()> {
         Some("footplant-stick") => Some(ControlsDemo::FootplantStick),
         Some("boneless-stick") => Some(ControlsDemo::BonelessStick),
         Some("bail-speed") => Some(ControlsDemo::BailSpeed),
+        Some("idle") => Some(ControlsDemo::Idle),
         Some(_) => return Err("unknown --live-controls-demo sequence".into()),
     };
     let ollie_tweak_left = args
@@ -541,10 +547,24 @@ fn diagnostic_press(tick: u64) -> Option<u16> {
 }
 
 /// Diagnostics (`SKATE2_DIAGNOSTIC_POSTFX_OFF`): the display settings with PostFX off.
-fn diagnostic_display(mut values: skate2_formats::skater_profile::PcDisplaySettings) -> skate2_formats::skater_profile::PcDisplaySettings {
+/// `SKATE2_DIAGNOSTIC_MSAA=<frame>:<samples>[;...]`: from each frame on, that Anti-Aliasing (1, 2
+/// or 4 samples), as the Display Settings row changes it.
+fn diagnostic_display(mut values: skate2_formats::skater_profile::PcDisplaySettings, frame: u64) -> skate2_formats::skater_profile::PcDisplaySettings {
+    use skate2_formats::skater_profile::Msaa;
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static SCHEDULE: std::sync::OnceLock<Vec<(u64, Msaa)>> = std::sync::OnceLock::new();
     if *OFF.get_or_init(|| std::env::var_os("SKATE2_DIAGNOSTIC_POSTFX_OFF").is_some()) {
         values.postfx = false;
+    }
+    let schedule = SCHEDULE.get_or_init(|| {
+        std::env::var("SKATE2_DIAGNOSTIC_MSAA").unwrap_or_default().split(';').filter_map(|entry| {
+            let (at, samples) = entry.split_once(':')?;
+            let msaa = match samples.trim() { "1" => Msaa::Off, "2" => Msaa::X2, "4" => Msaa::X4, _ => return None };
+            Some((at.trim().parse().ok()?, msaa))
+        }).collect()
+    });
+    if let Some(&(_, msaa)) = schedule.iter().filter(|(at, _)| *at <= frame).max_by_key(|(at, _)| *at) {
+        values.msaa = msaa;
     }
     values
 }
@@ -606,6 +626,8 @@ enum ControlsDemo {
     FootplantStick,
     BonelessStick,
     BailSpeed,
+    /// No pad input of its own, so the `SKATE2_DIAGNOSTIC_*` scripts run from a standing start.
+    Idle,
 }
 
 impl ControlsDemo {
@@ -813,6 +835,7 @@ impl ControlsDemo {
                     sample.left_y = -23170;
                 }
             }
+            Self::Idle => {}
             Self::BailSpeed => {
                 // Diagnostic raw pad: push off for 4 s, then bail at speed (both stick clicks
                 // and triggers), holding the right stick up through the bail for a body tweak.
@@ -1084,7 +1107,7 @@ fn demo_right_point(point: [f32; 2]) -> XboxPadSample {
 
 impl LiveSkatingClient {
     fn initialize(&mut self, view: &mut LiveSkatingView, renderer: &GpuRenderer) -> RenderResult<GpuScene> {
-        renderer.set_display_settings(diagnostic_display(self.session.options_snapshot().values));
+        renderer.set_display_settings(diagnostic_display(self.session.options_snapshot().values, self.completed_frames));
         let mut scene = view.initialize(renderer)?;
         if let Some(catalogue) = view.music_player_song_ids() {
             self.session.set_music_catalogue(catalogue)?;
@@ -1192,7 +1215,14 @@ impl LiveSkatingClient {
             return self.frontend_demo_ticks >= 840;
         }
         if matches!(self.controls_demo, Some(ControlsDemo::EditSkater)) {
-            return self.frontend_demo_ticks >= 600;
+            // SKATE2_DIAGNOSTIC_EDIT_SKATER_PATH browses until SKATE2_DIAGNOSTIC_EDIT_SKATER_END
+            // (default 1800).
+            let end = if std::env::var_os("SKATE2_DIAGNOSTIC_EDIT_SKATER_PATH").is_some() {
+                std::env::var("SKATE2_DIAGNOSTIC_EDIT_SKATER_END").ok().and_then(|end| end.parse().ok()).unwrap_or(1800)
+            } else {
+                600
+            };
+            return self.frontend_demo_ticks >= end;
         }
         if matches!(self.controls_demo, Some(ControlsDemo::EditSkaterEyes | ControlsDemo::EditSkaterRoundtrip | ControlsDemo::EditSkaterCouch | ControlsDemo::EditSkaterStyles | ControlsDemo::EditSkaterSkate3Style | ControlsDemo::EditSkaterGender | ControlsDemo::EditSkaterRemoveShirt | ControlsDemo::MapTeleport)) {
             // SKATE2_DIAGNOSTIC_FRONTEND_END ends these demos earlier too.
@@ -1303,10 +1333,23 @@ impl LiveSkatingClient {
         Ok(())
     }
 
+    /// Wall time since the last call joins the timer debt, up to [`MAX_TIMER_DEBT_TICKS`]; the
+    /// whole ticks of a stall past that are let go, and an online round skips them.
     fn advance_clock(&mut self, now: Instant) {
         if now > self.previous {
-            self.accumulator = self.accumulator.saturating_add(now - self.previous);
+            let debt = self.accumulator.saturating_add(now - self.previous);
+            let limit = self.step.saturating_mul(MAX_TIMER_DEBT_TICKS);
+            self.accumulator = debt.min(limit);
             self.previous = now;
+            if debt > limit {
+                let dropped = u32::try_from((debt - limit).as_nanos() / self.step.as_nanos().max(1)).unwrap_or(u32::MAX);
+                if dropped >= 30 {
+                    eprintln!("clock: a stall let {dropped} ticks go; the game goes on at its pace");
+                }
+                if dropped > 0 {
+                    self.session.clock_ticks_dropped(dropped);
+                }
+            }
         }
     }
 
@@ -2569,7 +2612,23 @@ impl LiveSkatingClient {
                         } else if self.freeskate_location_entered {
                             if (1900..2400).contains(&tick) && tick%20==0 { sample.buttons=0x1000; }
                         } else if tick%20==0 && let Some(screen)=self.session.main_menu_frame()?.and_then(|frame|frame.freeskate) {
-                            if !screen.location.to_lowercase().contains(&target.to_lowercase()) {
+                            // SKATE2_DIAGNOSTIC_FREESKATE_AREA: first the District row (up from Character)
+                            // steps right to the first area whose name contains it, then back down to the
+                            // Location row.
+                            static AREA_CHOSEN: AtomicBool = AtomicBool::new(false);
+                            let area_target = std::env::var("SKATE2_DIAGNOSTIC_FREESKATE_AREA").ok().filter(|_| !AREA_CHOSEN.load(Ordering::Relaxed));
+                            if let Some(area_target) = area_target {
+                                let wanted = screen.area.as_deref().is_some_and(|area| area.to_lowercase().contains(&area_target.to_lowercase()));
+                                eprintln!("Free Skate area {tick}: {:?}, row selected {}", screen.area, screen.area_selected);
+                                sample.buttons = if screen.area.is_none() || (wanted && !screen.area_selected && screen.selection == skate2_core::ui::freeskate_option::Row::Location) {
+                                    AREA_CHOSEN.store(true, Ordering::Relaxed);
+                                    0
+                                } else if !wanted {
+                                    if screen.area_selected { 0x0008 } else { 0x0001 }
+                                } else {
+                                    0x0002
+                                };
+                            } else if !screen.location.to_lowercase().contains(&target.to_lowercase()) {
                                 eprintln!("Free Skate location {tick}: {}", screen.location);
                                 sample.buttons=0x0008;
                             } else if screen.image.is_some() {
@@ -2727,7 +2786,7 @@ impl LiveSkatingClient {
                         let expected=skate2_core::ui::options::PcDisplaySettings{postfx:false,fisheye:false,
                             frame_rate_cap:skate2_core::ui::options::FrameRateCap::Fps60,fps_counter:false,fullscreen:false,
                             resolution_scale:100,vsync:true,field_of_view:skate2_core::ui::options::VANILLA_FIELD_OF_VIEW,
-                            brightness:skate2_core::ui::options::VANILLA_BRIGHTNESS};
+                            brightness:skate2_core::ui::options::VANILLA_BRIGHTNESS,msaa:skate2_core::ui::options::Msaa::X4};
                         if display.page!=skate2_core::ui::options::Page::Hidden
                             || display.values!=expected || store.load_display_settings()?!=expected {
                             return Err("Display Settings main-menu save roundtrip failed".into());
@@ -2746,6 +2805,37 @@ impl LiveSkatingClient {
                 if (120..600).contains(&tick) && tick % 30 == 0 && pause.visible
                     && self.session.edit_skater_view()?.is_none() {
                     sample.buttons = if pause.options()[pause.selected] == skate2_core::ui::pause_menu::PauseMenuOption::EditSkater { 0x1000 } else { 0x0002 };
+                }
+                // SKATE2_DIAGNOSTIC_EDIT_SKATER_PATH=<title>[,<title>...] (the plain demo): every 30
+                // ticks from 660, A on the row titled one of them, moving to it first; then
+                // SKATE2_DIAGNOSTIC_EDIT_SKATER_PART=<text> steps right to the first part whose
+                // thumbnail names it. Each menu reached logs its rows once.
+                if matches!(demo, ControlsDemo::EditSkater) && tick >= 660 && tick % 30 == 0
+                    && let Ok(path) = std::env::var("SKATE2_DIAGNOSTIC_EDIT_SKATER_PATH")
+                    && let Some(view) = self.session.edit_skater_view()?
+                {
+                    static LOGGED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+                    let menu = format!("{:?} {}", view.menu, view.title);
+                    if let Ok(mut logged) = LOGGED.lock() && *logged != menu {
+                        let rows: Vec<String> = view.rows.iter().map(|row| format!("{} [{}]", row.title, row.texture.as_deref().unwrap_or_default())).collect();
+                        eprintln!("edit skater {tick}: {menu}, {} rows: {}", rows.len(), rows.join(" | "));
+                        logged.clone_from(&menu);
+                    }
+                    let titled = view.rows.iter().position(|row| path.split(',').any(|part| part == row.title));
+                    let part = std::env::var("SKATE2_DIAGNOSTIC_EDIT_SKATER_PART").ok().map(|part| part.to_ascii_lowercase());
+                    let thumbnail = part.as_deref().and_then(|part| {
+                        view.rows.iter().position(|row| row.texture.as_deref().is_some_and(|texture| texture.to_ascii_lowercase().contains(part)))
+                    });
+                    // A part list is a grid three wide: rows first, then columns.
+                    sample.buttons = match (titled, thumbnail) {
+                        (Some(row), _) if row == view.selected => 0x1000,
+                        (Some(row), _) => if row > view.selected { 0x0002 } else { 0x0001 },
+                        (None, Some(part)) if part / 3 > view.selected / 3 => 0x0002,
+                        (None, Some(part)) if part / 3 < view.selected / 3 => 0x0001,
+                        (None, Some(part)) if part > view.selected => 0x0008,
+                        (None, Some(part)) if part < view.selected => 0x0004,
+                        _ => 0,
+                    };
                 }
                 if matches!(demo, ControlsDemo::EditSkaterCouch | ControlsDemo::EditSkaterStyles | ControlsDemo::EditSkaterRemoveShirt) {
                     if tick == 660 { sample.buttons = 0x0002; }
@@ -2882,6 +2972,57 @@ impl LiveSkatingClient {
                     sample.right_y = i16::MAX;
                 }
             }
+            // SKATE2_DIAGNOSTIC_SPIN_OLLIE=<from>:<period>:<swing>[:<release>[:<crouch>[:<pop>[:<x>]]]]:
+            // from that frame, every period frames, an ollie (the right stick down for the crouch
+            // frames (15) before the pop step (85), then up for 3 frames) with the left stick X at x
+            // (full right) from the swing step until the release step (pop + 60), centred otherwise.
+            if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_SPIN_OLLIE")
+                && let fields = spec.split(':').map(|field| field.trim().parse::<i64>().ok()).collect::<Vec<_>>()
+                && let [Some(from), Some(period), Some(swing), ..] = fields[..]
+                && period > 0
+                && self.completed_frames as i64 >= from
+            {
+                let field = |index: usize, default: i64| fields.get(index).copied().flatten().unwrap_or(default);
+                let pop = field(5, 85);
+                let (release, crouch) = (field(3, pop + 60), field(4, 15));
+                let x = field(6, i64::from(i16::MAX)).clamp(-i64::from(i16::MAX), i64::from(i16::MAX)) as i16;
+                let step = (self.completed_frames as i64 - from) % period;
+                if (pop - crouch..pop).contains(&step) {
+                    sample.right_y = -i16::MAX;
+                }
+                if (pop..pop + 3).contains(&step) {
+                    sample.right_y = i16::MAX;
+                }
+                sample.left_x = if (swing..release).contains(&step) { x } else { 0 };
+            }
+            // SKATE2_DIAGNOSTIC_RIGHT_STICK=<from>:<period>:<start>:<end>:<x>:<y>[;<start>:<end>:<x>:<y>...]:
+            // from that frame, every period frames, the right stick held at those raw values from the
+            // start step until the end step (over SPIN_OLLIE's crouch and pop when they overlap). Each
+            // window after a ';' shares the frame and period; a later window wins where they overlap.
+            if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_RIGHT_STICK") {
+                let numbers = |text: &str| {
+                    text.split(':').map(|field| field.trim().parse::<i64>().ok()).collect::<Vec<_>>()
+                };
+                let mut parts = spec.split(';');
+                if let [Some(from), Some(period), Some(start), Some(end), Some(x), Some(y)] =
+                    numbers(parts.next().unwrap_or(""))[..]
+                    && period > 0
+                    && self.completed_frames as i64 >= from
+                {
+                    let step = (self.completed_frames as i64 - from) % period;
+                    let raw = |v: i64| v.clamp(-i64::from(i16::MAX), i64::from(i16::MAX)) as i16;
+                    let extra = parts.filter_map(|part| match numbers(part)[..] {
+                        [Some(start), Some(end), Some(x), Some(y)] => Some([start, end, x, y]),
+                        _ => None,
+                    });
+                    for [start, end, x, y] in std::iter::once([start, end, x, y]).chain(extra) {
+                        if (start..end).contains(&step) {
+                            sample.right_x = raw(x);
+                            sample.right_y = raw(y);
+                        }
+                    }
+                }
+            }
             // SKATE2_DIAGNOSTIC_HOLD=<button>:<from>:<period>:<frames>: from that frame, every period
             // frames, the face button (a, b, x, y) held for the given frames.
             if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_HOLD")
@@ -2898,6 +3039,31 @@ impl LiveSkatingClient {
                     "y" => 0x8000,
                     _ => 0,
                 };
+            }
+            // SKATE2_DIAGNOSTIC_TRIGGER_TAPS=<from>:<period>:<frames>[:<l|r|b>[:<count>]][;...]: from
+            // that frame, every period frames, the right trigger (l the left, b both) pulled fully for
+            // the given frames, `count` times (without end by default).
+            if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_TRIGGER_TAPS") {
+                for entry in spec.split(';') {
+                    let fields: Vec<&str> = entry.split(':').map(str::trim).collect();
+                    if let [from, period, frames, ..] = fields[..]
+                        && let (Ok(from), Ok(period), Ok(frames)) = (from.parse::<u64>(), period.parse::<u64>(), frames.parse::<u64>())
+                        && period > 0
+                        && self.completed_frames >= from
+                        && (self.completed_frames - from) % period < frames
+                        && fields.get(4).and_then(|count| count.parse::<u64>().ok())
+                            .is_none_or(|count| (self.completed_frames - from) / period < count)
+                    {
+                        match fields.get(3).copied().unwrap_or("r") {
+                            "l" => sample.left_trigger = 255,
+                            "b" => {
+                                sample.left_trigger = 255;
+                                sample.right_trigger = 255;
+                            }
+                            _ => sample.right_trigger = 255,
+                        }
+                    }
+                }
             }
             // SKATE2_DIAGNOSTIC_LEFT_STICK=<from>:<to>:<x>:<y>: the left stick at those raw values from
             // that frame until the other.
@@ -2937,6 +3103,21 @@ impl LiveSkatingClient {
                         let yaw = fields.next().and_then(|yaw| yaw.parse::<f32>().ok()).unwrap_or(0.0);
                         eprintln!("diagnostic: teleport here on_board={on_board} yaw={yaw} at {}: {}",
                             self.completed_frames, self.session.diagnostic_teleport_here(on_board, yaw));
+                    }
+                }
+            }
+            // SKATE2_DIAGNOSTIC_TELEPORT_TO=<frame>:on|off:<yaw>:<x>,<y>,<z>[;...]: at that frame, the
+            // local skater teleported to that point facing yaw radians, on its board or off it.
+            if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_TELEPORT_TO") {
+                for entry in spec.split(';') {
+                    if let [at, board, yaw, point] = entry.split(':').map(str::trim).collect::<Vec<_>>()[..]
+                        && at.parse::<u64>().ok() == Some(self.completed_frames)
+                        && let Ok(yaw) = yaw.parse::<f32>()
+                        && let [Some(x), Some(y), Some(z)] = point.split(',').map(|v| v.trim().parse::<f32>().ok()).collect::<Vec<_>>()[..]
+                    {
+                        let on_board = board != "off";
+                        eprintln!("diagnostic: teleport to {x},{y},{z} on_board={on_board} yaw={yaw} at {}: {}",
+                            self.completed_frames, self.session.diagnostic_teleport_to([x, y, z], on_board, yaw));
                     }
                 }
             }
@@ -3126,7 +3307,7 @@ impl LiveSkatingClient {
             *total += value;
         }
         let options_menu = self.session.options_snapshot();
-        renderer.set_display_settings(diagnostic_display(options_menu.values));
+        renderer.set_display_settings(diagnostic_display(options_menu.values, self.completed_frames));
         renderer.set_cutscene_postfx(self.session.cutscene_postfx_active());
         view.set_options_menu(options_menu)?;
         // PC port: the pads' next samples take the stick settings as the Stick Settings rows have
@@ -3550,24 +3731,30 @@ impl LiveSkatingClient {
         // PC: the Downloadable Content screen's Link DLCs: the file picker, the picked files read
         // under ID_DLC_REGISTERING, then the new packs' strings join the screens'.
         if self.session.take_dlc_link_request() {
-            self.dlc.open_picker();
+            self.dlc.open_picker(self.skate3.context());
         }
         if self.session.take_skate3_link_request() {
             self.skate3.open_picker();
         }
         if let Some(row) = self.session.take_dlc_unlink_request() {
             let dlc_count = self.dlc.packs().len();
-            let report = if row < dlc_count {
-                self.dlc.unlink(row)
-            } else if row == dlc_count && self.skate3.pack().is_some() {
-                Some(self.skate3.unlink())
-            } else {
-                None
-            };
-            let changed = report.is_some();
-            self.session.dlc_linked(linked_packs(&self.dlc, &self.skate3), report.unwrap_or_else(|| "#No DLC was unlinked.".to_owned()), changed);
+            let skate3_row = usize::from(self.skate3.pack().is_some());
+            // A Skate 3 pack's row: the data is read again without it, and the Skate 3 link's
+            // poll below reports the unlink.
+            let pending = row >= dlc_count + skate3_row && self.skate3.unlink_dlc(row - dlc_count - skate3_row);
+            if !pending {
+                let report = if row < dlc_count {
+                    self.dlc.unlink(row)
+                } else if row == dlc_count && skate3_row == 1 {
+                    Some(self.skate3.unlink())
+                } else {
+                    None
+                };
+                let changed = report.is_some();
+                self.session.dlc_linked(linked_packs(&self.dlc, &self.skate3), report.unwrap_or_else(|| "#No DLC was unlinked.".to_owned()), changed);
+            }
         }
-        match self.dlc.poll() {
+        match self.dlc.poll(&mut self.skate3) {
             Some(crate::dlc_link::LinkProgress::Picked(any)) => self.session.dlc_picked(any),
             Some(crate::dlc_link::LinkProgress::Linked(report, changed)) => {
                 if changed {

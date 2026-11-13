@@ -94,6 +94,7 @@ impl PhysicalPlayerPhysOut {
             teleporting,
             is_regular_stance: animation.is_regular_stance,
             is_riding_switch: animation.is_riding_switch,
+            is_riding_fakie: animation.is_riding_fakie,
             is_wipeout_teleport_pending: skeleton.is_wipeout_teleport_pending,
             time_until_wipeout_teleport: skeleton.time_until_wipeout_teleport,
             is_grabbing_object: offboard.is_grabbing_object,

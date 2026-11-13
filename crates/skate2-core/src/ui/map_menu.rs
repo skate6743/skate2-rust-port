@@ -9,27 +9,55 @@ pub enum MapCategory {
     #[default]
     Root = 0,
     Locations = 10,
-    /// The downloaded content, here holding only a linked Skate 3 data folder's districts (PC
-    /// port, as on the career's map); its downloaded spawn points are not ported.
+    /// The downloaded content, here holding only linked Skate 3 data's areas (PC port, as on the
+    /// career's map); its downloaded spawn points are not ported.
     Downloaded = 11,
     Landmarks = 19,
     Plazas = 21,
     Skateparks = 22,
     SpawnPoints = 23,
-    /// PC port: a linked Skate 3 district's teleports, in `crate::skate3::DISTRICTS` order.
-    Skate3University = 26,
-    Skate3Downtown = 27,
-    Skate3Industrial = 28,
+    /// PC port: a linked Skate 3 area's teleports: its districts', then its downloadable content
+    /// maps', in `crate::skate3::Skate3Data::districts` order.
+    Skate3Area0 = 26,
+    Skate3Area1 = 27,
+    Skate3Area2 = 28,
+    Skate3Area3 = 29,
+    Skate3Area4 = 30,
+    Skate3Area5 = 31,
+    Skate3Area6 = 32,
+    Skate3Area7 = 33,
+    Skate3Area8 = 34,
+    Skate3Area9 = 35,
+    Skate3Area10 = 36,
+    Skate3Area11 = 37,
 }
 
 impl MapCategory {
-    /// PC port: the Skate 3 districts' categories, in `crate::skate3::DISTRICTS` order.
-    pub const SKATE3_DISTRICTS: [Self; 3] = [Self::Skate3University, Self::Skate3Downtown, Self::Skate3Industrial];
+    /// PC port: the linked Skate 3 areas' categories, in `crate::skate3::Skate3Data::districts`
+    /// order.
+    pub const SKATE3_AREAS: [Self; crate::skate3::AREA_SLOTS] = [
+        Self::Skate3Area0,
+        Self::Skate3Area1,
+        Self::Skate3Area2,
+        Self::Skate3Area3,
+        Self::Skate3Area4,
+        Self::Skate3Area5,
+        Self::Skate3Area6,
+        Self::Skate3Area7,
+        Self::Skate3Area8,
+        Self::Skate3Area9,
+        Self::Skate3Area10,
+        Self::Skate3Area11,
+    ];
 
-    /// gStuffCategoryHAL82fdb2f0 and GetCategoryHAL8261cb48. A Skate 3 district is named by its
-    /// title and count, as the career's map names it (`stuff_menu`'s `category_hal`).
+    /// gStuffCategoryHAL82fdb2f0 and GetCategoryHAL8261cb48. A linked Skate 3 area is named by its
+    /// title and count (`crate::skate3::area_label`), as the career's map names it
+    /// (`stuff_menu`'s `category_hal`).
     #[must_use]
-    pub const fn localization_key(self) -> &'static str {
+    pub fn localization_key(self) -> &'static str {
+        if let Some(index) = self.skate3_area() {
+            return crate::skate3::area_label(index);
+        }
         match self {
             Self::Root => "ID_CHALLENGE_MAP_STUFF",
             Self::Locations => "ID_STUFFMENU_CATEGORY_LOCATIONS",
@@ -38,25 +66,29 @@ impl MapCategory {
             Self::Plazas => "ID_STUFFMENU_CATEGORY_LANDMARK_PLAZAS",
             Self::Skateparks => "ID_STUFFMENU_CATEGORY_LANDMARK_PARKS",
             Self::SpawnPoints => "ID_STUFFMENU_CATEGORY_SPAWNPOINTS",
-            Self::Skate3University => "#University District (%d)",
-            Self::Skate3Downtown => "#Downtown District (%d)",
-            Self::Skate3Industrial => "#Industrial District (%d)",
+            _ => "ID_COMMON_UNKNOWN",
         }
     }
 
     /// FEStuffMenu gSubCategory82079860's free-skate categories; the downloaded content holds
-    /// the Skate 3 districts.
+    /// the linked Skate 3 areas.
     const fn sub_categories(self) -> &'static [Self] {
         match self {
             Self::Root => &[Self::Locations, Self::Downloaded],
             Self::Locations => &[Self::Landmarks, Self::Plazas, Self::Skateparks, Self::SpawnPoints],
-            Self::Downloaded => &[Self::Skate3University, Self::Skate3Downtown, Self::Skate3Industrial],
+            Self::Downloaded => &Self::SKATE3_AREAS,
             _ => &[],
         }
     }
 
-    const fn is_skate3(self) -> bool {
-        matches!(self, Self::Skate3University | Self::Skate3Downtown | Self::Skate3Industrial)
+    /// PC port: the index of the linked Skate 3 area this category lists.
+    #[must_use]
+    pub fn skate3_area(self) -> Option<usize> {
+        Self::SKATE3_AREAS.iter().position(|&area| area == self)
+    }
+
+    fn is_skate3(self) -> bool {
+        self.skate3_area().is_some()
     }
 }
 
@@ -111,9 +143,9 @@ impl MapMenuSnapshot {
             MapCategory::Root | MapCategory::Locations => {
                 locations.iter().filter(|location| !location.category.is_skate3()).count()
             }
-            MapCategory::Downloaded => MapCategory::SKATE3_DISTRICTS
+            MapCategory::Downloaded => MapCategory::SKATE3_AREAS
                 .iter()
-                .filter(|&&district| locations.iter().any(|location| location.category == district))
+                .filter(|&&area| locations.iter().any(|location| location.category == area))
                 .count(),
             category => locations.iter().filter(|location| location.category == category).count(),
         }
@@ -263,18 +295,15 @@ impl MapMenuController {
     }
 }
 
-/// PC port: a linked Skate 3 data folder's districts' teleports (`crate::skate3`), each under its
-/// district's category and titled in Skate 3's English, as the career's map lists them. None
-/// draws a map icon: its place is in its district's world, not on this map.
+/// PC port: a linked Skate 3 data folder's areas' teleports (`crate::skate3`): its districts',
+/// then its downloadable content maps', each under its area's category and titled in Skate 3's
+/// English, as the career's map lists them. None draws a map icon: its place is in its area's
+/// world, not on this map.
 #[must_use]
 pub fn skate3_locations() -> Vec<MapLocation> {
     let Some(data) = crate::skate3::linked() else { return Vec::new() };
     let mut locations = Vec::new();
-    for district in &data.districts {
-        let Some(index) = crate::skate3::DISTRICTS.iter().position(|spec| spec.key == district.spec.key) else {
-            continue;
-        };
-        let category = MapCategory::SKATE3_DISTRICTS[index];
+    for (district, &category) in data.districts.iter().zip(&MapCategory::SKATE3_AREAS) {
         locations.extend(district.spots.iter().map(|spot| MapLocation {
             key: spot.key,
             localization_key: format!("#{}", spot.title),
@@ -304,7 +333,7 @@ mod tests {
 
     #[test]
     fn the_district_titles_are_the_skate3_districts() {
-        for (category, spec) in MapCategory::SKATE3_DISTRICTS.into_iter().zip(crate::skate3::DISTRICTS) {
+        for (category, spec) in MapCategory::SKATE3_AREAS.into_iter().zip(crate::skate3::DISTRICTS) {
             assert_eq!(category.localization_key(), format!("#{} (%d)", spec.title));
         }
     }
@@ -313,17 +342,17 @@ mod tests {
     fn the_downloaded_content_lists_the_districts_with_teleports() {
         let locations = [
             location(1, MapCategory::Landmarks),
-            location(2, MapCategory::Skate3University),
-            location(3, MapCategory::Skate3University),
-            location(4, MapCategory::Skate3Industrial),
+            location(2, MapCategory::Skate3Area0),
+            location(3, MapCategory::Skate3Area0),
+            location(4, MapCategory::Skate3Area2),
         ];
         let mut snapshot = MapMenuSnapshot::default();
         let root: Vec<_> = snapshot.rows(&locations).iter().map(|row| (row.category, row.count)).collect();
         assert_eq!(root, [(MapCategory::Locations, 1), (MapCategory::Downloaded, 2)]);
         snapshot.category = MapCategory::Downloaded;
         let districts: Vec<_> = snapshot.rows(&locations).iter().map(|row| (row.category, row.count)).collect();
-        assert_eq!(districts, [(MapCategory::Skate3University, 2), (MapCategory::Skate3Industrial, 1)]);
-        snapshot.category = MapCategory::Skate3University;
+        assert_eq!(districts, [(MapCategory::Skate3Area0, 2), (MapCategory::Skate3Area2, 1)]);
+        snapshot.category = MapCategory::Skate3Area0;
         let teleports: Vec<_> = snapshot.rows(&locations).iter().map(|row| row.location_key).collect();
         assert_eq!(teleports, [Some(2), Some(3)]);
     }

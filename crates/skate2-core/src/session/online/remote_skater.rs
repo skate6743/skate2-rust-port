@@ -137,7 +137,8 @@ fn camera_rotation(matrix: &SkeletonRootMatrix) -> [f32; 4] {
 }
 
 /// The game camera as frames carry it: its position, its rotation (on the side of `previous`,
-/// the rotation last sent, so the values move on smoothly) and its vertical field of view.
+/// the rotation last sent, so the values move on smoothly) and its camera frame's vertical field
+/// of view, before the sender's Field of View setting.
 pub(super) fn camera_values(matrix: &SkeletonRootMatrix, fov: f32, previous: Option<[f32; 4]>) -> [f32; CAMERA_VALUES] {
     let mut rotation = camera_rotation(matrix);
     if previous.is_some_and(|previous| previous.iter().zip(&rotation).map(|(a, b)| a * b).sum::<f32>() < 0.0) {
@@ -152,7 +153,8 @@ pub(super) fn camera_values(matrix: &SkeletonRootMatrix, fov: f32, previous: Opt
 pub(super) struct RemoteCamera {
     /// The camera matrix: its axes, then its position.
     pub(super) matrix: [f32; 16],
-    /// The vertical field of view in degrees.
+    /// The camera frame's vertical field of view in degrees, before any console's Field of View
+    /// setting.
     pub(super) fov: f32,
 }
 

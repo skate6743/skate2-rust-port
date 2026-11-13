@@ -47,6 +47,8 @@ pub struct MotionAnimation {
     settable: SettableAttributes,
     tree_attributes: Vec<AnimationAttribute>,
     property: AdvanceResult,
+    /// Creation order of the transitions `play` makes (Andale::TransitionStore's time order).
+    transition_serial: u64,
 }
 impl MotionAnimation {
     #[cfg(any())]
@@ -124,6 +126,7 @@ impl MotionAnimation {
                 overshoot: -1.0,
                 remaining_before_wrap: -1.0,
             },
+            transition_serial: 0,
         }
     }
     ///Share the already loaded stock hierarchy with playback; no frame reload.
@@ -382,6 +385,82 @@ fn has_transition(tree: &PlaybackTree) -> bool {
         _ => false,
     }
 }
+/// Andale::TransitionStore (ctor 0x82D17370): mMaxNumTransitionBlends 3, mMaxNumTrees 4.
+const MAX_TRANSITION_BLENDS: usize = 3;
+const MAX_TREES: usize = 4;
+
+/// The store's live transitions (those `play` made), each with whether it is a blend (kind 2 or
+/// 3; kind 4 is a Sequence).
+fn store_entries(tree: &PlaybackTree) -> Vec<(u64, bool)> {
+    fn collect(tree: &PlaybackTree, out: &mut Vec<(u64, bool)>) {
+        if let PlaybackTree::Transition(transition) = tree {
+            if transition.serial != 0 {
+                out.push((transition.serial, transition.settings.kind != 4));
+            }
+            collect(&transition.from, out);
+            collect(&transition.to, out);
+        }
+    }
+    let mut out = Vec::new();
+    collect(tree, &mut out);
+    out
+}
+
+/// TU3 Andale::Animatable::TransitionAnim 0x82D18780..7CC, before a new tree is made: a blend
+/// or channel blend (eTransType 1 or 2) first completes the oldest blend when the store holds
+/// mMaxNumTransitionBlends; then any transition completes the oldest transition when the store
+/// holds mMaxNumTrees - 1. Fast grabs stack Into/Out/Cycle blends faster than they finish, so
+/// without this the oldest blends keep weighting the pose and every reach stays shallow.
+fn release_for_capacity(mut tree: PlaybackTree, kind: u32) -> PlaybackTree {
+    if matches!(kind, 2 | 3) {
+        let blends: Vec<u64> = store_entries(&tree).into_iter().filter(|e| e.1).map(|e| e.0).collect();
+        if blends.len() >= MAX_TRANSITION_BLENDS && let Some(&oldest) = blends.iter().min() {
+            tree = force_release(tree, oldest);
+        }
+    }
+    let entries = store_entries(&tree);
+    if entries.len() >= MAX_TREES - 1 && let Some(oldest) = entries.iter().map(|e| e.0).min() {
+        tree = force_release(tree, oldest);
+    }
+    tree
+}
+
+/// ForceTransitionRelease 0x82D18658: the transition's parent (or the root) takes its
+/// destination at once; its source subtree, with any transitions in it, is released.
+fn force_release(tree: PlaybackTree, serial: u64) -> PlaybackTree {
+    match tree {
+        PlaybackTree::Transition(transition) if transition.serial == serial => *transition.to,
+        PlaybackTree::Transition(mut transition) => {
+            transition.from = Box::new(force_release(*transition.from, serial));
+            transition.to = Box::new(force_release(*transition.to, serial));
+            PlaybackTree::Transition(transition)
+        }
+        other => other,
+    }
+}
+
+/// The youngest store transition's destination becomes the source of the new transition.
+fn insert_under(
+    tree: &mut PlaybackTree,
+    youngest: u64,
+    new: &mut Option<(PlaybackTree, skate3_core::animation::playback::TransitionSettings, u64)>,
+) {
+    let PlaybackTree::Transition(transition) = tree else { return };
+    if transition.serial == youngest {
+        if let Some((to, settings, serial)) = new.take() {
+            let from = std::mem::replace(&mut *transition.to, to.clone());
+            let mut inserted = PlaybackTransition::new(from, to, settings);
+            inserted.serial = serial;
+            *transition.to = PlaybackTree::Transition(inserted);
+        }
+        return;
+    }
+    insert_under(&mut transition.from, youngest, new);
+    if new.is_some() {
+        insert_under(&mut transition.to, youngest, new);
+    }
+}
+
 fn prune(tree: PlaybackTree) -> PlaybackTree {
     match tree {
         PlaybackTree::Transition(mut transition) => {
@@ -495,7 +574,7 @@ impl PlaybackService for MotionAnimation {
         };
         let mut tree = self.add_bind_pose(motion, posture)?;
         tree.set_speed(request.speed);
-        let prior = self.current.take();
+        let prior = self.current.take().map(|prior| release_for_capacity(prior, request.transition.kind));
         //82D186F8's no-current branch calls Play with start0.
         if settled_spawn {
             // Original SpawnDismount ends standing. A marker/map arrival uses
@@ -509,26 +588,22 @@ impl PlaybackService for MotionAnimation {
         }
         self.current = Some(match prior {
             Some(mut from) => {
-                if request.transition.under != 0 {
-                    if let PlaybackTree::Transition(transition) = &mut from {
-                        let to = std::mem::replace(&mut transition.to, Box::new(tree.clone()));
-                        transition.to = Box::new(PlaybackTree::Transition(
-                            PlaybackTransition::new(*to, tree, request.transition),
-                        ));
-                        from
-                    } else {
-                        PlaybackTree::Transition(PlaybackTransition::new(
-                            from,
-                            tree,
-                            request.transition,
-                        ))
+                self.transition_serial += 1;
+                let serial = self.transition_serial;
+                // TU3 TransitionAnim 0x82D18950/0x82D188A8: with a live transition, a transition
+                // placed under goes below the youngest one, from its destination.
+                let youngest = store_entries(&from).into_iter().map(|(serial, _)| serial).max();
+                let mut new = Some((tree, request.transition, serial));
+                if let Some(youngest) = youngest.filter(|_| request.transition.under != 0) {
+                    insert_under(&mut from, youngest, &mut new);
+                }
+                match new {
+                    None => from,
+                    Some((tree, settings, serial)) => {
+                        let mut transition = PlaybackTransition::new(from, tree, settings);
+                        transition.serial = serial;
+                        PlaybackTree::Transition(transition)
                     }
-                } else {
-                    PlaybackTree::Transition(PlaybackTransition::new(
-                        from,
-                        tree,
-                        request.transition,
-                    ))
                 }
             }
             None => tree,

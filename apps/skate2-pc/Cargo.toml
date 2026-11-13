@@ -18,6 +18,7 @@ pollster = "=0.3.0"
 jpeg-encoder = "=0.7.1"
 jpeg-decoder = { version = "=0.3.2", default-features = false }
 rayon = "=1.12.0"
+mimalloc = { version = "=0.1.52", default-features = false }
 chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
 sdl3 = { version = "=0.20.0", features = ["build-from-source-static"] }
 rfd = { version = "=0.17.2", default-features = false }

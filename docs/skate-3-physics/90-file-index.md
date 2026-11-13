@@ -4,9 +4,9 @@ Generated from the source by reading each file's own module documentation (`//!`
 type names; files without module docs list their first functions. Paths are relative to the
 repository root. *(tests)* marks unit tests, probes and fixtures.
 
-- Skate 3 physics module: 428 files
-- Integration layer: 42 files
-- Skate 2 systems carrying Skate 3 behaviour: 84 files
+- Skate 3 physics module: 442 files
+- Integration layer: 44 files
+- Skate 2 systems carrying Skate 3 behaviour: 86 files
 
 ## 1. The Skate 3 physics module (`crate::skate3_native`)
 
@@ -16,7 +16,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 
 - **`animation.rs`** (10 lines)
   - fns: `native_matrix`
-- **`animation_pose.rs`** (217 lines): Production animation command evaluator. File IO and buffer ownership are host services; frame selection, trajectory and pose math live in core.
+- **`animation_pose.rs`** (321 lines): Production animation command evaluator. File IO and buffer ownership are host services; frame selection, trajectory and pose math live in core.
   - types: `PoseEvaluator`
 - **`camera.rs`** (24 lines): Normal gameplay camera rendering endpoint. Simulation owns the cadence of CameraRuntime::advance after its complete physical/animation publication.
 - **`crash_context.rs`** (19 lines): Infrequent, allowlisted snapshots: no player names, addresses or lobby credentials.
@@ -34,13 +34,13 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
   - types: `Span`, `Transform`
 - **`modding.rs`** (32 lines)
   - types: `JointOverride`, `NativeBodyRef`, `PartOverride`
-- **`physics.rs`** (519 lines): Host game physics ownership and schedule. Physical calculations stay in core.
+- **`physics.rs`** (523 lines): Host game physics ownership and schedule. Physical calculations stay in core.
   - types: `Skate3PhysicsState`, `SimulationExchange`
 - **`scoring_runtime.rs`** (5 lines): TU3 RotationTracker (82DAC880/82DAC9D0), as AirCollector::UpdateSpinMetric 82DA8BE0 drives it. The Skate 2 ScoreModule scores Skate 3 mode; this keeps only its rotation frames.
 - **`skate_world.rs`** (439 lines): Collision calculation port; Skate 2 owns all world rendering.
-- **`skater_animation.rs`** (399 lines): The skater's stock graph -> tree -> pose -> physics-packet owner. Physical observations come from the preceding completed simulation output.
+- **`skater_animation.rs`** (494 lines): The skater's stock graph -> tree -> pose -> physics-packet owner. Physical observations come from the preceding completed simulation output.
   - types: `AnimationSource`, `AnimationPhysical`, `SkaterAnimation`
-- **`world_types.rs`** (679 lines): Host boundary for the original production tick, with caller-owned scene data.
+- **`world_types.rs`** (684 lines): Host boundary for the original production tick, with caller-owned scene data.
   - types: `RawController`, `SceneTriangle`, `SceneTriangleFeatures`, `SceneRail`, `HostGrindSegment`, `HostGrindAsset`, `Scene`, `BodyOutput`, `SkeletonPartOutput`, `FrameOutput`
 
 ### `crates/skate2-core/src/physics/modes/skate3/animation_pose/`
@@ -83,7 +83,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 
 ### `crates/skate2-core/src/physics/modes/skate3/graph_host/`
 
-- **`action.rs`** (469 lines): Typed ActionGraph registration and persistent operation instances. The schedule and concrete gameplay sinks are owned by the caller.
+- **`action.rs`** (483 lines): Typed ActionGraph registration and persistent operation instances. The schedule and concrete gameplay sinks are owned by the caller.
   - types: `PhysicalConditions`, `ActionHost`
 - **`action_board_adjust.rs`** (40 lines): TU3 BoardAdjust instance+8/+12, Begin82BA2BA8, Update82BA2BC8.
   - types: `State`
@@ -93,15 +93,15 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
   - types: `Parameter`, `ActionOperation`, `ActionInstance`, `ActionFactoryError`, `ActionFactory`, `UnsupportedOperation`, `ActionInstances`
 - **`condition_nodes.rs`** (152 lines): Stock condition attributes bound to core evaluations. Values use the binary float/bool encodings directly, including constructor precedence and defaults.
 - **`crouching_settings.rs`** (18 lines): anim_motion/crouching (global300) and auto_pump (global348), TU3 schema.
-- **`mod.rs`** (63 lines): Production graph host building blocks. Root owns schedule and registration.
-- **`motion.rs`** (439 lines)
+- **`mod.rs`** (64 lines): Production graph host building blocks. Root owns schedule and registration.
+- **`motion.rs`** (444 lines)
   - types: `MotionPhysical`, `MotionHost`; fns: `end_gesture_channels`, `from_graph`, `accept_action_graph`, `run`, `condition_activation`, `context`, `allocate`, `begin`
 - **`motion_air_dismounting.rs`** (64 lines): TU3 AirDismounting Begin82BB93E0, Update82BB94C0, empty End82B61BB8.
   - types: `State`
 - **`motion_air_execute.rs`** (101 lines): Original airborne MotionGraph lifecycles on the production host.
 - **`motion_air_leg.rs`** (47 lines): Stock ControlAirLegExtension configuration82BAF450 and settings Globals336.
   - types: `Operation`
-- **`motion_animation.rs`** (550 lines): Stock tree ownership and persistent playback used directly by MotionHost.
+- **`motion_animation.rs`** (625 lines): Stock tree ownership and persistent playback used directly by MotionHost.
   - types: `MotionAnimation`
 - **`motion_bump.rs`** (32 lines): SetBumpCoefficients Begin82BB0660, original Skate 3 TU3.
   - types: `Settings`
@@ -109,18 +109,18 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
   - types: `Channel`, `MotionChannels`, `FakieHead`
 - **`motion_character_gesture.rs`** (347 lines): Original CharacterGesture82BAA320, instance82BAADD0 and helpers 82BAAFB0/82BAB080/82BAB258/82BAAED8. Allocation and channel names are owned here; the original entry/cycle/exit decisions and channel timing are kept.
   - types: `CharacterGestureInputs`, `GesturePublication`, `CharacterGesture`
-- **`motion_conditions.rs`** (455 lines): Concrete MotionGraph condition leaves and stock attributes.
+- **`motion_conditions.rs`** (462 lines): Concrete MotionGraph condition leaves and stock attributes.
   - types: `MotionCondition`
 - **`motion_execute.rs`** (142 lines)
   - fns: `execute`
-- **`motion_execute_leaf.rs`** (691 lines)
+- **`motion_execute_leaf.rs`** (709 lines)
   - fns: `execute`
 - **`motion_fakie_hold.rs`** (83 lines): Trainer gates for the stock automatic fakie-to-switch animation transitions. FakieTurn is player steering and must never be suppressed by this option.
   - types: `Tree`
 - **`motion_filter_execute.rs`** (40 lines): Live stock intent filtering shares the existing MotionAnimation maps.
 - **`motion_finger_flip.rs`** (82 lines): FingerFlipOut: TU3 Begin82BB3198, Update82BB7C40, empty End82B61BB8.
   - types: `Settings`, `State`
-- **`motion_gameplay_conditions.rs`** (276 lines): Original TU3 physical-state condition leaves used by the stock MotionGraph.
+- **`motion_gameplay_conditions.rs`** (315 lines): Original TU3 physical-state condition leaves used by the stock MotionGraph.
   - types: `GameplayConditions`, `GameplayCondition`
 - **`motion_grind.rs`** (159 lines): Original S3 grind graph lifecycle, using the current animation owner. No animation choice, physical-state transition or synthetic observation.
   - types: `Operation`, `State`, `Physical`
@@ -132,7 +132,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
   - types: `Settings`, `State`
 - **`motion_hooks.rs`** (33 lines): Native MotionGraph transition hooks, dispatched by the stock controller.
   - types: `MotionHook`
-- **`motion_instances.rs`** (118 lines): Per-node allocation retained by the production MotionHost.
+- **`motion_instances.rs`** (130 lines): Per-node allocation retained by the production MotionHost.
   - types: `Instance`
 - **`motion_intent_filter.rs`** (73 lines): Stock FilterMotionGraphIntent constructor and map lifecycle adapter.
   - types: `Operation`
@@ -159,6 +159,8 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
   - types: `Operation`, `Names`
 - **`motion_shove.rs`** (234 lines): Original TU3 Shove constructor82BBCCF0, Begin82BBCDD0, Update82BBCDF0 and End82BBD540. The host owns channels and graph values.
   - types: `ShoveOperation`, `ShovePhysical`, `ShoveState`
+- **`motion_skitching.rs`** (283 lines): The TU3 skitching leaves of the MotionGraph: EnterSkitchingBehaviour (Begin 0x82BBC538, Update 0x82BBC5E0), SkitchingBehaviour (Begin 0x82BBC2D8, Update 0x82BBC390), SkitchShimmyingBehaviour (Begin 0x82BBC7C8, Update 0x82BBC858, End 0x82BBCAB8) and the conditions IsSkitchingWithAbsorb 0x82BBBD00, SkitchingPosition 0x82BBC068 and IsSkitchShimmying 0x82BBC1A0. All read the anim_skitching default collection.
+  - types: `Settings`, `Physical`, `Enter`, `Holding`
 - **`motion_sliding.rs`** (252 lines): PowerSliding Update82BB28E8, instance82BB2D70 and helper82595930.
   - types: `Settings`, `Operation`, `State`
 - **`motion_sliding_execute.rs`** (140 lines): Production lifecycle for the authored slide family; no detached state copies.
@@ -167,7 +169,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`motion_stock_conditions.rs`** (80 lines): Recovered stock predicates using completed physical publications. Unsupported archive guesses are deliberately left to the graph's diagnostic path.
   - types: `Condition`
 - **`motion_stock_execute.rs`** (89 lines): Imported grab/tweak and moving-object registry behavior dispatch.
-- **`motion_stock_gameplay.rs`** (177 lines): Typed bindings for the remaining stock MotionGraph gameplay operations.
+- **`motion_stock_gameplay.rs`** (184 lines): Typed bindings for the remaining stock MotionGraph gameplay operations.
   - types: `GrabType`, `Operation`
 - **`motion_toggle_board.rs`** (224 lines): TU3 ToggleBoard82BA8FD8/82BA8FE8, retrieval82BA9310/82BA9E20, drop82BA9990. Instance and channel clocks remain owned by the graph.
   - types: `Physical`, `ToggleBoard`
@@ -199,7 +201,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`animation_owner.rs`** (38 lines): Compile as a child of motion_animation, NOT motion_grind, so the real owner's private current tree stays private. See the module line in handoff.
 - **`animation_owner_tests.rs`** (85 lines) *(tests)*
   - fns: `owner`, `actual_motion_animation_adapter_uses_live_queue_root_and_packet_owner`, `actual_owner_missing_tree_is_an_error_not_fabricated_endpoints`
-- **`conditions.rs`** (61 lines): Original S3 graph predicates. Producers and shared dispatch are external.
+- **`conditions.rs`** (65 lines): Original S3 graph predicates. Producers and shared dispatch are external.
   - types: `Condition`, `Physical`
 - **`settings.rs`** (27 lines)
   - types: `Settings`; fns: `load`
@@ -208,7 +210,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 
 ### `crates/skate2-core/src/physics/modes/skate3/graph_host/motion_grind/tests/`
 
-- **`conditions.rs`** (51 lines) *(tests)*
+- **`conditions.rs`** (52 lines) *(tests)*
   - fns: `physical`, `conditions_use_their_actual_fields_not_a_shared_grinding_proxy`, `approach_case_folds_facing_but_trick_out_type_uses_exact_strings`
 - **`fixture.rs`** (105 lines) *(tests)*: Independent synthetic data, using the genuine core playback pipeline.
   - types: `Owner`
@@ -304,7 +306,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`host.rs`** (130 lines): Native host assets through the existing source loose-octree/contact path.
 - **`octree.rs`** (151 lines): Original S3 loose octree insertion/query order, 82AD6830/82476158. Host-owned nodes retain native head insertion, split redistribution and LIFO candidate traversal because result capacity is observably bounded.
   - types: `Bounds`, `Bucket`, `Node`, `Octree`
-- **`provider.rs`** (204 lines): Static stock assets only. Registration follows package source occurrence order; native octree order is retained within each registered section.
+- **`provider.rs`** (212 lines): Static stock assets only. Registration follows package source occurrence order; native octree order is retained within each registered section.
   - types: `SourceIdentity`, `Asset`, `StaticProvider`
 - **`spline.rs`** (147 lines): User-authorized ZIP spline adapter, checked against original TU3 82C1E568, 82C1E6C0, 82C1EEF0 and 82C1F098 in default.patched.xex (431b8eba...). Keep the native cubic payload; the game's contact primitive is its chord D -> (A+B)+(C+D), including for retail cubic segments.
   - types: `PrimitiveMetadata`
@@ -347,16 +349,16 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`animation_feedback.rs`** (76 lines): Persistent physical-to-animation conditioning with stock collection values.
   - types: `AnimationFeedback`
 - **`animation_feedback_settings.rs`** (61 lines): PhysOutConditioner_Animation turn settings, TU3 global204/physics_animation.
-- **`animation_grind.rs`** (125 lines): Completed physical publication -> both stock graphs. No state selection.
+- **`animation_grind.rs`** (126 lines): Completed physical publication -> both stock graphs. No state selection.
 - **`animation_grind_tests.rs`** (83 lines) *(tests)*: Independent publication tests; these do not simulate physical producers.
 - **`animation_input.rs`** (174 lines): Animation attributes become owned physical inputs through the actual Skeleton dispatcher. This adapter loads stock settings and retains caches; it does not choose animations or manufacture a push from controller input.
   - types: `AudioEvents`, `AnimationInput`
-- **`animation_phase.rs`** (511 lines): The production physical-output -> stock graph -> next physical-input phase. Native actor phases82592FD8/82593128/82593230/82593640 preserve this order.
+- **`animation_phase.rs`** (532 lines): The production physical-output -> stock graph -> next physical-input phase. Native actor phases82592FD8/82593128/82593230/82593640 preserve this order.
 - **`animation_phase_packet.rs`** (199 lines): Owned PlayerInput packet storage; original actor publication825937EC.
   - types: `AnimationProfile`, `AnimationPhaseOutput`
-- **`biped_air.rs`** (105 lines): Distinct State501 lifecycle: original S3 82D2E5C0/EF38/FFF8/30300/EF20.
+- **`biped_air.rs`** (106 lines): Distinct State501 lifecycle: original S3 82D2E5C0/EF38/FFF8/30300/EF20.
   - types: `BipedAir`
-- **`biped_ground.rs`** (528 lines)
+- **`biped_ground.rs`** (538 lines)
   - types: `PushingFollow`, `Owner`; fns: `finish_reckoning`, `air_settings`, `turn_vs_speed`, `load`, `reset`, `follow`, `follow_result`, `run`
 - **`boneless.rs`** (140 lines): Physical state602, TU3 vtable82327434. Stock no-comply/boneless/fastplant animations select this state with AnimSkateboard and launch with FootJump.
   - types: `Boneless`, `LaunchInput`, `LaunchOutput`
@@ -376,6 +378,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
   - types: `TickGuard`
 - **`dev_trace_buffer.rs`** (59 lines): Bounded development-only flight recorder. No disk writes during healthy ticks.
   - types: `Buffer`
+- **`drop_in_trace.rs`** (108 lines): Drop-in diagnostics, after the solve and before the outputs reset: - `SKATE2_TRACE_SKATE3_EDGES=<tick>:<radius>`: at that physics tick, one `edge3` line per grind primitive whose chord passes within the radius (metres, horizontally) of the deck, nearest first, with its chord ends and that distance; for finding a coping to drop in from. - `SKATE2_TRACE_SKATE3_DROP_IN_TICKS`: one `dropin3` line per tick: the...
 - **`foot_ik.rs`** (225 lines): Physical skeleton IK data binding. This is the production skeleton's IK owner, using authored physics volumes and the real reparented animation targets.
   - types: `FootIk`, `PhysicalInput`, `DriveOutput`
 - **`foot_ik_queries.rs`** (186 lines): PhysicalPlayerHiLOD StartSkeletonLineTests82DB63C0 / result publication 82DB6580. These are radius-bearing trajectory tests from actual physical parts.
@@ -384,7 +387,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
   - types: `FootPhysicalOutputs`
 - **`footplant.rs`** (158 lines): FootPlantManager state, original TU3 inline ctor82DB217C and Reset82D6F440. Query results are retained separately from pending query ownership.
   - types: `Footplant`
-- **`frame.rs`** (406 lines): One production tick: controller graphs, physical input/state, shared solve, physical animation output and the normal gameplay camera.
+- **`frame.rs`** (418 lines): One production tick: controller graphs, physical input/state, shared solve, physical animation output and the normal gameplay camera.
   - types: `PreparedFrame`
 - **`grind.rs`** (56 lines): ZIP grind runtime split into source-closed components against CURRENT APIs. Physical acquisition remains with the input manager. The retained runtime owns family state, body operations and publication, never candidate selection.
   - types: `Family`
@@ -401,12 +404,14 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
   - types: `Name`
 - **`grind_trick.rs`** (201 lines): TU3 PHYSICS_STATE_GRIND_TRICK202, vtable82327174, owner PhysicalPlayer+1716. Enter82D335F8, Exit82D33678, Update82D336F8, board82D33928, post82D33A70. FillPhysOut is empty; PredictFutureOfDeck shares82D34DA8.
   - types: `GrindTrick`
-- **`ground.rs`** (274 lines): Our level geometry, queried with the recovered physics/world calculations.
+- **`ground.rs`** (281 lines): Our level geometry, queried with the recovered physics/world calculations.
   - types: `Terrain`
 - **`ground_animation.rs`** (90 lines): GroundAnimation103 lifecycle82D33BF8/33DB8/33C70/34150, original Skate3TU3.
   - types: `GroundAnimationRuntime`
 - **`ground_exit.rs`** (24 lines): Complete PhysicsGround Exit82D37B20, on the real board and controller owners.
-- **`ground_phase.rs`** (302 lines): Production Ground entry82D37538 and update82D37C88/82D38800. State selection belongs to the player coordinator. This phase consumes its current processed packet and changes the same board that the solver advances.
+- **`ground_grab.rs`** (214 lines): PhysicsGround::CheckForGrabbableObject (`0x82D39BB8`) and ConsiderGrabSplineQueryResults (`0x82D39D98`): while the world-grab intent (ProcessedPhysIn+2476 bit 22) is held on board, the SAME PlayerGrabSpline owner as the off-board grab queries every grabbable spline around the centre of mass (type 0xFF: vehicles, then dynamic objects), and the first validated one the skater reaches in time becomes the skitch...
+  - types: `Settings`
+- **`ground_phase.rs`** (306 lines): Production Ground entry82D37538 and update82D37C88/82D38800. State selection belongs to the player coordinator. This phase consumes its current processed packet and changes the same board that the solver advances.
   - types: `GroundEdge`, `GroundLifecycle`
 - **`handplant.rs`** (316 lines): TU3 HandPlantManager82D61040 and physical state600 (823273CC).
   - types: `Handplant`
@@ -425,18 +430,18 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`player_state.rs`** (181 lines): PhysicalPlayer startup, PostInput, state selection and state publication. Native control decisions use original TU3 functions and stock collections; host ownership replaces the original player component pointers.
   - types: `PlayerState`
 - **`render_pose.rs`** (97 lines): Finish the actual physical pose and publish it to the single render skin. Call after collision/error/COM output and before the next animation update.
-- **`respawn.rs`** (477 lines): TU3 actor checkpoint manager, bound to the single-player static scene.
+- **`respawn.rs`** (503 lines): TU3 actor checkpoint manager, bound to the single-player static scene.
   - types: `Runtime`, `Settings`, `RespawnHost`, `LivingWorldRadii`, `Scene`
 - **`revert_state.rs`** (270 lines): RevertGround102, TU3 vtable82327330: Enter82D43488, Update82D43518, empty Exit, Ground Post82D4C070, Fill82D43B10. Stock layout018E8A2E5028AB3F.
   - types: `RevertState`
-- **`riding_outputs.rs`** (392 lines): Live board/query/solver outputs used by the riding gameplay owner. Physical calculations stay in core; this owns stock settings and scheduling state. Solved contacts and line probes remain distinct native inputs.
-  - types: `RidingPoseInputs`, `RidingOutputs`
-- **`settings.rs`** (160 lines): Stock skater XML values bound to the recovered physical calculations.
+- **`riding_outputs.rs`** (433 lines): Live board/query/solver outputs used by the riding gameplay owner. Physical calculations stay in core; this owns stock settings and scheduling state. Solved contacts and line probes remain distinct native inputs.
+  - types: `RidingPoseInputs`, `GroundReckoningJob`, `RidingOutputs`
+- **`settings.rs`** (191 lines): Stock skater XML values bound to the recovered physical calculations.
   - types: `PhysicsSettings`
 - **`shove_probe.rs`** (186 lines) *(tests)*: TU3 `PhysicalPlayerHiLOD` 0x82db3ce8's shove probe (0x82d7a440), the pass before `Update1_ProcessInput` copies it to Processed+1792 and resets it (0x82d7a330). While the shove behaviour holds state flag 86 it finds a pedestrian within reach of the hands (`LivingWorld::Manager` 0x826bed80, answered by the host) and tests it against the strike zone (0x82d7a770). Every other skater is a type 1 target first...
   - types: `ShoveFrame`, `ShovePedestrian`, `ShoveSkater`, `ShoveHit`, `ShoveProbe`
 - **`skateboard_controller.rs`** (13 lines): Actual hand-controller lifecycle and board contact producer binding.
-- **`skater.rs`** (385 lines): The game's single skater: stock graph animation and its physical skeleton. Loading creates the real bodies from the animator's initial evaluated pose.
+- **`skater.rs`** (402 lines): The game's single skater: stock graph animation and its physical skeleton. Loading creates the real bodies from the animator's initial evaluated pose.
   - types: `Skate3ControllerState`
 - **`skeleton_air.rs`** (179 lines): Production animated-board and COM-controlled air Skeleton updates. Original TU3 82BDDA10 / 82BDE600. All owners are the same objects used by ProcessData, GeneralUpdate, the shared solve and final pose publication.
   - types: `SkeletonAir`
@@ -446,7 +451,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`skeleton_colliders.rs`** (114 lines): Bind original physical skater shapes to the bodies receiving solver reactions. The collision owner selects enabled parts and materials; shapes and local-Z capsule axes come from the same stock definition used to construct each part.
 - **`skeleton_controller.rs`** (85 lines): Shared collision-policy controller used by Ground and both Air states. Requests82D911A8 and ascending/falling update82D91660 precede the solve.
   - types: `SkeletonControllerState`
-- **`skeleton_feedback.rs`** (374 lines): Post-solver contact reports and physical/animation errors for the live skater. Engine report storage is ours; spy arithmetic and report order are native.
+- **`skeleton_feedback.rs`** (377 lines): Post-solver contact reports and physical/animation errors for the live skater. Engine report storage is ours; spy arithmetic and report order are native.
   - types: `HostContact`
 - **`skeleton_grind_air.rs`** (48 lines): 82BDCFB0 at the existing ProcessData boundary; never a physical teleport.
 - **`skeleton_input_general.rs`** (152 lines): Movement-phase continuation of the original Skeleton input owner.
@@ -455,13 +460,16 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`skeleton_input_teleport.rs`** (92 lines): Actual teleport skeleton stages82BE3508 and82BDF7C0. The player owns the intervening ResetSystems and ProcessData calls; this is the same skeleton.
 - **`skeleton_output.rs`** (178 lines): Production adapter for the original physical-pose job82DB6698/82DB95E8.
   - types: `SkeletonOutput`
+- **`skitching.rs`** (957 lines): PhysState_Skitching (104), TU3 vtable 0x82327398: Enter 0x82D47278, Update 0x82D477C0 (its UpdateSkateboard 0x82D4AC38) and FillPhysOut 0x82D4C078; Exit is empty. The state's own functions are in skitching/; this module feeds them the Skate 3 controller's inputs and applies what they produce: board forces and angular displacements, the hand IK targets, the deck animation offset and the grab messages for the...
+  - types: `Attribs`, `StateConstructorError`, `MatrixSlot`, `Inertia`, `GrabSpline`, `Skitching`, `Output`, `MessageKind`, `Message`, `Angle`
 - **`slide_state.rs`** (67 lines): PhysicsSlideGround101 production lifecycle, original TU3 vtable823285B4.
   - types: `SlideState`
 - **`solid_contacts.rs`** (230 lines): Solid Rapier/native solver boundary. Native bone/board primitives remain native; convex objects are tested with their actual Parry support shapes.
-- **`solve.rs`** (185 lines): One physical solve for the board, skater and original animation targets. The caller publishes forces and drive targets before entering this phase.
+- **`solve.rs`** (203 lines): One physical solve for the board, skater and original animation targets. The caller publishes forces and drive targets before entering this phase.
+- **`spin_trace.rs`** (118 lines): `SKATE2_TRACE_SKATE3_SPIN`: one stderr line per physics tick with everything that sets the body spin, after the solve. Fields: - `lx`, `rx`, `ry`: the derived controller's left X, right X and right Y (what the intents read); - `pbs`, `bs`: the PhysBodySpin and BodySpin attributes (Processed +2812, +2640); - BodySpin (TU3 0x82D8BF58) state: `in` (+120), `f` (+128 flick this tick), `sp` (+140 speed), `pk` (+148...
 - **`startup_check.rs`** (113 lines): Map startup checks for `--validate-maps` (see crate::skate3_native::map_validation). Mirrors the private `map_startup` test: spawn support, deck pose and a short neutral startup must reach supported wheels with finite state. Results are reported, not asserted.
   - types: `StartupReport`
-- **`teleport_state.rs`** (128 lines): Host checkpoint response to original actor reset callback82592518. Shared scheduling preserves request -> next input reply ->702 output -> reset.
+- **`teleport_state.rs`** (188 lines): Host checkpoint response to original actor reset callback82592518. Shared scheduling preserves request -> next input reply ->702 output -> reset.
   - types: `Checkpoint`, `Runtime`
 - **`wipeout.rs`** (167 lines): Shared Ground/Air wipeout requests from original TU3 82D8F9E0/82D90358.
   - types: `Wipeout`
@@ -503,7 +511,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`feet.rs`** (72 lines): Ground-only conditioning82D77330 and history82D775D8 around the shared FeetIK evaluator. Air's per-update timer resets do NOT belong here.
 - **`grab.rs`** (99 lines): Concrete Ground grab decision82D324B0. Query readiness belongs to ONE owner.
   - types: `Input`
-- **`grab_runtime.rs`** (234 lines): PlayerGrabSpline82D73FC0/74270/740F8/749D0, distinct from possession. Scene execution is concrete; retained results become visible only at Sync.
+- **`grab_runtime.rs`** (252 lines): PlayerGrabSpline82D73FC0/74270/740F8/749D0, distinct from possession. Scene execution is concrete; retained results become visible only at Sync.
   - types: `Owner`, `Publication`
 - **`ground_board.rs`** (48 lines): Ground carried-board Update82D31D1C..DB0. State60 is SkateboardController; state52 in Sync82D324B0 is a DIFFERENT grab-spline manager.
 - **`lifecycle.rs`** (116 lines): Ground Post82D32AA0 and complete typed Fill82D32D38/82D785F8. Parent publishes every returned field through the shared output records.
@@ -647,7 +655,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`surface.rs`** (31 lines): Native wheel surface vote82C08818 on live wheel lines and contact reports.
 - **`trajectory.rs`** (23 lines): Ground ordinary tail82D749D0 cancels pending trajectory work and clears published validity. Rust owns the request lifetime; no guest pool is copied.
   - types: `GroundTrajectoryState`
-- **`update.rs`** (167 lines): Ordinary Ground82D37C88 executes persistent controller updates and actual body forces before prediction and IK publication. Ground's handplant query 82D38430 is dispatched by ground_phase through the retained Handplant owner.
+- **`update.rs`** (165 lines): Ordinary Ground82D37C88 executes persistent controller updates and actual body forces before prediction and IK publication. Ground's handplant query 82D38430 is dispatched by ground_phase through the retained Handplant owner.
   - types: `GroundUpdateFrame`, `GroundUpdateTargets`
 
 ### `crates/skate2-core/src/physics/modes/skate3/physics/handplant/`
@@ -679,15 +687,15 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`air_diagnostics.rs`** (93 lines): Bounded numeric history for user-reproduced off-board bails. No per-frame IO.
   - types: `Sample`, `History`
 - **`air_feet.rs`** (108 lines): State56 manager updates real foot targets before Skeleton GeneralUpdate.
-- **`air_selector.rs`** (203 lines): Concrete BipedAir selector host over the canonical BoardWorld. Parent owns the Air facade and phase schedule. Native completion is explicit, so a synchronous fixed-step backend never adds an automatic frame delay.
+- **`air_selector.rs`** (206 lines): Concrete BipedAir selector host over the canonical BoardWorld. Parent owns the Air facade and phase schedule. Native completion is explicit, so a synchronous fixed-step backend never adds an automatic frame delay.
   - types: `AirSelector`
 - **`air_state.rs`** (247 lines): Live BipedAir501 Enter/Update/Exit and FillPhysOut.
 - **`air_trajectory.rs`** (224 lines): Biped trajectory launch/completion through the actual scene query owner.
-- **`board_effects.rs`** (143 lines): Board-controller effects applied to the existing board and hook bodies.
+- **`board_effects.rs`** (149 lines): Board-controller effects applied to the existing board and hook bodies.
   - types: `Policy`, `BoardEffects`
-- **`board_manager.rs`** (181 lines): Persistent SkateboardController adapter, not the grab-spline query manager.
+- **`board_manager.rs`** (190 lines): Persistent SkateboardController adapter, not the grab-spline query manager.
   - types: `Owner`, `Transition`
-- **`board_possession.rs`** (165 lines): Live board controller adapter. The caller borrows the existing board and state448 owners; this module never advances a second physics island.
+- **`board_possession.rs`** (171 lines): Live board controller adapter. The caller borrows the existing board and state448 owners; this module never advances a second physics island.
   - types: `VolumeFlags`, `Materials`, `Effects`
 - **`collision_settings.rs`** (19 lines): Stock physics_wipeout fields consumed by Biped collision check82D90148. Retain this once with the physical player's off-board settings.
 - **`contact_queries.rs`** (103 lines): Scene boundary for the recovered BipedToolkit probe layout. The pending packet owns observations; the world's geometry and acceleration tree stay shared.
@@ -696,14 +704,14 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 - **`feet.rs`** (72 lines): State56 manager updates real foot targets before Skeleton GeneralUpdate.
 - **`grab_scene.rs`** (93 lines): Stateless offboard grab-scene execution over explicitly authored objects. Ground owns pending/completion, validation and selection; this owns no ticks.
   - types: `MeshAssembly`, `HostLines`, `Registry`, `Scene`
-- **`ground_geometry.rs`** (83 lines): Ground Sync submits edge geometry; the next PreUpdate consumes its result.
+- **`ground_geometry.rs`** (84 lines): Ground Sync submits edge geometry; the next PreUpdate consumes its result.
   - types: `State`
 - **`ground_input.rs`** (76 lines): PreUpdate82D30D30 inputs borrowed from their completed production owners.
-- **`ground_query.rs`** (83 lines): Borrowed scene adapter for original Biped query82764AB0/82770650/82C1EAD8. All geometry and live transforms belong to the canonical collision scene.
+- **`ground_query.rs`** (86 lines): Borrowed scene adapter for original Biped query82764AB0/82770650/82C1EAD8. All geometry and live transforms belong to the canonical collision scene.
   - types: `Bounds`, `Mesh`, `Segment`, `EdgeBody`, `AlternateRecord`, `PrimaryEdges`, `IndexedEdgeBody`, `Scene`
 - **`ground_state.rs`** (283 lines): BipedGround's live Enter, ground job, Sync and Exit owners.
   - types: `Services`
-- **`ground_sync.rs`** (60 lines): Host side scene service for the recovered BipedGround synchronizer.
+- **`ground_sync.rs`** (63 lines): Host side scene service for the recovered BipedGround synchronizer.
   - types: `SceneService`
 - **`hand_drives.rs`** (154 lines): Native SkateboardController drives82D74FD8 /82D751D8 in the shared island. Factory82AE64F8 stores argument5 at drive16 (A), argument4 at20 (B): hand bodies3/7 are A and the deck is B, despite the factory argument order.
 - **`landing_deck.rs`** (120 lines): Offboard host for original LandingOnDeckManager82D78B28..82D79E30. One retained manager and real scene-query completion; no physical-state facade.
@@ -733,7 +741,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 
 ### `crates/skate2-core/src/physics/modes/skate3/physics/offboard/board_manager/`
 
-- **`runtime.rs`** (302 lines): Live bindings for TU3 SkateboardController, 82DB6150 and 82D76D20.
+- **`runtime.rs`** (307 lines): Live bindings for TU3 SkateboardController, 82DB6150 and 82D76D20.
   - types: `LiveState`
 - **`tests.rs`** (320 lines) *(tests)*: Adapter tests use synthetic physical parameters, not stock parity fixtures. They check writes to actual BoardRuntime bodies/drives rather than a call log.
 
@@ -746,7 +754,7 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 
 - **`tests.rs`** (259 lines) *(tests)*
   - fns: `plane`, `input`, `actual_world_hit_preserves_mesh_identity_and_packed_surface`, `nonfinite_unused_lane_preserves_sweep_hits_but_invalid_xyz_still_fails`, `mesh_filter_is_not_a_board_flag_or_material_tag`, `canonical_world_reaches_completed_analyzer_without_substitute_support`, `toolkit_refuses_world_without_authored_query_metadata`, `embedded_static_rwcm_hits_distinct_actor_query_ids`
-- **`world.rs`** (418 lines): 82770B40/82771D08 mesh traversal and82770E00/82772028 nearby collection. Authored map pools plus the host's immutable solid moving-geometry provider.
+- **`world.rs`** (445 lines): 82770B40/82771D08 mesh traversal and82770E00/82772028 nearby collection. Authored map pools plus the host's immutable solid moving-geometry provider.
   - types: `StaticScene`
 
 ### `crates/skate2-core/src/physics/modes/skate3/physics/offboard/grab_scene/`
@@ -755,15 +763,15 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 
 ### `crates/skate2-core/src/physics/modes/skate3/physics/offboard/ground_query/`
 
-- **`edges.rs`** (72 lines)
-  - fns: `append`, `body`, `candidates`
+- **`edges.rs`** (142 lines)
+  - fns: `append`, `body`, `candidates`, `rail`, `the_edge_query_returns_the_grind_segments_in_its_box`
 - **`lines.rs`** (108 lines)
   - fns: `query`, `query_pools`
 - **`tests.rs`** (288 lines) *(tests)*
   - fns: `indexed_edges_sort_ids_and_preserve_shared_capacity`, `decoded_face_uses_world_vertices_and_inclusive_bounds`, `triangle`, `packet`, `mesh`, `actual_triangle_queries_preserve_pool_ties_group_filter_and_conditional_gate`, `canonical_world_bridge_requires_metadata_and_queries_authored_surfaces`, `indexed_world_bridge_retains_group_pool_and_conditional_selection`
 - **`transform.rs`** (67 lines)
   - fns: `add`, `sub`, `scale`, `madd`, `point`, `bounds`, `overlaps`, `matches`
-- **`world.rs`** (127 lines): Ephemeral adapter over the canonical BoardWorld metadata. Geometry is borrowed.
+- **`world.rs`** (129 lines): Ephemeral adapter over the canonical BoardWorld metadata. Geometry is borrowed.
   - types: `WorldScene`
 
 ### `crates/skate2-core/src/physics/modes/skate3/physics/offboard/landing_deck/`
@@ -831,12 +839,12 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 
 - **`post_input.rs`** (244 lines): Original PostInput82DB5588 with the live ballistic trajectory selector. The authored world has no grind edges or grab-spline descriptors.
   - types: `PostInputState`, `Services`
-- **`pre_state.rs`** (63 lines): Update3_State82DB6050 prefix through grab-spline query synchronization. Ground/Air/KnownAir vtable24 ->82D34DA8 ->82D2D860 predicts from the actual deck part transform and its physical body's linear velocity, with a single VMADD.
-- **`publication.rs`** (286 lines): Selected-state FillPhysOut and common state82DB7580..7790.
-- **`registry.rs`** (137 lines): Coordinator-owned physical state registry.
+- **`pre_state.rs`** (65 lines): Update3_State82DB6050 prefix through grab-spline query synchronization. Ground/Air/KnownAir vtable24 ->82D34DA8 ->82D2D860 predicts from the actual deck part transform and its physical body's linear velocity, with a single VMADD.
+- **`publication.rs`** (296 lines): Selected-state FillPhysOut and common state82DB7580..7790.
+- **`registry.rs`** (140 lines): Coordinator-owned physical state registry.
   - types: `StateCapability`, `StateRegistry`
 - **`selection.rs`** (69 lines): CalcSuggestedState82D8ADE8 gets actual contacts, line distances and pose.
-- **`transition.rs`** (259 lines): Native SetPhysicsState82DB8540 publication, followed by owned Enter/Exit.
+- **`transition.rs`** (263 lines): Native SetPhysicsState82DB8540 publication, followed by owned Enter/Exit.
   - types: `Calls`
 - **`wipeout_output.rs`** (50 lines): Wipeout300 Fill82D3EEE8 writes the shared completed physical packet.
 
@@ -848,6 +856,21 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
   - fns: `ground_reckoning_keeps_retained_dynamic_up_separate_from_wheel_support`
 - **`probes.rs`** (121 lines) *(tests)*: The fifth/sixth board probes, kept in the same query/publication phase as the wheel probes. Geometry is the world's recovered triangle dispatcher.
   - types: `BoardProbes`, `Pending`
+
+### `crates/skate2-core/src/physics/modes/skate3/physics/skitching/`
+
+- **`contact.rs`** (128 lines): Skate 3 Skitching push and brake contact on the grabbed object (no Skate 2 twins): `sub_82D47BD8` and `sub_82D479C8`, run by Update 0x82d47900/0x82d47908 after UpdateDeckAnimOffset. Each force goes to `ApplyForceToGrabSplineObjectDeferred` (grab query manager vtable+0x24), which only moves dynamic objects.
+  - types: `SkitchContactForce`
+- **`deck_offset.rs`** (43 lines): UpdateDeckAnimOffset, Skate 3 0x82d4a0c0 (Skate 2 0x82d96430). At or below the threshold no setter is called.
+- **`follow.rs`** (242 lines): UpdateFollowPoint82d95468. Original fixed-step grip/centrifugal controller.
+- **`forces.rs`** (186 lines): Skitch speed/release force and heading helpers82d966a8..97088/82d9e8d8.
+- **`geometry.rs`** (188 lines): UpdateGrabSpline82d94760: retained current/future frames and chord geometry.
+- **`hands.rs`** (59 lines): UpdateHands82d960e0, preserving the source's scalar FMA boundaries.
+- **`ik.rs`** (191 lines): UpdateHandIK82d9dc58. Uses existing Skeleton hand-target services at the caller.
+  - types: `SkitchIkInput`, `SkitchHandTarget`
+- **`reset.rs`** (109 lines): Skitch Reset82d887f0 (Skate 3 0x82d47318), with its late live attribute read.
+- **`state.rs`** (349 lines): Skitch scalar state transitions:82d88c58/82d88dc8/82d95ce0/82d9da00/82d9e6d0.
+  - types: `SkitchError`, `SkitchControlCvars`, `SkitchExitForce`
 
 ### `crates/skate2-core/src/physics/modes/skate3/physics/slide_state/`
 
@@ -912,6 +935,11 @@ The captured Skate 3 controller/physics code and its additions, compiled inside 
 
 Files that create, drive, feed or read the Skate 3 player from Skate 2's player, assembly, scoring, animation, camera, input and session code.
 
+### `crates/skate2-audio/src/player/`
+
+- **`skate3_mix.rs`** (241 lines): What Skate 3 physics sounds need beyond Skate 2's audio (PC port): TU3's splice voice, which its drop-in and darkcatch sounds play through, and the TU3 mixer channels those sounds read.
+  - types: `Skate3Splice`
+
 ### `crates/skate2-core/src/`
 
 - **`lib.rs`** (885 lines): Platform-neutral contracts for reconstructed Skate 2 systems.
@@ -952,9 +980,9 @@ Files that create, drive, feed or read the Skate 3 player from Skate 2's player,
   - types: `HostGrabs`, `MeshLines`
 - **`skate3_grinds.rs`** (422 lines): Retained Skate 2 spline payloads and source occurrences for the S3 runtime.
   - types: `HostGrinds`, `CachedProp`, `CachedSource`, `ReferenceGrinds`
-- **`skate3_player.rs`** (1837 lines): Live-player owner for the explicitly requested PC simulation mod.
+- **`skate3_player.rs`** (1876 lines): Live-player owner for the explicitly requested PC simulation mod.
   - types: `PreparedPlayerTick`, `PlayerAssets`, `HostTeleport`, `PlayerEntry`, `Skate3Player`
-- **`skate3_pushing.rs`** (356 lines): PC port: TU3 PhysState_OffBoard_Pushing (vtable `0x82327364`) for the Skate 3 physics. Its Enter (`0x82d442d0`), UpdateSpline (`0x82d444a0`), hand IK targets (`0x82d45d30`, `0x82d46218`, `0x82d463d8`) and MoveObject (`0x82d45318`) are Skate 2's `OffBoardPushing` with the pushing cvars at their defaults, so the host runs Skate 2's over the world's DMO grab splines, whose messages the world applies in Update1. TU3...
+- **`skate3_pushing.rs`** (464 lines): PC port: TU3 PhysState_OffBoard_Pushing (vtable `0x82327364`) for the Skate 3 physics. Its Enter (`0x82d442d0`), UpdateSpline (`0x82d444a0`), hand IK targets (`0x82d45d30`, `0x82d46218`, `0x82d463d8`) and MoveObject (`0x82d45318`) are Skate 2's `OffBoardPushing` with the pushing cvars at their defaults, so the host runs Skate 2's over the world's DMO grab splines, whose messages the world applies in Update1. TU3...
   - types: `Inputs`, `HandTargets`, `Pushing`
 - **`skate3_terrain.rs`** (242 lines): Immutable Skate 3 triangle preparation retained by actual Skate 2 arena occurrence. Streaming still chooses every source and its order in Skate 2.
   - types: `PreparedMesh`, `PreparedTerrain`
@@ -989,7 +1017,7 @@ Files that create, drive, feed or read the Skate 3 player from Skate 2's player,
 
 ### `crates/skate2-core/src/physics/player/output/`
 
-- **`physical_player_phys_out_skate3.rs`** (544 lines): Explicit PC mod observer publication. These are completed source-runtime facts for Skate 2 world consumers, never a certificate of a Skate 2 Fill.
+- **`physical_player_phys_out_skate3.rs`** (559 lines): Explicit PC mod observer publication. These are completed source-runtime facts for Skate 2 world consumers, never a certificate of a Skate 2 Fill.
   - types: `Skate3Publication`
 
 ### `crates/skate2-core/src/physics/player/output/conditioning/`
@@ -1002,7 +1030,7 @@ Files that create, drive, feed or read the Skate 3 player from Skate 2's player,
 - **`air_metrics.rs`** (186 lines): AirCollector spin82df4e60, body-flip82df5188 and trajectory82df5340.
 - **`attributes.rs`** (195 lines): Scoring's original generated attribute access paths. Tuning remains in Vault.
   - types: `ScoreError`, `ScoringAttributes`
-- **`skate3_catalog.rs`** (305 lines): Native mod extension: resolve Skate 3 TU3's names into the existing Skate 2 scoring/HUD pipeline. Shared names keep their original Skate 2 identities.
+- **`skate3_catalog.rs`** (328 lines): Native mod extension: resolve Skate 3 TU3's names into the existing Skate 2 scoring/HUD pipeline. Shared names keep their original Skate 2 identities.
 - **`skate3_hom.rs`** (96 lines): TU3 Hall of Meat authored bones and curves. S2 caller offsets are translated by stable field hashes; S3 added curves and moved the shared fields.
   - types: `Tweak`, `Data`
 - **`wipeout_skate3.rs`** (650 lines): TU3 Hall of Meat for Skate 3 physics: WipeoutScorer::Update 82DAE4F0 and the TU3 helpers it calls, over the shared scorer's bones, trackers, air drops and entity scorers. Skate 3 scores the run-up into a bail (air, drop and rotation while airborne), decays repeated bone hits, and adds body-tweak spins and the wipeout response to the bonus.
@@ -1016,7 +1044,7 @@ Files that create, drive, feed or read the Skate 3 player from Skate 2's player,
 ### `crates/skate2-core/src/session/`
 
 - **`selected_player_skate3.rs`** (294 lines): Explicit host selection, without any second player controller or solver.
-- **`selected_player_tick.rs`** (1323 lines): Selected host tick over retained native input, Actor and physical owners. This does not implement the whole Simulation/camera/locomotion schedule.
+- **`selected_player_tick.rs`** (1324 lines): Selected host tick over retained native input, Actor and physical owners. This does not implement the whole Simulation/camera/locomotion schedule.
   - types: `SelectedPlayerTick`, `SelectedTickStage`, `SelectedTickNumerics`, `SelectedTickRequest`, `SelectedQueuedTickInput`, `TickInputMode`, `AdmittedTickInput`, `SelectedTickInputDelivery`, `SelectedQueuedTickOutcome`, `SelectedTickSkater`
 - **`skate3_input_capture.rs`** (68 lines): Observe the same hardware poll used by Skate 2, before conversion/remapping.
   - types: `CapturePad`, `IdlePad`
@@ -1028,6 +1056,11 @@ Files that create, drive, feed or read the Skate 3 player from Skate 2's player,
   - types: `StreamCounts`, `StreamObservations`, `PlayerProbe`
 - **`skate3_prop_lip_corpus.rs`** (120 lines) *(tests)*
 
+### `crates/skate2-core/src/skate3/`
+
+- **`skate3_dlc.rs`** (321 lines): PC port addition: Skate 3's downloadable content, linked on the Downloadable Content screen as Skate 2's is (Link DLCs, `config.json`'s `skate3_dlc`), over linked Skate 3 data. A pack is one of Skate 3's Xbox 360 content packages (title 454108E6, marketplace content) or the `EB` archive extracted from one.
+  - types: `Pack`, `PackError`
+
 ## 3. Skate 2 systems that carry Skate 3 (TU3) behaviour
 
 Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audio, breadcrumbs, collision, pedestrians. Each file names its Skate 3 parts in its own comments.
@@ -1036,11 +1069,11 @@ Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audi
 
 - **`global_effects.rs`** (605 lines): `Sk8::Audio::GlobalEffects` (0x43C bytes, constructor 0x82505c10): the two environment reverbs every wet send feeds, the two flanges, and the LFO task that sweeps them.
   - types: `Skate3Effects`, `LfoParms`, `LfoShape`, `EnvRvrbPresetParms`, `FilterParms`, `DelayParms`, `EnvRvrbRuntimeParms`, `FlangePresetParms`, `FlangeRuntimeParms`, `GlobalEffects`
-- **`presentation.rs`** (512 lines): `Sk8::AudioPresentation` for the skater: the `PhysOut` values `FillSkaterData` 0x827f4c48 reads (supplied by the host as a [`PhysOutView`]) and the `SkaterData` it builds. The bit words of the native structure are separate fields here; their widths are kept where the native truncates.
+- **`presentation.rs`** (522 lines): `Sk8::AudioPresentation` for the skater: the `PhysOut` values `FillSkaterData` 0x827f4c48 reads (supplied by the host as a [`PhysOutView`]) and the `SkaterData` it builds. The bit words of the native structure are separate fields here; their widths are kept where the native truncates.
   - types: `CollisionInfo`, `PhysOutView`, `SkaterData`
 - **`reverb.rs`** (677 lines): `Sk8::Audio::SFXObj_Reverb` (MAIN SFX 5, 0x350 bytes, DMixIO 0x40000050): sets up `GlobalEffects`' two reverb instances from `aud_reverb` collections, cross-fades from one to the other over a second when the location's reverb key changes, and feeds the flange levels and the global reverb volume from its mixer outputs.
   - types: `RvrbParms`, `Reverb`, `Rig`
-- **`system.rs`** (2196 lines): `Sk8::Audio::AudioSystem` (0x824e64b8-0x8250a300): the `Update` order, the HUD and menu sound path (`PlayMenuSound` 0x82504dd0 -> `cMsgPlayMenuSound` -> `PlayMenuSoundImp` 0x8250c738 -> `PlayFEHudSplice` 0x824e7b28 -> `UpdateFEHudSplices` 0x824fea50), the menu flange voice, the MAIN mixer state objects that produce the menu volumes, `GlobalEffects` (`crate::global_effects`), and the PLAYER and COLLISION state...
+- **`system.rs`** (2224 lines): `Sk8::Audio::AudioSystem` (0x824e64b8-0x8250a300): the `Update` order, the HUD and menu sound path (`PlayMenuSound` 0x82504dd0 -> `cMsgPlayMenuSound` -> `PlayMenuSoundImp` 0x8250c738 -> `PlayFEHudSplice` 0x824e7b28 -> `UpdateFEHudSplices` 0x824fea50), the menu flange voice, the MAIN mixer state objects that produce the menu volumes, `GlobalEffects` (`crate::global_effects`), and the PLAYER and COLLISION state...
   - types: `SceneInfo`, `FeSound`, `GameAudioState`, `WorldAudioState`, `FeHudSplice`, `AssetStatus`, `MissionMusic`, `AudioMessage`, `MasterObject`, `Host`
 - **`system_contest.rs`** (581 lines): The contests' side of `Sk8::Audio::AudioSystem`: the mission sound effects (`PlayMissionSFXImp` 0x824fecb8), the crowd banks of `data\audio\crowds.big` (`LoadCrowdsData` 0x824fdcc8, `GetCrowdsLoadStatus` 0x824f0818, `UnloadCrowdData` 0x824f0918) and the traffic banks they share their memory with (`LoadVehiclesData` 0x824fd868, `GetVehiclesLoadStatus` 0x824f0718, `UnloadVehicleData` 0x824fdbc0), the contest's...
 - **`vmx.rs`** (137 lines): The VMX128 operation sequences the audio game code compiles its vector math to.
@@ -1052,15 +1085,17 @@ Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audi
 
 ### `crates/skate2-audio/src/player/`
 
-- **`contacts.rs`** (1868 lines): `Sk8::Audio::SFXObj_Contacts` (488 bytes): pushes, ollies, landings, wheel hits, manuals, foot catches and scrapes, hand grabs, kick-ups, air dismounts, board and body collisions.
+- **`contacts.rs`** (1894 lines): `Sk8::Audio::SFXObj_Contacts` (488 bytes): pushes, ollies, landings, wheel hits, manuals, foot catches and scrapes, hand grabs, kick-ups, air dismounts, board and body collisions.
   - types: `VoicedSplice`, `FootPush`, `FootInfo`, `HandGrab`, `FootDragData`, `Contacts`
-- **`mod.rs`** (554 lines): The PLAYER state (`eMAINMAPSTATES` 1): `CSTATEMGR_Player`, `CSTATE_Player`, the `SFXCTL_PlayerPhysics` / `SFXCTL_3DPlayerPos` / `SFXCTL_3DBoardPos` controllers and the skater SFX objects. `Setup(0xFFF)` creates objects 0-11 in id order (`CreateSFXObjs` 0x82a7f130); `SFXObj_PlayerSpeech` (7) needs the speech system and is not ported.
+- **`drop_in.rs`** (105 lines): `Sk8::Audio::SFXObj_DropIn` (TU3 only: 48 bytes, PLAYER object 12, TypeInfo 0x000100c0, `CreateObject` 0x824f03b8): the local skater's drop-in. The tail locking on the edge (`SFXCTL_PlayerPhysics` +0x329, from the animation's DropInLock attribute) and letting go of it (+0x32A, DropInRelease) each start their `aud_splicer/dropin` sound from Skate 3's splice bank 0, through the Skate 3 effect the sound's attribute...
+  - types: `DropIn`
+- **`mod.rs`** (572 lines): The PLAYER state (`eMAINMAPSTATES` 1): `CSTATEMGR_Player`, `CSTATE_Player`, the `SFXCTL_PlayerPhysics` / `SFXCTL_3DPlayerPos` / `SFXCTL_3DBoardPos` controllers and the skater SFX objects. `Setup(0xFFF)` creates objects 0-11 in id order (`CreateSFXObjs` 0x82a7f130); `SFXObj_PlayerSpeech` (7) needs the speech system and is not ported. TU3's `SFXObj_DropIn` (its object 12) follows them for Skate 3 physics;...
   - types: `Cvars`, `CollisionInfo`, `SfxCtx`, `SkaterAudioStateData`, `PlayerState`, `PlayerFrame`, `PlayerManager`
 - **`offboard.rs`** (1037 lines): `Sk8::Audio::SFXObj_OffBoard` (592 bytes, PLAYER object 10, `CreateObject` 0x82549858) and the `FootStepUtils` it drives. Off the board each foot has a `playercharacter_footstep` AEMS instance (`SK8_AEMS_Foley.csi`); for the local skater a foot touching down also plays its heel (walk collision, or the grass/metal table) and foot-push splices through four "FootStep SubMix" voices per foot, filtered by the splice's...
   - types: `SplicerFootStep`, `FootStep`, `OffBoard`, `Footsteps`
-- **`physics.rs`** (753 lines): `Sk8::Audio::SFXCTL_PlayerPhysics` (800 bytes): copies the skater's `SkaterData` each update, derives the values the skater SFX objects read, and writes the controller's Nicotine inputs.
+- **`physics.rs`** (765 lines): `Sk8::Audio::SFXCTL_PlayerPhysics` (800 bytes): copies the skater's `SkaterData` each update, derives the values the skater SFX objects read, and writes the controller's Nicotine inputs.
   - types: `PhysicsInputs`, `PlayerPhysics`
-- **`tricks.rs`** (448 lines): `Sk8::Audio::SFXObj_Tricks` (76 bytes, PLAYER object 5): the local skater's board flip whoosh (`Class_Flips`, `Sk8_Air_Flip_Tricks.abk`) and the trick and trick-done cloth foley (`cloth_trick`, `Foley_Cloth.abk`), with the fun meter the flip instance reads.
+- **`tricks.rs`** (454 lines): `Sk8::Audio::SFXObj_Tricks` (76 bytes, PLAYER object 5): the local skater's board flip whoosh (`Class_Flips`, `Sk8_Air_Flip_Tricks.abk`) and the trick and trick-done cloth foley (`cloth_trick`, `Foley_Cloth.abk`), with the fun meter the flip instance reads.
   - types: `Tricks`
 
 ### `crates/skate2-audio/src/rwac/plugins/`
@@ -1080,9 +1115,9 @@ Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audi
 
 ### `crates/skate2-audio/src/world/`
 
-- **`emitter_system.rs`** (1479 lines): `Sk8::Audio::Sk8EmitterSystem` (`AudioSystem::mpEmitterSystem`, 0x220 bytes) over its base `Sk8::Audio::EmitterSystem` (0x82a81100-0x82a83ae8): the sound volumes of the `.ems` data files and the random location emitters.
+- **`emitter_system.rs`** (1549 lines): `Sk8::Audio::Sk8EmitterSystem` (`AudioSystem::mpEmitterSystem`, 0x220 bytes) over its base `Sk8::Audio::EmitterSystem` (0x82a81100-0x82a83ae8): the sound volumes of the `.ems` data files and the random location emitters.
   - types: `EmitterVolume`, `EmitterFiles`, `VolumeRef`, `VolumeTree`, `VolumeStatus`, `EmitterStatus`, `MusicVolumeInfo`, `VolumeStatusId`, `VolumeStatusView`, `EmitterIo`
-- **`environment.rs`** (475 lines): The ENVIRONMENT state (`eMAINMAPSTATES` 2): `CSTATEMGR_Environment`, whose `EnterGamePlay` 0x8254fc18 creates one `CSTATE_Environment` with `Setup(1)`: `Sk8::Audio::SFXObj_Ambience` (0x58 bytes, TypeInfo 0x00020000, `CreateObject` 0x8254dc78), the location's ambience bed. The beds are looped 5-channel EA-XMA streams in `data\audio\ambience.big`, played through `SndPlayer1` with the resident `.snr` headers of...
+- **`environment.rs`** (485 lines): The ENVIRONMENT state (`eMAINMAPSTATES` 2): `CSTATEMGR_Environment`, whose `EnterGamePlay` 0x8254fc18 creates one `CSTATE_Environment` with `Setup(1)`: `Sk8::Audio::SFXObj_Ambience` (0x58 bytes, TypeInfo 0x00020000, `CreateObject` 0x8254dc78), the location's ambience bed. The beds are looped 5-channel EA-XMA streams in `data\audio\ambience.big`, played through `SndPlayer1` with the resident `.snr` headers of...
   - types: `AmbienceInfo`, `AmbienceState`, `Ambience`, `EnvironmentManager`
 
 ### `crates/skate2-core/src/actors/`
@@ -1144,8 +1179,13 @@ Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audi
 
 ### `crates/skate2-core/src/living_world/pedestrians/`
 
-- **`pedestrian_collision_contacts.rs`** (517 lines): DetermineOverallCollisionType82e808d8. Facts come from actual contact and entity/interface owners; this module performs no replacement entity lookup.
+- **`pedestrian_collision_contacts.rs`** (520 lines): DetermineOverallCollisionType82e808d8. Facts come from actual contact and entity/interface owners; this module performs no replacement entity lookup.
   - types: `CollisionContact`, `Skate3PedestrianContact`, `AnyContact`, `PedestrianCollisionType`, `OtherPedestrian`, `OtherCollisionOwner`, `CollisionClassificationFacts`, `ContactEntity`
+
+### `crates/skate2-core/src/living_world/vehicles/`
+
+- **`living_world_vehicle_frame.rs`** (704 lines): Live vehicle phases of Manager.Update1/2/UpdatePostTransforms. These borrow the same EntityMan, RAIN, execution groups and collision world as spawning.
+  - types: `VehicleFrameError`, `Pedestrians`
 
 ### `crates/skate2-core/src/physics/`
 
@@ -1158,7 +1198,7 @@ Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audi
 
 - **`simulation_assembly_backend.rs`** (2723 lines): Concrete safe owner for the three recovered `rw::physics::Simulation` pools.
   - types: `SimulationAssemblyJointEndpoint`, `SimulationAssemblyBackendAddFailure`, `SimulationAssemblyBackendInitError`, `SerialisedAssemblySimulationBackendInitError`, `SerialisedAssemblySimulationBindError`, `SerialisedAssemblyPartAttachmentBindError`, `SerialisedAssemblySimulationAddFailure`, `SerialisedAssemblyArenaRouteToken`, `SerialisedAssemblyRoutedInertia`, `SerialisedAssemblyRoutedBodyHandle`
-- **`simulation_dmo_dynamic_pool_update.rs`** (607 lines): Per-frame DMO pool update and the DMO line collection.
+- **`simulation_dmo_dynamic_pool_update.rs`** (648 lines): Per-frame DMO pool update and the DMO line collection.
   - types: `DmoMeshSlot`, `MeshArenaOwner`, `SimulationDmoPoolUpdateError`, `MeshWalk`, `DmoMeshGeometry`
 
 ### `crates/skate2-core/src/physics/assembly/parts/`
@@ -1173,7 +1213,7 @@ Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audi
 
 ### `crates/skate2-core/src/physics/board/runtime/`
 
-- **`skateboard_ground_frame.rs`** (867 lines): One retained authored SkaterPool/static-ground collision component frame. Real board and skeleton membership supplies the full publication range. Flags3 adjacent board/skeleton pairs and DMO pairs share the native island partition. Collision workers execute in a documented serial host order.
+- **`skateboard_ground_frame.rs`** (868 lines): One retained authored SkaterPool/static-ground collision component frame. Real board and skeleton membership supplies the full publication range. Flags3 adjacent board/skeleton pairs and DMO pairs share the native island partition. Collision workers execute in a documented serial host order.
   - types: `SkateboardGroundFrameSchedule`, `SkaterSkaterPairs`, `SkateboardGroundFrameInput`, `SkateboardGroundFrameError`
 
 ### `crates/skate2-core/src/physics/collision/`
@@ -1194,13 +1234,13 @@ Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audi
   - types: `MovementRig`
 - **`physical_player_phys_out.rs`** (530 lines): Selected components of the single `HiLOD` `PhysOut` owner (0x82e2f2a8). Constructor/reset completion describes this projection and its collaborators, never completion of a native frame or an implicit buffer swap.
   - types: `PhysOutOrigin`, `PhysOutValue`, `PhysOutComponent`, `PhysOutRemainderStage`, `PhysOutRemainder`, `PhysOutAccessError`, `PhysOutLifecycleError`, `PhysOutPublicationError`, `PhysOutSurfaceError`, `PhysOutMotionVector`
-- **`physical_player_phys_out_audio.rs`** (321 lines): The retained `PhysOut` values `AudioPresentation::FillSkaterData` 0x827f4c48 reads, copied for the audio host. Direct const component reads, no write latch, like the presentation getters.
+- **`physical_player_phys_out_audio.rs`** (328 lines): The retained `PhysOut` values `AudioPresentation::FillSkaterData` 0x827f4c48 reads, copied for the audio host. Direct const component reads, no write latch, like the presentation getters.
   - types: `SkaterAudioCollision`, `SkaterAudioPhysOut`
 - **`physical_player_phys_out_grinds.rs`** (152 lines): Complete field values for the native grind outputs; mounted only by the actual nineteen-component constructor and reset in its original order.
   - types: `GrindChromosome`, `Grinds`, `Filtered`
 - **`physical_player_phys_out_scoring.rs`** (1100 lines): Complete retained Scoring2 constructor fields (82e2c768) and Reset82e2a3f8. Native empty lists retain all four constructed Scorable elements. Reset clears counts, preserving inactive elements and context UID storage exactly.
   - types: `IntentTuple`, `TrickInput`, `TrickSettings`, `Scorable`, `ContextUid`, `ContextUids`, `ContextData`, `ContextGroups`, `Threshold`, `Thresholds`
-- **`physical_player_phys_out_simple.rs`** (929 lines): Concrete primitive component constructors inside the retained `PhysOut` owner. These values are not an independently constructed output owner. Motion and System remainders exclude fields already retained by the existing projection. Mount only through the complete nineteen-component constructor sequence.
+- **`physical_player_phys_out_simple.rs`** (936 lines): Concrete primitive component constructors inside the retained `PhysOut` owner. These values are not an independently constructed output owner. Motion and System remainders exclude fields already retained by the existing projection. Mount only through the complete nineteen-component constructor sequence.
   - types: `MotionRemainder`, `SystemRemainder`, `SkateboardReckoning`, `Physics`, `Camera`, `Intents`, `OffBoard`, `Trajectory`, `HandPlant`, `Air`
 
 ### `crates/skate2-core/src/physics/player/output/conditioning/`
@@ -1226,12 +1266,12 @@ Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audi
   - types: `ScorableInfo`
 - **`conditioner.rs`** (134 lines): PhysOutConditioner_Scoring.Update82e2b438 after Animation.Update.
   - types: `ScoringUpdateError`
-- **`database.rs`** (208 lines): TrickDatabase::ConstructFromAttribSys82dfb490 and TrickScoringSettings::Set82de9a70.
+- **`database.rs`** (214 lines): TrickDatabase::ConstructFromAttribSys82dfb490 and TrickScoringSettings::Set82de9a70.
   - types: `TrickDatabase`
 - **`frame.rs`** (227 lines): Native collector inputs sampled from the original retained PhysOut fields.
 - **`grind.rs`** (214 lines): GrindCollector82df9858/9600/9790; score the existing filtered grind output.
   - types: `GrindFrame`
-- **`ground.rs`** (726 lines): GroundCollector trick analysis82dfbfe8, using the existing retained owners. Inputs are samples of the original PhysOut/GlobalMetrics/cvar fields; the live conditioner must provide these, not infer tricks from controller input.
+- **`ground.rs`** (714 lines): GroundCollector trick analysis82dfbfe8, using the existing retained owners. Inputs are samples of the original PhysOut/GlobalMetrics/cvar fields; the live conditioner must provide these, not infer tricks from controller input.
   - types: `GroundFrame`, `GroundScorable`
 - **`holder.rs`** (282 lines): ScoreHolder announcement, repeat history and banking; native82dee2e8..82df3e38.
 - **`hud_frame.rs`** (179 lines): PhysOutModule_Hud827c79b8 reads completed Scoring2/Animation output.
@@ -1241,7 +1281,7 @@ Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audi
   - types: `SequenceFinishFrame`
 - **`module_update.rs`** (172 lines): ScoreModule.Update82dfcd18. Inputs borrow the already-conditioned PhysOut; the existing Update5 reset owns clearing output events before this stage.
   - types: `ModuleFrame`, `ModuleTuning`
-- **`offboard.rs`** (270 lines): OffboardCollector82df8400/c250/c308. Uses actual skeleton and deck frames.
+- **`offboard.rs`** (268 lines): OffboardCollector82df8400/c250/c308. Uses actual skeleton and deck frames.
   - types: `OffboardFrame`
 - **`timed.rs`** (103 lines): TimedArcLengthScorable::Update82df2130. Extend the retained native tracker.
   - types: `ArcMeasure`
@@ -1284,6 +1324,6 @@ Shared Skate 2 code with Skate 3 branches or TU3 values: scoring, wipeouts, audi
   - types: `Phase`, `FrontendWorld`
 - **`selected_session_marker.rs`** (550 lines): Production owners of `Sk8::SessionMarker`, `PlayerUI::UpdateSessionMarker` and the teleport command they request, over the selected session's Actor, World, terrain, cvars and input. Game-layer owners the port has no producer for answer with the state their native constructors leave.
   - types: `SelectedSessionMarkerError`, `SelectedSessionMarker`, `SelectedSessionMarkerSources`, `SkaterManagerCommandError`, `SelectedSkaterManagerCommands`
-- **`selected_session_party_play.rs`** (268 lines): `FrontEndState_PartyPlay` over the main menu: its character and location lists, the `partyplay` viewer, and the game it hands over.
+- **`selected_session_party_play.rs`** (275 lines): `FrontEndState_PartyPlay` over the main menu: its character and location lists, the `partyplay` viewer, and the game it hands over.
   - types: `PartyPlay`
 

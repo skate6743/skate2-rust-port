@@ -78,6 +78,7 @@ mod end_challenge_small_movie;
 mod party_play_change_movie;
 mod settings_movie;
 mod stick_preview;
+mod colour_picker;
 mod screen_manager;
 mod edit_skater_movie;
 use crate::gpu_renderer::{
@@ -1611,6 +1612,7 @@ impl MarkerUi {
         localized.help_a=localize(&view.help_a)?;
         localized.help_b=localize(&view.help_b)?;
         localized.help_start=localize(&view.help_start)?;
+        localized.help_x=localize(&view.help_x)?;
         for row in &mut localized.rows {
             let selected=row.description_candidates.iter().find_map(|key|self.assets.localize(key).ok());
             row.title=if let Some(title)=selected.as_ref().filter(|_|row.description_candidates.contains(&row.title)){title.clone()}else{localize(&row.title)?};
@@ -2746,6 +2748,11 @@ fn flatten_masked(
     }
     if clip.properties.get("_type").map(String::as_str) == Some(stick_preview::TYPE) {
         stick_preview::draw(clip, m, colour, size, out, flat)?;
+        mask.occlude(&mut out[start..], size);
+        return Ok(());
+    }
+    if let Some(kind) = clip.properties.get("_type").map(String::as_str).filter(|kind| colour_picker::draws(kind)) {
+        colour_picker::draw(clip, kind, m, colour, size, out, flat)?;
         mask.occlude(&mut out[start..], size);
         return Ok(());
     }

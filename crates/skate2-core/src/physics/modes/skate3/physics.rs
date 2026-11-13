@@ -81,6 +81,8 @@ mod biped_air;
 mod known_air;
 mod landing_on_deck;
 mod offboard_audit_trace;
+mod spin_trace;
+mod drop_in_trace;
 
 use crate::skate3_native::math_host::*;
 pub(crate) use controls::PlayerControls;

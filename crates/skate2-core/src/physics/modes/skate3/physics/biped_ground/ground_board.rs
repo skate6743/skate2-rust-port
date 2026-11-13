@@ -2,7 +2,7 @@
 //! state52 in Sync82D324B0 is a DIFFERENT grab-spline manager.
 use super::{Skate3PhysicsState, Skate3ControllerState};
 
-/// Executes original Stop/Hold effects on the existing possession/solver owner.
+/// Executes the original 82D75AC8/Hold effects on the existing possession/solver owner.
 /// Does not run its common per-frame Update a second time.
 pub(crate) fn update_possession(physics: &mut Skate3PhysicsState, skater: &mut Skate3ControllerState) {
     let flags = skater.player_input.processed.flags_2484;
@@ -29,9 +29,9 @@ pub(crate) fn update_possession(physics: &mut Skate3PhysicsState, skater: &mut S
         skater.player_input.processed.timestep_2604,
     );
     if target == 5 {
-        skater.board_possession.stop(
+        //82D31D78: 82D75AC8 keeps the board animated where it rests.
+        skater.board_possession.rest_on_ground(
             &mut skater.skateboard_controller.fields,
-            &observation,
             &mut effects,
         );
     } else {

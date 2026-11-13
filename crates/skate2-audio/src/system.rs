@@ -860,7 +860,8 @@ impl AudioSystem {
     /// `SFXObj_Reverb::InitSFX` sets up the reverbs and flanges.
     fn initialize_mixer(&mut self, mix_map: Vec<u8>) {
         let mut host = Host { main_objects: &MAIN_SFX_OBJECTS };
-        self.mixer.init_map(mix_map, MIX_STATES, &mut host);
+        // PC port: the map gains the TU3 channels Skate 3 physics sounds read (`player::skate3_mix`).
+        self.mixer.init_map(crate::player::skate3_mix::add_channels(mix_map), MIX_STATES, &mut host);
         let io = |sfx: u32| self.mixer.map().and_then(|map| map.dmixio(0x4000_0000 | (sfx << 4)));
         self.master.io = io(SFX_MASTER);
         self.nis_io = io(SFX_NIS);

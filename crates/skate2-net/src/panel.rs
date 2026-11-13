@@ -1,13 +1,15 @@
 //! The moderation panel (PC port addition): an HTTP page at `/moderationpanel?key=<key>` on the
-//! port `server-config.json` names ([`crate::moderation`]). It lists the signed-in players, to
-//! chat-shadowban or IP-ban, and the bans in force, to lift. A request without the key in
+//! port `server-config.json` names ([`crate::moderation`]). It lists the signed-in players and the
+//! bans in force: a ticked player, or the player of a ticked ban, can be chat-shadowbanned,
+//! matchmaking-shadowbanned or IP-banned, and a ticked ban lifted. A request without the key in
 //! `moderation-key.txt` is answered as one for a page that does not exist, and an address that
 //! sent [`MAX_FAILURES`] wrong keys is answered so for the rest of [`FAILURE_WINDOW`], whatever
 //! key it sends. The page runs no script, loads nothing else and is never cached, and it shows no
 //! player's address: its boxes send references that the panel keeps for the addresses it listed.
 //!
 //! The same port serves the public statistics at [`STATS_PATH`] ([`crate::stats`]) to anyone,
-//! with or without a key file: no address, no private game, no one outside a public game.
+//! with or without a key file: no address, no private game, no matchmaking-shadowbanned player's
+//! game, no one outside the games it lists.
 //!
 //! The panel serves on threads of its own and asks the server's loop for what it shows and does
 //! ([`Request`]), so the loop never waits on a browser.
@@ -71,17 +73,19 @@ pub enum Request {
 pub enum Action {
     /// Chat-shadowbans these addresses, each under the name it was shown with.
     ChatShadowban(Vec<(IpAddr, String)>),
+    /// Matchmaking-shadowbans these addresses, each under the name it was shown with.
+    MatchmakingShadowban(Vec<(IpAddr, String)>),
     /// Bans these addresses, each under the name it was shown with.
     IpBan(Vec<(IpAddr, String)>),
-    /// Lifts these chat shadowbans and IP bans.
-    Lift { chat: Vec<IpAddr>, ip: Vec<IpAddr> },
+    /// Lifts these chat shadowbans, matchmaking shadowbans and IP bans.
+    Lift { chat: Vec<IpAddr>, matchmaking: Vec<IpAddr>, ip: Vec<IpAddr> },
 }
 
 impl Action {
     fn is_empty(&self) -> bool {
         match self {
-            Self::ChatShadowban(players) | Self::IpBan(players) => players.is_empty(),
-            Self::Lift { chat, ip } => chat.is_empty() && ip.is_empty(),
+            Self::ChatShadowban(players) | Self::MatchmakingShadowban(players) | Self::IpBan(players) => players.is_empty(),
+            Self::Lift { chat, matchmaking, ip } => chat.is_empty() && matchmaking.is_empty() && ip.is_empty(),
         }
     }
 }
@@ -98,6 +102,7 @@ pub struct Player {
     /// How long it has been connected.
     pub online: Duration,
     pub chat_shadowbanned: bool,
+    pub matchmaking_shadowbanned: bool,
 }
 
 /// What the page shows.
@@ -106,6 +111,7 @@ pub struct View {
     pub players: Vec<Player>,
     pub games: usize,
     pub chat_shadowbans: Vec<(IpAddr, String)>,
+    pub matchmaking_shadowbans: Vec<(IpAddr, String)>,
     pub ip_bans: Vec<(IpAddr, String)>,
 }
 
@@ -366,7 +372,7 @@ impl Panel {
     fn list(&self, view: &View, now: Instant) {
         let mut shown = self.shown.lock().unwrap_or_else(PoisonError::into_inner);
         shown.retain(|_, (_, listed)| now.saturating_duration_since(*listed) < SHOWN_TIME);
-        let bans = view.chat_shadowbans.iter().chain(&view.ip_bans).map(|(address, _)| *address);
+        let bans = view.chat_shadowbans.iter().chain(&view.matchmaking_shadowbans).chain(&view.ip_bans).map(|(address, _)| *address);
         for address in view.players.iter().map(|player| player.address).chain(bans) {
             shown.insert(self.reference(address), (address, now));
         }
@@ -395,33 +401,47 @@ impl Panel {
 }
 
 /// The action a posted form asks: its `action`, and the players (`reference|name`) or bans
-/// (`chat|reference`, `ip|reference`) it ticked, `address` giving each reference's address; the
+/// (`kind|reference|name`, the kind `chat`, `matchmaking` or `ip`) it ticked, `address` giving
+/// each reference's address. A ban takes the ticked players and the players of the ticked bans,
+/// each address under the name it was shown with, once; a lift takes the ticked bans. The
 /// outcome for the page instead when it ticked none the panel still knows.
 fn action(form: &str, address: impl Fn(&str) -> Option<IpAddr>) -> Result<Action, &'static str> {
     let fields = fields(form);
     let values = |name: &'static str| fields.iter().filter(move |(field, _)| field == name).map(|(_, value)| value.as_str()).take(MAX_TARGETS);
+    let bans = || {
+        values("ban").filter_map(|ban| {
+            let mut parts = ban.splitn(3, '|');
+            Some((parts.next()?, parts.next()?, parts.next().unwrap_or_default()))
+        })
+    };
     let players = || -> Vec<(IpAddr, String)> {
-        values("player")
-            .filter_map(|player| {
-                let (reference, name) = player.split_once('|')?;
-                let name = name.chars().filter(|character| !character.is_control()).take(crate::protocol::NICKNAME_CHARACTERS).collect();
-                Some((address(reference)?, name))
-            })
-            .collect()
+        let ticked = values("player").filter_map(|player| player.split_once('|')).chain(bans().map(|(_, reference, name)| (reference, name)));
+        let mut targets: Vec<(IpAddr, String)> = Vec::new();
+        for (reference, name) in ticked {
+            let Some(ip) = address(reference) else { continue };
+            let name: String = name.chars().filter(|character| !character.is_control()).take(crate::protocol::NICKNAME_CHARACTERS).collect();
+            if !targets.iter().any(|target| target.0 == ip && target.1 == name) {
+                targets.push((ip, name));
+            }
+        }
+        targets
     };
     let action = match values("action").next() {
         Some("chat-shadowban") => Action::ChatShadowban(players()),
+        Some("matchmaking-shadowban") => Action::MatchmakingShadowban(players()),
         Some("ip-ban") => Action::IpBan(players()),
         Some("lift") => {
-            let (mut chat, mut ip) = (Vec::new(), Vec::new());
-            for ban in values("ban") {
-                match ban.split_once('|') {
-                    Some(("chat", reference)) => chat.extend(address(reference)),
-                    Some(("ip", reference)) => ip.extend(address(reference)),
-                    _ => {}
-                }
+            let (mut chat, mut matchmaking, mut ip) = (Vec::new(), Vec::new(), Vec::new());
+            for (kind, reference, _) in bans() {
+                let lifted = match kind {
+                    "chat" => &mut chat,
+                    "matchmaking" => &mut matchmaking,
+                    "ip" => &mut ip,
+                    _ => continue,
+                };
+                lifted.extend(address(reference));
             }
-            Action::Lift { chat, ip }
+            Action::Lift { chat, matchmaking, ip }
         }
         _ => return Err("Nothing was ticked."),
     };
@@ -584,12 +604,18 @@ td.pick{width:1%}
 td.empty{padding:22px;text-align:center;color:var(--muted)}
 .tag{padding:2px 8px;border-radius:999px;background:var(--tag);color:var(--muted);font-size:12px}
 label{cursor:pointer}
-.actions{flex:none;width:176px;position:sticky;top:16px;display:flex;flex-direction:column;gap:8px}
+.actions{flex:none;width:200px;position:sticky;top:16px;display:flex;flex-direction:column;gap:8px}
+.actions hr{width:100%;margin:0;border:0;border-top:1px solid var(--line)}
 button{font:inherit;font-weight:600;padding:9px 12px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer;text-align:left}
 button:hover{border-color:var(--accent)}
 button.danger{color:var(--danger);border-color:var(--danger)}
 @media (max-width:720px){.layout{flex-direction:column}.actions{position:static;width:100%;flex-direction:row;flex-wrap:wrap}}
 ";
+
+/// The actions that ban the ticked players, or the players of the ticked bans.
+const BAN_BUTTONS: &str = "<button type=\"submit\" name=\"action\" value=\"chat-shadowban\">Chat Shadowban</button>\
+     <button type=\"submit\" name=\"action\" value=\"matchmaking-shadowban\">Matchmaking Shadowban</button>\
+     <button type=\"submit\" name=\"action\" value=\"ip-ban\" class=\"danger\">IP Ban</button>";
 
 /// The page: `reference` gives what a box sends for an address, which the page never shows.
 fn render(view: &View, key: &str, notice: Option<&str>, reference: &dyn Fn(IpAddr) -> String) -> String {
@@ -609,36 +635,36 @@ fn render(view: &View, key: &str, notice: Option<&str>, reference: &dyn Fn(IpAdd
     let _ = write!(
         page,
         "<section>\n<h2>Players</h2>\n<form method=\"post\" action=\"{url}\" class=\"layout\">\n<div class=\"table\"><table>\n\
-         <thead><tr><th></th><th>Name</th><th>Game</th><th>Online for</th><th>Version</th><th>Chat</th></tr></thead>\n<tbody>\n"
+         <thead><tr><th></th><th>Name</th><th>Game</th><th>Online for</th><th>Version</th><th>Chat</th><th>Matchmaking</th></tr></thead>\n<tbody>\n"
     );
     if view.players.is_empty() {
-        page.push_str("<tr><td class=\"empty\" colspan=\"6\">No one is signed in.</td></tr>\n");
+        page.push_str("<tr><td class=\"empty\" colspan=\"7\">No one is signed in.</td></tr>\n");
     }
+    let tag = |shadowbanned: bool| if shadowbanned { "<span class=\"tag\">shadowbanned</span>" } else { "" };
     for (index, player) in view.players.iter().enumerate() {
         let game = match player.game {
             Some((game, true)) => format!("{game} (host)"),
             Some((game, false)) => game.to_string(),
             None => "-".to_owned(),
         };
-        let chat = if player.chat_shadowbanned { "<span class=\"tag\">shadowbanned</span>" } else { "" };
         let _ = writeln!(
             page,
             "<tr><td class=\"pick\"><input type=\"checkbox\" id=\"p{index}\" name=\"player\" value=\"{}\"></td><td><label for=\"p{index}\">{}</label></td>\
-             <td>{game}</td><td>{}</td><td>{}</td><td>{chat}</td></tr>",
+             <td>{game}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             escape(&format!("{}|{}", reference(player.address), player.name)),
             escape(&player.name),
             duration(player.online),
             escape(&player.version),
+            tag(player.chat_shadowbanned),
+            tag(player.matchmaking_shadowbanned),
         );
     }
-    page.push_str(
-        "</tbody>\n</table></div>\n<div class=\"actions\"><button type=\"submit\" name=\"action\" value=\"chat-shadowban\">Chat Shadowban</button>\
-         <button type=\"submit\" name=\"action\" value=\"ip-ban\" class=\"danger\">IP Ban</button></div>\n</form>\n</section>\n",
-    );
+    let _ = write!(page, "</tbody>\n</table></div>\n<div class=\"actions\">{BAN_BUTTONS}</div>\n</form>\n</section>\n");
     let bans: Vec<(&str, &str, IpAddr, &str)> = view
         .chat_shadowbans
         .iter()
         .map(|(address, name)| ("chat", "Chat shadowban", *address, name.as_str()))
+        .chain(view.matchmaking_shadowbans.iter().map(|(address, name)| ("matchmaking", "Matchmaking shadowban", *address, name.as_str())))
         .chain(view.ip_bans.iter().map(|(address, name)| ("ip", "IP ban", *address, name.as_str())))
         .collect();
     let _ = write!(
@@ -652,15 +678,16 @@ fn render(view: &View, key: &str, notice: Option<&str>, reference: &dyn Fn(IpAdd
     for (index, (kind, label, address, name)) in bans.iter().enumerate() {
         let _ = writeln!(
             page,
-            "<tr><td class=\"pick\"><input type=\"checkbox\" id=\"b{index}\" name=\"ban\" value=\"{kind}|{}\"></td>\
+            "<tr><td class=\"pick\"><input type=\"checkbox\" id=\"b{index}\" name=\"ban\" value=\"{}\"></td>\
              <td><label for=\"b{index}\">{label}</label></td><td>{}</td></tr>",
-            reference(*address),
+            escape(&format!("{kind}|{}|{name}", reference(*address))),
             escape(name),
         );
     }
-    page.push_str(
-        "</tbody>\n</table></div>\n<div class=\"actions\"><button type=\"submit\" name=\"action\" value=\"lift\">Lift Ban</button></div>\n</form>\n</section>\n\
-         </main>\n</body>\n</html>\n",
+    let _ = write!(
+        page,
+        "</tbody>\n</table></div>\n<div class=\"actions\"><button type=\"submit\" name=\"action\" value=\"lift\">Lift Ban</button><hr>{BAN_BUTTONS}</div>\n\
+         </form>\n</section>\n</main>\n</body>\n</html>\n"
     );
     page
 }
@@ -714,9 +741,11 @@ mod tests {
                 game: Some((3, true)),
                 online: Duration::from_secs(75),
                 chat_shadowbanned: true,
+                matchmaking_shadowbanned: false,
             }],
             games: 1,
             chat_shadowbans: vec![(ip("198.51.100.2"), "Spammer".into())],
+            matchmaking_shadowbans: vec![(ip("198.51.100.3"), "Lurker".into())],
             ip_bans: Vec::new(),
         };
         let server = std::thread::spawn(move || {
@@ -816,8 +845,13 @@ mod tests {
             assert!(page.contains(&format!("value=\"{}|O&#39;Neil\"", panel.reference(ip("10.0.0.2")))), "{page}");
             assert!(page.contains("&lt;script&gt;alert(1)&lt;/script&gt;") && !page.contains("<script"));
             assert!(page.contains("3 (host)") && page.contains("1 min") && page.contains(">shadowbanned<"));
-            assert!(page.contains(&format!("value=\"chat|{}\"", panel.reference(ip("198.51.100.2")))) && page.contains("Spammer"));
-            assert!(!page.contains("10.0.0.2") && !page.contains("198.51.100.2"), "no address shows, not even in the source");
+            assert!(page.contains(&format!("value=\"chat|{}|Spammer\"", panel.reference(ip("198.51.100.2")))));
+            assert!(page.contains(&format!("value=\"matchmaking|{}|Lurker\"", panel.reference(ip("198.51.100.3")))) && page.contains(">Matchmaking shadowban<"));
+            assert_eq!(page.matches("value=\"matchmaking-shadowban\"").count(), 2, "for the players and for the bans' players");
+            assert!(
+                !page.contains("10.0.0.2") && !page.contains("198.51.100.2") && !page.contains("198.51.100.3"),
+                "no address shows, not even in the source"
+            );
             assert!(page.contains(&format!("action=\"{PATH}?key={KEY}\"")));
             let sent = String::from_utf8(response.bytes()).unwrap();
             for header in ["Cache-Control: no-store", "Referrer-Policy: no-referrer", "Content-Security-Policy: default-src 'none'", "X-Frame-Options: DENY"] {
@@ -831,7 +865,7 @@ mod tests {
         let actions = served(|panel| {
             let (owner, now) = (ip("192.0.2.1"), Instant::now());
             let page = format!("{PATH}?key={KEY}");
-            let (player, ban) = (panel.reference(ip("10.0.0.2")), panel.reference(ip("198.51.100.2")));
+            let (player, ban, lurker) = (panel.reference(ip("10.0.0.2")), panel.reference(ip("198.51.100.2")), panel.reference(ip("198.51.100.3")));
             let shown_after = |form: &str| {
                 assert_eq!(panel.respond(owner, &post(&page, form), now).status, 303);
                 String::from_utf8(panel.respond(owner, &get(&page), now).body).unwrap()
@@ -844,7 +878,12 @@ mod tests {
             assert_eq!((posted.status, posted.location.as_deref()), (303, Some(page.as_str())));
             assert!(String::from_utf8(panel.respond(owner, &get(&page), now).body).unwrap().contains("<p class=\"notice\">Done &amp; dusted.</p>"));
             shown_after(&format!("action=ip-ban&player={player}%7CO%27Neil"));
+            shown_after(&format!("action=matchmaking-shadowban&player={player}%7CO%27Neil"));
+            // A ban's player takes another ban, once however many of its bans were ticked.
+            shown_after(&format!("action=matchmaking-shadowban&ban=chat%7C{ban}%7CSpammer&ban=ip%7C{ban}%7CSpammer"));
+            shown_after(&format!("action=ip-ban&player={player}%7CO%27Neil&ban=matchmaking%7C{lurker}%7CLurker"));
             shown_after(&format!("action=lift&ban=chat%7C{ban}&ban=ip%7C{player}&ban=bogus"));
+            shown_after(&format!("action=lift&ban=matchmaking%7C{lurker}%7CLurker"));
             assert!(shown_after("action=ip-ban").contains("Nothing was ticked."));
             assert_eq!(panel.respond(owner, &request("DELETE", &page, ""), now).status, 405);
         });
@@ -853,7 +892,11 @@ mod tests {
             [
                 Action::ChatShadowban(vec![(ip("10.0.0.2"), "O'Neil".into())]),
                 Action::IpBan(vec![(ip("10.0.0.2"), "O'Neil".into())]),
-                Action::Lift { chat: vec![ip("198.51.100.2")], ip: vec![ip("10.0.0.2")] },
+                Action::MatchmakingShadowban(vec![(ip("10.0.0.2"), "O'Neil".into())]),
+                Action::MatchmakingShadowban(vec![(ip("198.51.100.2"), "Spammer".into())]),
+                Action::IpBan(vec![(ip("10.0.0.2"), "O'Neil".into()), (ip("198.51.100.3"), "Lurker".into())]),
+                Action::Lift { chat: vec![ip("198.51.100.2")], matchmaking: Vec::new(), ip: vec![ip("10.0.0.2")] },
+                Action::Lift { chat: Vec::new(), matchmaking: vec![ip("198.51.100.3")], ip: Vec::new() },
             ]
         );
     }

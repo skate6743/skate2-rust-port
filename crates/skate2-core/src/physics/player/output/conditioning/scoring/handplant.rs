@@ -10,11 +10,10 @@ use super::{
 const UPDATE_TIME: f32 = f32::from_bits(0x3c88_8889);
 
 impl HandplantCollector {
+    /// EndCurrentHandplant 0x82dface0: a handplant that never validated ends as -1, which
+    /// EndTrick ignores (the debug build asserts there, handplantcollector.cpp line 118).
     fn end_current(&mut self, db: &TrickDatabase) -> Result<(), ScoreError> {
-        let id = self
-            .scorable
-            .valid_id()
-            .ok_or(ScoreError::Invalid("ending invalid handplant"))?;
+        let id = self.scorable.valid_id().unwrap_or(-1);
         let mut holder = self
             .base
             .score_holder

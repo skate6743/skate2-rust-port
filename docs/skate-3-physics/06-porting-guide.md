@@ -154,9 +154,25 @@ Traces (stderr, any build): `SKATE2_TRACE_SKATE3` (general, focus, gestures), `_
 `_STEER` (per-tick speed, turn, tilt, trucks: the same fields read live from TU3), `_WIPEOUT`
 (reasons, forces, board group flags), `_GRIND`, `_GRAB`/`_GRABS`, `_BREADCRUMBS`, `_DARKCATCH`,
 `_HANDS`, `_PUSH_COEFS`, `_PUSH_TICKS`, `_MANUAL_TURN`, `_RIDER_CONTACTS`, `_VISUAL_ROOT`,
-`_WATER`, `_COAST`, `_FOOT_FORCE`; also `SKATE2_TRACE_SHOVE`, `SKATE2_TRACE_SCORE_SEQUENCE`,
+`_WATER`, `_COAST`, `_FOOT_FORCE`, `_GRIND_GRAB` (per tick in a grind: the motion state, the
+ground-grab and crouch intents, the grind-grab motion intents, the crouched-enough height and the
+hands' heights), `_SPIN` (per tick: sticks, spin attributes, BodySpin state, reckoning
+and deck heading, jump frame count, known-air flag), `_LAND` (per tick: deck body velocities and
+position, published velocities, contact flags, manual controller fields), `_PARTS` (with `_LAND`:
+each board body's velocities and the board force queue), `_DROP_IN_TICKS` (per tick: physical state,
+off-board edge distance, ProcessedPhysIn flags 2476/2480/2488, the grind family and Grinds bytes
+324 to 326, the board controller's state, its board flags, hand alignment and hook, and each board
+part in contact), `_EDGES=<tick>:<radius>` (at that tick, the grind edges near the deck: for
+finding a coping); also `SKATE2_TRACE_SHOVE`, `SKATE2_TRACE_SCORE_SEQUENCE`,
 `SKATE2_TRACE_AUDIO`, `SKATE2_TRACE_TRAJECTORY`, `SKATE2_TRACE_KNOWN_AIR`, `SKATE2_TRACE_OFFBOARD_AIR`.
 
 Scripted input (`SKATE2_DIAGNOSTIC_*`): `PHYSICS` (e.g. `Skate 3:Normal`), `HOLD`, `LEFT_STICK`,
-`PUSH_OLLIE`, `TRICK_CYCLE`, `GESTURE_RB`, `PIN`, `TURN_BAIL_LIMIT`, `SPAWN_SKATER` +
+`PUSH_OLLIE`, `SPIN_OLLIE` (ollies on a period with the left stick snapped full at a chosen step),
+`RIGHT_STICK` (raw right-stick values over step windows of a period, `;` between windows),
+`TRIGGER_TAPS` (`<from>:<period>:<frames>[:<l|r|b>[:<count>]]`, `;` between entries: full trigger
+pulls on a period),
+`TRICK_CYCLE`, `GESTURE_RB`, `PIN`, `TURN_BAIL_LIMIT`, `TELEPORT_TO` (`<frame>:on|off:<yaw>:<x>,<y>,<z>`:
+the skater at a point, on its board or off it), `SPAWN_SKATER` +
 `SPAWN_SKATER_AT`, `TRAJECTORY_MAX_TIME`, `PUSHING_FOLLOW=0`, `PUSHING_HAND_IK=0`.
+They run under a `--live-controls-demo` sequence; `idle` adds no input of its own, so a script
+starts with the board at rest.

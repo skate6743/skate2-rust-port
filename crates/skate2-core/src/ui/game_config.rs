@@ -19,6 +19,11 @@ pub struct GameConfig {
     /// PC port: the Skate 3 game folder linked on the Downloadable Content screen ("Link
     /// Skate 3 Data", `skate3_data`), the folder of its `default.xex`; empty for none.
     pub skate3_data: String,
+    /// PC port: Skate 3's downloadable content linked on the Downloadable Content screen
+    /// (`skate3_dlc`), in the order linked: content packages or archives extracted from them, which
+    /// play over the linked Skate 3 data (`crate::skate3::dlc`). A launch with Skate 3 data linked
+    /// drops one that no longer opens.
+    pub skate3_dlc: Vec<String>,
 }
 
 impl GameConfig {
@@ -47,17 +52,21 @@ impl GameConfig {
     }
 
     fn text(&self) -> String {
-        let dlc = if self.linked_dlc.is_empty() {
-            "[]".to_owned()
-        } else {
-            let lines: Vec<String> = self.linked_dlc.iter().map(|path| format!("    {}", quote(path))).collect();
-            format!("[\n{}\n  ]", lines.join(",\n"))
+        let list = |paths: &[String]| {
+            if paths.is_empty() {
+                "[]".to_owned()
+            } else {
+                let lines: Vec<String> = paths.iter().map(|path| format!("    {}", quote(path))).collect();
+                format!("[\n{}\n  ]", lines.join(",\n"))
+            }
         };
         format!(
-            "{{\n  \"game_root\": {},\n  \"changelog_seen\": {},\n  \"linked_dlc\": {dlc},\n  \"skate3_data\": {}\n}}\n",
+            "{{\n  \"game_root\": {},\n  \"changelog_seen\": {},\n  \"linked_dlc\": {},\n  \"skate3_data\": {},\n  \"skate3_dlc\": {}\n}}\n",
             quote(&self.game_root),
             quote(&self.changelog_seen),
-            quote(&self.skate3_data)
+            list(&self.linked_dlc),
+            quote(&self.skate3_data),
+            list(&self.skate3_dlc)
         )
     }
 }
@@ -65,13 +74,15 @@ impl GameConfig {
 fn parse(text: &str) -> GameConfig {
     let fields = string_fields(text).unwrap_or_default();
     let field = |name: &str| fields.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone()).unwrap_or_default();
-    let linked_dlc = string_list_fields(text)
-        .unwrap_or_default()
-        .into_iter()
-        .find(|(key, _)| key == "linked_dlc")
-        .map(|(_, list)| list)
-        .unwrap_or_default();
-    GameConfig { game_root: field("game_root"), changelog_seen: field("changelog_seen"), linked_dlc, skate3_data: field("skate3_data") }
+    let lists = string_list_fields(text).unwrap_or_default();
+    let list = |name: &str| lists.iter().find(|(key, _)| key == name).map(|(_, list)| list.clone()).unwrap_or_default();
+    GameConfig {
+        game_root: field("game_root"),
+        changelog_seen: field("changelog_seen"),
+        linked_dlc: list("linked_dlc"),
+        skate3_data: field("skate3_data"),
+        skate3_dlc: list("skate3_dlc"),
+    }
 }
 
 #[cfg(test)]
@@ -85,9 +96,10 @@ mod tests {
             changelog_seen: "0.2.5".into(),
             linked_dlc: vec![r"D:\DLC\4541087F\00000002\B6E4D01C47E3928D521B81CE44E209CCEBE809E1".into(), r"D:\DLC\filmpack_xbox2.big".into()],
             skate3_data: r"D:\Games\Skate 3".into(),
+            skate3_dlc: vec![r"D:\DLC\454108E6\00000002\20CA648716CBD7F24D85E9314A3532F9CC158D4F45".into()],
         };
         assert_eq!(parse(&config.text()), config);
-        let none = GameConfig { linked_dlc: Vec::new(), ..config };
+        let none = GameConfig { linked_dlc: Vec::new(), skate3_dlc: Vec::new(), ..config };
         assert_eq!(parse(&none.text()), none);
     }
 

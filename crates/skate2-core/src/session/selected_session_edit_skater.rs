@@ -240,6 +240,10 @@ impl<T, C> SelectedLiveSession<T, C> {
                         right: input.right,
                         morph_axis: input.morph_axis,
                         morph_axis_secondary: input.morph_axis_secondary,
+                        left_stick_y: input.left_stick_y,
+                        right_stick: input.right_stick,
+                        triggers: input.triggers,
+                        dpad: [input.dpad_up, input.dpad_down, input.dpad_left, input.dpad_right],
                     },
                     dt,
                 )
@@ -370,12 +374,9 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// receipt's lines leave the skater as Edit Cart's would with none kept, so it keeps only
     /// what the player owns or bought, and the rest saves as Finish's would.
     pub(super) fn close_edit_skater_for_player(&mut self) -> Result<(), SelectedLiveError> {
-        self.editor
-            .as_mut()
-            .ok_or_else(|| error("CAC owner absent"))?
-            .frontend
-            .drop_receipt()
-            .map_err(error)?;
+        let frontend = &mut self.editor.as_mut().ok_or_else(|| error("CAC owner absent"))?.frontend;
+        frontend.cancel_colour_picker();
+        frontend.drop_receipt().map_err(error)?;
         self.finish_edit_skater()
     }
 }

@@ -26,7 +26,7 @@ use skate2_formats::{
         CollectionSpace, DEFAULT_PRESENTATION_FOCUS_COLLECTIONS, FocusCollection, MAX_FOCUS_ENTRIES,
         TEXTURE_FOCUS_RADIUS, WORLD_FOCUS_RADIUS, merge_focus_collections,
     },
-    stream_xml::StreamXml,
+    stream_xml::{StreamXml, TileRecords},
 };
 use std::{
     collections::BTreeSet,
@@ -38,6 +38,8 @@ struct FocusSource {
     file: RenderStreamFile,
     space: Arc<CollectionSpace>,
     xml: Option<Arc<StreamXml>>,
+    /// PC port: a linked Skate 3 world's records, which its selection takes from instead.
+    records: Option<Arc<TileRecords>>,
     radius: f32,
 }
 impl FocusSource {
@@ -71,10 +73,16 @@ impl FocusSource {
             file: RenderStreamFile::from_paths(map, &file.paths),
             space,
             xml,
+            records: None,
             radius,
         })
     }
     fn select(&self, position: [f32; 3], xml_enabled: bool) -> Vec<FocusCollection> {
+        // A Skate 3 world: Skate 3's `FindCollections` (0x8247b3a0 in its title update 3), which
+        // no cvar gates.
+        if let Some(records) = &self.records {
+            return records.focus_collections(&self.space, position);
+        }
         // FindCollections824df068 uses a fixed capacity of16 for Pres/Tex.
         // The simulation-specific cvar is not a presentation cap.
         if xml_enabled {
@@ -103,13 +111,18 @@ impl AdditionalSources {
             let paths = StreamPaths::derive(WORLD_STREAM_PATH, world, kind)?;
             catalog.file_with_paths(kind, &paths)?.map(|file| FocusSource::from_file(file, kind, radius)).transpose()
         };
-        Ok(Self {
-            world: world.to_owned(),
-            pres: source(StreamKind::Presentation, WORLD_FOCUS_RADIUS)?
-                .ok_or_else(|| format!("additional world {world} presentation stream not registered"))?,
-            tex: source(StreamKind::Texture, TEXTURE_FOCUS_RADIUS)?,
-            leaving: false,
-        })
+        let mut pres = source(StreamKind::Presentation, WORLD_FOCUS_RADIUS)?
+            .ok_or_else(|| format!("additional world {world} presentation stream not registered"))?;
+        let mut tex = source(StreamKind::Texture, TEXTURE_FOCUS_RADIUS)?;
+        // PC port: a linked Skate 3 world selects as Skate 3 does, from its files' records.
+        if skate2_core::skate3::is_district_world(world) {
+            let records = |source: &FocusSource, kind: StreamKind| Some(Arc::new(skate2_core::skate3::world_records(world, &source.space, kind.suffix())));
+            pres.records = records(&pres, StreamKind::Presentation);
+            if let Some(tex) = tex.as_mut() {
+                tex.records = records(tex, StreamKind::Texture);
+            }
+        }
+        Ok(Self { world: world.to_owned(), pres, tex, leaving: false })
     }
     /// Whether the installed generation holds any of its collections.
     fn held_by(&self, scene: &PresentationScene, textures: &TextureScene) -> bool {
@@ -255,7 +268,10 @@ impl CityStreaming {
         scene: Option<&PresentationScene>,
         textures: &mut Option<ProxyTextures>,
     ) -> RenderResult<()> {
-        let Some(stream) = self.exclusive().and_then(|world| skate2_core::skate3::district_spec(&world.world)).map(|spec| spec.proxy) else {
+        // A downloadable content map has no proxy world: no proxy draws there.
+        let Some(stream) =
+            self.exclusive().and_then(|world| skate2_core::skate3::district_spec(&world.world)).map(|spec| spec.proxy).filter(|proxy| !proxy.is_empty())
+        else {
             return Ok(());
         };
         if self.district_proxy.as_ref().is_some_and(|district| district.stream == stream) {
@@ -387,7 +403,10 @@ impl CityStreaming {
         let (pres, tex) = self.sources.as_ref()?;
         if let Some(district) = self.exclusive() {
             let mut selected = district.pres.select(position, xml_enabled);
-            selected.truncate(DEFAULT_PRESENTATION_FOCUS_COLLECTIONS);
+            // Skate 3's records hold at most 64, which it keeps whole.
+            if district.pres.records.is_none() {
+                selected.truncate(DEFAULT_PRESENTATION_FOCUS_COLLECTIONS);
+            }
             let textures = district.tex.as_ref().map_or_else(Vec::new, |tex| tex.select(position, xml_enabled));
             return Some((selected, textures));
         }
@@ -410,6 +429,12 @@ impl CityStreaming {
     /// world's location, whose textures its Pres files carry.
     pub(crate) fn texture_selection_empty(&self, position: [f32; 3], xml_enabled: bool) -> bool {
         self.select(position, xml_enabled).is_some_and(|(_, tex)| tex.is_empty())
+    }
+
+    /// Whether the presentation selection at `position` is empty, as it is in a Skate 3 world
+    /// where the tile holds no collection.
+    pub(crate) fn presentation_selection_empty(&self, position: [f32; 3], xml_enabled: bool) -> bool {
+        self.select(position, xml_enabled).is_some_and(|(pres, _)| pres.is_empty())
     }
 
     /// Follows the session's loaded additional world (`world`).
@@ -458,6 +483,7 @@ impl CityStreaming {
             radius: pres.radius,
             resident: scene.collections.iter().map(|collection| collection.id).collect(),
             exclusive: self.exclusive().is_some(),
+            records: self.exclusive().and_then(|world| world.pres.records.clone()),
         })
     }
 
@@ -474,13 +500,13 @@ impl CityStreaming {
         let additional=|source:&FocusSource|(Arc::clone(&source.space),Arc::clone(&source.file.map));
         let texture_focus=match tex {
             Some(tex)=>VisualFocus {space:Arc::clone(&tex.space),map:Arc::clone(&tex.file.map),xml:tex.xml.clone(),
-                additional:more.and_then(|world|world.tex.as_ref()).map(additional),radius:tex.radius,
+                additional:more.and_then(|world|world.tex.as_ref()).map(additional),records:tex.records.clone(),radius:tex.radius,
                 resident:textures.collections.iter().map(|c|c.id).collect(),texture:true},
-            None=>VisualFocus {space:Arc::default(),map:Arc::default(),xml:None,additional:None,radius:0.,resident:Vec::new(),texture:true},
+            None=>VisualFocus {space:Arc::default(),map:Arc::default(),xml:None,additional:None,records:None,radius:0.,resident:Vec::new(),texture:true},
         };
         Some([
             VisualFocus {space:Arc::clone(&pres.space),map:Arc::clone(&pres.file.map),xml:pres.xml.clone(),
-                additional:more.map(|world|additional(&world.pres)),radius:pres.radius,
+                additional:more.map(|world|additional(&world.pres)),records:pres.records.clone(),radius:pres.radius,
                 resident:scene.collections.iter().map(|c|c.id).collect(),texture:false},
             texture_focus,
         ])
@@ -722,7 +748,11 @@ impl CityStreaming {
                 .map_err(|error| error.to_string());
                 if std::env::var_os("SKATE2_TRACE_CITY_STREAM").is_some() {
                     let steps: Vec<String> = steps.iter().map(|(name, ms)| format!("{name} {ms:.1}")).collect();
-                    eprintln!("city streaming: loader {:.1} ms: {}", started.elapsed().as_secs_f64() * 1000., steps.join(", "));
+                    let held = result.as_ref().map_or_else(
+                        |_| String::new(),
+                        |(scene, textures, ..)| format!(" ({} Pres, {} Tex collections)", scene.collections.len(), textures.collections.len()),
+                    );
+                    eprintln!("city streaming: loader {:.1} ms{held}: {}", started.elapsed().as_secs_f64() * 1000., steps.join(", "));
                 }
                 let _ = send.send(result);
             })?;

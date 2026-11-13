@@ -76,6 +76,12 @@ impl NativeEffects for Effects<'_> {
             .drive
             .enable_angular_only(self.animated_290);
     }
+    fn enable_animation_on_ground(&mut self) {
+        self.board
+            .hook_mut()
+            .drive
+            .enable_animation_on_ground(self.animated_290);
+    }
     fn disable_animation(&mut self) {
         self.board
             .hook_mut()

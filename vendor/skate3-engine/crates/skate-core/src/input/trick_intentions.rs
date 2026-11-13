@@ -69,16 +69,19 @@ pub fn produce(controller: &DerivedControllerInput) -> Vec<TrickIntent> {
     // stick vector used by the authored air board-adjust states.  The native
     // 82599B08..BB4: v125 = -RStickY is the denominator and v126 =
     // RStickX is the numerator. The quadrant correction also tests -RStickY.
-    // This is atan2(RStickX, -RStickY), in that argument order.
-    let board_adjust_magnitude = (right_x.mul_add(right_x, right_y * right_y)).sqrt();
+    // This is atan2(RStickX, -RStickY), in that argument order. The magnitude
+    // is 82599BC8..9C40's refined reciprocal square root, the same value the
+    // manual producer reads (var_20C).
+    let board_adjust_magnitude =
+        super::controller::magnitude(right_x.mul_add(right_x, right_y * right_y));
     if board_adjust_magnitude > 0.0 {
         emit("BoardAdjustAngle", right_x.atan2(-right_y));
         emit("BoardAdjustMag", board_adjust_magnitude);
     }
-    if right_x != 0.0 {
+    // Fill8259AC58..AC90: one gate on either axis, then both intents, so a
+    // purely sideways or vertical stick still publishes the other axis as 0.
+    if right_x != 0.0 || right_y != 0.0 {
         emit("TweakX", right_x);
-    }
-    if right_y != 0.0 {
         emit("TweakY", right_y);
     }
     //Fill8259A554/8259AF60: current packed bit28 (RB), without an actor gate.
@@ -152,6 +155,18 @@ mod tests {
             .value;
         assert!((angle - 0.4636476).abs() < 0.00001);
         assert!((magnitude - 0.559017).abs() < 0.00001);
+    }
+
+    #[test]
+    fn either_tweak_axis_publishes_both_but_hand_plant_axes_stay_separate() {
+        let mut words = [0; 26];
+        words[9] = 0.5f32.to_bits();
+        let output = produce(&DerivedControllerInput::from_words(words));
+        let value = |name| output.iter().find(|i| i.name == name).map(|i| i.value);
+        assert_eq!(value("TweakX"), Some(0.5));
+        assert_eq!(value("TweakY"), Some(0.0));
+        assert_eq!(value("HandPlantTweakX"), Some(0.5));
+        assert_eq!(value("HandPlantTweakY"), None);
     }
 
     #[test]

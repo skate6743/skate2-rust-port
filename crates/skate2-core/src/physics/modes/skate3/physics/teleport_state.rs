@@ -24,6 +24,8 @@ pub(crate) struct Runtime {
     checkpoint: Checkpoint,
     pending_reply: Option<Target>,
     manual_on_board: Option<bool>,
+    /// An off-board target's dismount request (State77) has been published since the reset.
+    dismount_window: bool,
 }
 impl Runtime {
     /// Explicit manual return uses the actor-reset publication without replacing
@@ -31,11 +33,19 @@ impl Runtime {
     pub fn request_manual(&mut self, transform: AnimationPartTransform, on_board: bool) {
         self.pending_reply = Some(Target { transform: transform.map(|r| r.map(f32::to_bits)), on_board });
         self.manual_on_board = Some(on_board);
+        self.dismount_window = false;
     }
     pub(crate) fn manual_on_board(&self) -> Option<bool> { self.manual_on_board }
     /// The next animation dispatch must observe Teleport before the reply is published.
     pub(crate) fn has_pending_reply(&self) -> bool { self.pending_reply.is_some() }
-    pub(crate) fn finish_manual_reset(&mut self, state: skate3_core::player::state::PhysicalStateId) {
+    /// `dismount_requested` is this publication's State77; `dismounting` whether the ActionGraph
+    /// is in OnBoardGeneral/TeleportOffBoard.
+    pub(crate) fn finish_manual_reset(
+        &mut self,
+        state: skate3_core::player::state::PhysicalStateId,
+        dismount_requested: bool,
+        dismounting: bool,
+    ) {
         use skate3_core::player::state::PhysicalStateId;
         //The reset first enters100, including offboard requests. Keep the
         //target until the native graph has actually selected its board family.
@@ -43,6 +53,21 @@ impl Runtime {
             (state.category() == 500) != on_board);
         if state != PhysicalStateId::Teleporting && target_reached {
             self.manual_on_board = None;
+            self.dismount_window = false;
+        } else if state != PhysicalStateId::Teleporting && self.manual_on_board == Some(false) {
+            // Natively an off-board target is only the reset's dismount request: State77 for the
+            // three publications after state702's (ProcessOutput 82DB78A8..78DC, the PhysOut
+            // template cleared each tick by 82DE53F0). The ActionGraph takes it through
+            // OnGround -> TeleportOffBoard, and OnGround is inactive while ToggleOffBoardState is
+            // held (Y), or off the ground. Once the request lapses without that dismount, the
+            // native skater simply rides on: the host target goes with it, rather than keep
+            // telling the graph and controls it is off board.
+            if dismount_requested {
+                self.dismount_window = true;
+            } else if self.dismount_window && !dismounting {
+                self.manual_on_board = None;
+                self.dismount_window = false;
+            }
         }
     }
     /// Keep the host's offboard target visible to animation until the reset
@@ -54,6 +79,7 @@ impl Runtime {
             checkpoint,
             pending_reply: None,
             manual_on_board: None,
+            dismount_window: false,
         }
     }
     pub fn enter(&mut self) {
@@ -108,20 +134,54 @@ mod marker_reset_tests {
         runtime.request_manual(IDENTITY,false);
         let reply=runtime.take_reply().unwrap();
         assert_eq!(reply.byte64,0);
-        runtime.finish_manual_reset(State::Teleporting);
-        runtime.finish_manual_reset(State::PhysicsGround);
+        runtime.finish_manual_reset(State::Teleporting,false,false);
+        runtime.finish_manual_reset(State::PhysicsGround,false,false);
+        runtime.finish_manual_reset(State::PhysicsGround,true,false);
         assert_eq!(runtime.manual_on_board(),Some(false));
-        runtime.finish_manual_reset(State::BipedGround);
+        runtime.finish_manual_reset(State::BipedGround,true,true);
         assert_eq!(runtime.manual_on_board(),None);
         assert!(runtime.take_reply().is_none(),"completion must not replay the external reset");
     }
     #[test]
     fn onboard_target_waits_for_the_actual_onboard_continuation() {
         let mut runtime=Runtime::new();runtime.request_manual(IDENTITY,true);
-        runtime.finish_manual_reset(State::Teleporting);
-        runtime.finish_manual_reset(State::BipedAir);
+        runtime.finish_manual_reset(State::Teleporting,false,false);
+        runtime.finish_manual_reset(State::BipedAir,false,false);
         assert_eq!(runtime.manual_on_board(),Some(true));
-        runtime.finish_manual_reset(State::PhysicsGround);
+        runtime.finish_manual_reset(State::PhysicsGround,false,false);
         assert_eq!(runtime.manual_on_board(),None);
+    }
+    #[test]
+    fn offboard_target_lapses_with_the_native_dismount_request() {
+        // Y held through the reset: OnGround stays inactive, TeleportOffBoard never starts and
+        // the skater rides on, as natively, without the host target left behind.
+        let mut runtime=Runtime::new();runtime.request_manual(IDENTITY,false);
+        runtime.take_reply();
+        runtime.finish_manual_reset(State::Teleporting,false,false);
+        for _ in 0..3 {
+            runtime.finish_manual_reset(State::PhysicsGround,true,false);
+            assert_eq!(runtime.manual_on_board(),Some(false));
+        }
+        runtime.finish_manual_reset(State::PhysicsGround,false,false);
+        assert_eq!(runtime.manual_on_board(),None);
+        assert!(runtime.take_reply().is_none(),"lapse must not replay the external reset");
+    }
+    #[test]
+    fn a_dismount_taken_on_the_last_request_keeps_its_target() {
+        let mut runtime=Runtime::new();runtime.request_manual(IDENTITY,false);
+        runtime.finish_manual_reset(State::Teleporting,false,false);
+        runtime.finish_manual_reset(State::PhysicsGround,true,false);
+        runtime.finish_manual_reset(State::PhysicsGround,false,true);
+        assert_eq!(runtime.manual_on_board(),Some(false));
+        runtime.finish_manual_reset(State::BipedGround,false,true);
+        assert_eq!(runtime.manual_on_board(),None);
+    }
+    #[test]
+    fn the_target_waits_for_the_request_to_open() {
+        // The first Ground publication can precede State77; nothing lapses before it opens.
+        let mut runtime=Runtime::new();runtime.request_manual(IDENTITY,false);
+        runtime.finish_manual_reset(State::Teleporting,false,false);
+        runtime.finish_manual_reset(State::PhysicsGround,false,false);
+        assert_eq!(runtime.manual_on_board(),Some(false));
     }
 }

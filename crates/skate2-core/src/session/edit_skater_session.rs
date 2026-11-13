@@ -11,6 +11,8 @@ use skate2_formats::{
 };
 use std::sync::Arc;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+/// What a record wears: its assembled parts and its customizations.
+type Worn = ([skate2_formats::skater_profile::CacPartId; 26], CharacterCustomizations);
 
 pub(crate) struct EditSkaterSession {
     pub frontend: EditSkaterFrontend,
@@ -24,6 +26,8 @@ pub(crate) struct EditSkaterSession {
     pub(crate) originally_male: bool,
     hierarchies: [Option<crate::character::CharacterHierarchy>; 2],
     elapsed_millisecond_fraction:f64,
+    /// What `character` was built wearing.
+    worn: Worn,
 }
 impl EditSkaterSession {
     /// `FrontEndState_CaC::OnEnter` (`0x82659a08`): the new career's skater starts from
@@ -60,25 +64,21 @@ impl EditSkaterSession {
             new_career,
         )?;
         frontend.controller.skate3_merchandise = skate3_merchandise;
+        // PC port: Skate 3's emo hair joined too, so Back Alley Pete's Hair asks which game's.
+        frontend.controller.skate3_hair = db.slot_range(2).any(|index| db.is_skate3(index));
         // PC port: the Gesture Set row only with linked Skate 3 data, whose gestures it lists.
         frontend.controller.skate3_gestures = crate::skate3::linked().is_some();
         frontend.set_gesture_settings(store.load_gesture_settings()?)?;
         frontend.set_skate3_style(store.load_skate3_style()?)?;
         let originally_male = frontend.preview_record().data.is_male;
+        let worn = Self::worn(&db, &vault, &cvars, frontend.preview_record_mut())?;
         let mut hierarchies = std::array::from_fn(|_| None);
         let hierarchy = Self::cached_hierarchy(
             mounts,
             &mut hierarchies,
             frontend.preview_record().data.is_male,
         )?;
-        let character = Self::build_character(
-            mounts,
-            &db,
-            &vault,
-            &cvars,
-            frontend.preview_record_mut(),
-            hierarchy,
-        )?;
+        let character = Self::build_character(mounts, &db, &vault, &cvars, worn.clone(), hierarchy)?;
         Ok(Self {
             frontend,
             character,
@@ -90,16 +90,17 @@ impl EditSkaterSession {
             originally_male,
             hierarchies,
             elapsed_millisecond_fraction:0.,
+            worn,
         })
     }
-    fn build_character(
-        mounts: &MountSet,
+    /// What `record` wears: its parts as `assemble_parts` corrects them (binding its colours to
+    /// them) and its customizations.
+    fn worn(
         db: &CacPartDb,
         vault: &Arc<AttributeRuntimeVault>,
         cvars: &InputCvarReferences,
         record: &mut CacRecord,
-        hierarchy: &crate::character::CharacterHierarchy,
-    ) -> Result<EditSkaterCharacter> {
+    ) -> Result<Worn> {
         let parts = edit_skater_record::assemble_parts(
             record,
             db,
@@ -109,8 +110,23 @@ impl EditSkaterSession {
         )?;
         let parts = crate::edit_skater_character::wearable_parts(db, parts, record.data.is_male);
         let custom = CharacterCustomizations::parse_prefix(record.customizations_bytes()?)?.0;
+        Ok((parts, custom))
+    }
+    fn build_character(
+        mounts: &MountSet,
+        db: &CacPartDb,
+        vault: &Arc<AttributeRuntimeVault>,
+        cvars: &InputCvarReferences,
+        (parts, custom): Worn,
+        hierarchy: &crate::character::CharacterHierarchy,
+    ) -> Result<EditSkaterCharacter> {
         let recipe = crate::edit_skater_character::compose_recipe(db, &parts, custom)?;
         EditSkaterCharacter::load(mounts, recipe, hierarchy, Arc::clone(vault), cvars.clone())
+    }
+    /// PC port: whether `now` differs from `then` in its colours alone, which the built skater's
+    /// materials take without loading it again (`set_colours`).
+    fn colours_alone(then: &Worn, now: &Worn) -> bool {
+        then.0 == now.0 && CharacterCustomizations { colours: now.1.colours.clone(), ..then.1.clone() } == now.1
     }
     // Recipe binding needs only the authored hierarchy names. Keep one for
     // each sex; the room presentation remains the sole full animation owner.
@@ -154,19 +170,21 @@ impl EditSkaterSession {
                 .map_err(|e| e.to_string())? as u32,
         )?;
         if effects.recipe_changed {
-            let hierarchy = Self::cached_hierarchy(
-                mounts,
-                &mut self.hierarchies,
-                self.frontend.preview_record().data.is_male,
-            )?;
-            self.character = Self::build_character(
-                mounts,
-                &self.db,
-                &self.vault,
-                &self.cvars,
-                self.frontend.preview_record_mut(),
-                hierarchy,
-            )?;
+            let worn = Self::worn(&self.db, &self.vault, &self.cvars, self.frontend.preview_record_mut())?;
+            // PC port: new colours alone (a colour row's, the colour picker's while its sticks move)
+            // go on the built skater's materials. Building it again for each would take its
+            // scene's every model and texture from the archives each frame.
+            if Self::colours_alone(&self.worn, &worn) {
+                self.character.materials.set_colours(worn.1.colours.clone());
+            } else {
+                let hierarchy = Self::cached_hierarchy(
+                    mounts,
+                    &mut self.hierarchies,
+                    self.frontend.preview_record().data.is_male,
+                )?;
+                self.character = Self::build_character(mounts, &self.db, &self.vault, &self.cvars, worn.clone(), hierarchy)?;
+            }
+            self.worn = worn;
         }
         self.finishing = effects.finish;
         Ok(())
@@ -237,7 +255,9 @@ mod board_part_tests {
                     let mut record = fresh.clone();
                     edit_skater_record::wear_part(&mut record, &db, part).unwrap();
                     tried += 1;
-                    if let Err(error) = EditSkaterSession::build_character(&mounts, &db, &vault, &cvars, &mut record, &hierarchy) {
+                    let built = EditSkaterSession::worn(&db, &vault, &cvars, &mut record)
+                        .and_then(|worn| EditSkaterSession::build_character(&mounts, &db, &vault, &cvars, worn, &hierarchy));
+                    if let Err(error) = built {
                         failures.push(format!("{} {option:?} {:016x}/{:016x}: {error}", if male { "male" } else { "female" }, part.model_id, part.material_id));
                     }
                 }
@@ -258,7 +278,9 @@ mod board_part_tests {
                 for part in db.parts_in_slot(slot) {
                     let mut record = edit_skater_record::fresh_record(&db, &vault, male).unwrap();
                     record.installed_parts[usize::from(slot)] = CacPartId { model: part.model_id, material: part.material_id };
-                    if let Err(error) = EditSkaterSession::build_character(&mounts, &db, &vault, &cvars, &mut record, &hierarchy) {
+                    let built = EditSkaterSession::worn(&db, &vault, &cvars, &mut record)
+                        .and_then(|worn| EditSkaterSession::build_character(&mounts, &db, &vault, &cvars, worn, &hierarchy));
+                    if let Err(error) = built {
                         failures.push(format!("{} {:016x}/{:016x}: {error}", SLOT_NAMES[usize::from(slot)], part.model_id, part.material_id));
                     }
                 }

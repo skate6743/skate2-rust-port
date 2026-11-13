@@ -76,6 +76,15 @@ pub(super) fn animation_id(name: &crate::play_animation::FastString36) -> Option
     .copied()
 }
 
+/// Skate 3's `IsGrindGrab` of the trick `name`; false for a name without a Skate 3 record.
+pub(super) fn is_grind_grab(name: &str) -> Result<bool, String> {
+    Ok(data()?
+        .definitions
+        .iter()
+        .find(|definition| definition.identifier.eq_ignore_ascii_case(name))
+        .is_some_and(|definition| definition.is_grind_grab))
+}
+
 pub(super) fn lookup(name: &str, index: u32, settings: &mut TrickSettings) -> Result<bool, String> {
     let Some(definition) = data()?
         .definitions
@@ -300,5 +309,19 @@ mod audio_tests {
             found += 1;
         }
         assert!(found > 0);
+    }
+
+    /// `SKATE3_DATA`: Skate 3's darkslide grabs are grind grabs, the darkslides are not.
+    #[test]
+    fn linked_darkslide_grabs_are_grind_grabs() {
+        let Some(root) = std::env::var_os("SKATE3_DATA") else { return };
+        let data = crate::skate3::Skate3Data::open(std::path::Path::new(&root)).unwrap();
+        crate::skate3::set_linked(Some(std::sync::Arc::new(data)));
+        for side in ["bs", "fs"] {
+            assert!(!super::is_grind_grab(&format!("{side}_darkslide")).unwrap());
+            for grab in ["tail", "nose", "double"] {
+                assert!(super::is_grind_grab(&format!("{side}_darkslide_{grab}")).unwrap());
+            }
+        }
     }
 }

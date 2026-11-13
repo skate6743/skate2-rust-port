@@ -82,14 +82,16 @@ game's state:
   (`protocol::MAX_PLAYERS`, the original's unranked `MaxPlayerFilter`; its ranked games took 6,
   or 4 for 1-Up and S.K.A.T.E.). A private game takes no one new, one made private after players
   joined included: matchmaking never offers it, and joining refuses a private game that has
-  members.
+  members. A matchmaking-shadowbanned player (**Bans**, below) is offered no game, and no one is
+  offered a game such a player is in.
 - **Lobby list** (`ListLobbies`, answered with `Lobbies`): the public unranked games with
   members whose game version is the asker's, at the challenge a location change is taking them
-  to and one the asker's build has (`Content`), those with room first, then the fuller, then the older, at most 64
+  to and one the asker's build has (`Content`), with no matchmaking-shadowbanned member (and none
+  to a matchmaking-shadowbanned asker), those with room first, then the fuller, then the older, at most 64
   (`protocol::MAX_LOBBIES`): each game's id, challenge type and key, players, most players and
   phase. `JoinLobby` joins a game the list would still show and that has room, as matchmaking
-  does (`GameJoined`); otherwise `PlayNowResult` says `FULL` or `NO_MATCH` (ended, private, or
-  another version's).
+  does (`GameJoined`); otherwise `PlayNowResult` says `FULL` or `NO_MATCH` (ended, private,
+  another version's, or hidden from the asker).
 - **Sign-in**: a connection's first message must be its `Hello`, on the reliable channel, with a
   nickname the game's prompt makes (`protocol::valid_nickname`: 1 to 16 letters, digits, spaces,
   `-`, `_` or `'`, at least one a letter or digit, no space at either end) and that holds no word
@@ -109,12 +111,20 @@ game's state:
   dropped, spaces too; each run of one letter cut to one. A text holding an entry anywhere is
   caught; an entry that reads as fewer than two letters is ignored. Without the file nothing is
   filtered.
-- **Bans** (PC port addition, `crates/skate2-net/src/moderation.rs`): two lists of IP addresses,
+- **Bans** (PC port addition, `crates/skate2-net/src/moderation.rs`): three lists of IP addresses,
   each a JSON object of `"address": "name"` pairs (the nickname the address was banned under).
   `chat-shadowbans.json`: a member's chat line from one of its addresses comes back to that member
-  as any line does and reaches no one else. `ip-bans.json`: the server reads no datagram from one
-  of its addresses and answers none; a ban closes the address's connections without a word to
-  them, and their games' other members see them lose their connection. The server looks at both
+  as any line does and reaches no one else. `matchmaking-shadowbans.json`: matchmaking and the
+  Lobby Browser offer a player from one of its addresses no game (a quick match finds none, a Join
+  makes a game of its own, the list is empty and `JoinLobby` gets `NO_MATCH`), and offer no one a
+  game such a player is in, so no one joins them, not even another shadowbanned player. A player
+  in a game with others when shadowbanned, from the panel or by a hand edit of the file, is taken
+  out of it at once: the server closes its connection as a lost one, so the game shows its usual
+  disconnected notice and the other members see the player leave (of a game of none but
+  shadowbanned players, the first member stays). Nothing names the ban to the player.
+  `ip-bans.json`: the server reads no datagram from one of its addresses and answers none; a ban
+  closes the address's connections without a word to them, and their games' other members see
+  them lose their connection. The server looks at the three
   files every second and reads one again when it changed, so a hand edit applies without a
   restart; a file that no longer reads as such a list leaves the bans in force, and a deleted one
   lifts its bans. A ban holds an address, not a nickname, so it covers every player behind that
@@ -123,9 +133,11 @@ game's state:
   `"moderation_panel_port": <port>` in `server-config.json` and a key in `moderation-key.txt`
   (16 to 256 letters, digits, `-`, `_`, `.` or `~`, on one line), the server serves
   `http://<server>:<port>/moderationpanel?key=<key>` at its own address. The page lists the
-  signed-in players (name, game, time online, version, chat shadowban), each with a box to tick,
-  with Chat Shadowban and IP Ban beside them, and under them the bans in force, with Lift Ban; an
-  action adds to or removes from the lists above and shows its outcome once. The page shows no
+  signed-in players (name, game, time online, version, chat and matchmaking shadowbans), each
+  with a box to tick, with Chat Shadowban, Matchmaking Shadowban and IP Ban beside them, and under
+  them the bans in force, a row each, with Lift Ban and the same three bans, which then ban the
+  ticked bans' players (a player ticked twice under one name is banned once); an action adds to
+  or removes from the lists above and shows its outcome once. The page shows no
   IP address, not even in its source: a box sends a reference drawn from the address with a
   secret the panel makes at each start, which the panel maps back for an hour after the page last
   listed it (a form from an older page is asked to be refreshed). The ban lists' files and the
@@ -146,8 +158,9 @@ game's state:
   `crates/skate2-net/data/challenge_names.json`, "Unknown" for one the list lacks), `activity`
   (the freeskate activity it plays, else `null`), `in_progress` (its challenge or activity loads,
   runs or shows its results) and `players`, its members' nicknames in join order. It names no
-  address and no private game, and is made at most once a second.
-- **The server's files**: `server-config.json`, `moderation-key.txt` and the two ban lists sit
+  address, no private game and no game with a matchmaking-shadowbanned member, and is made at
+  most once a second.
+- **The server's files**: `server-config.json`, `moderation-key.txt` and the three ban lists sit
   together in the folder of `server-config.json` (beside the server's executable or, when only it
   holds one, the working directory). Like `badwords.txt`, git ignores them, no release zip
   carries them and an update never replaces them.
@@ -179,6 +192,13 @@ game's state:
   0x828ad280) under the loading screen, so an air or a bail from lobby skate does not carry into
   the challenge's presentation (a bail there would draw the online challenge's Hall of Meat
   treatment over the cutscene).
+  A sync point (`WaitForStreamer` from `StateOnlineGame::FilterImpl` 0x82771530) streams the
+  same way every frame, whatever front-end screen is up. A travel to the game's location (the
+  host's change of location, the lobby after a round) first closes every front-end screen as
+  `PopAllStates` does: while the game is paused for the travel, Options and Skate Profile end
+  each frame before the travel's step, under a fade that covers them (`HandleLobbySkateReset`
+  0x82776f90 pops none; its `ResetGame` and `WaitForStreamer` go on under them). A game lost
+  (a kick, a lost connection) closes them the same way on its way back to the main menu.
 - **Leave Challenge** (PC port addition): `LeaveChallenge` takes a participant out of the
   challenge as a leave of the game would (its barriers, completion and result no longer wait
   for it, and the board leaves it out), but it stays a member: `ChallengeLeave` tells every
@@ -477,7 +497,10 @@ rather than the paused NIS path. While a scene plays (a challenge presentation's
 submitted camera is the scene's; while a challenge script follows another player
 (`Online.SwitchCamera`, `SkaterManager::SetLocalIndex`) it is that player's own game camera: the
 camera samples around the tick the puppet shows, blended as a replay's recorded camera is
-(`CameraFrame::Lerp`), never across a teleport. A change of view is a hard cut. For the audio the
+(`CameraFrame::Lerp`), never across a teleport. A change of view is a hard cut. The samples carry
+the camera frame's own field of view; Gameplay Settings' Field of View (a PC port addition) is
+each console's own and applies to what that console shows, so the watched player's setting never
+reaches the watcher. For the audio the
 spectated skater is then the local one, as `SetLocalIndex` makes it for
 `AudioPresentation::DoSimSubmit`: its frame's audio record plays as the player's own does in a
 replay (stereo spread, its own wheels, the speed layers), the skater microphone follows it and the
@@ -756,6 +779,12 @@ to the lobby:
   are disabled; the results board omits the gamercard and player-review bumpers; no invites.
 - **Spot leaderboards**, Create-a-Spot online, Skate.Reel uploads and the freeskate screen's
   activity stats panel are not ported.
+- **Map Pool** (PC port addition): with a Skate 3 data folder linked, the custom match and online
+  free skate screens, and the host's options, start with a Map Pool row: Skate 2's maps, Skate 3's
+  districts' (Skate 3), or the maps Skate 3's downloadable content adds (Skate 3 DLC, while a pack
+  with maps is linked). A pool without games of the screen's types is left out. A console whose
+  data lacks the game's challenge (no Skate 3 data, or not that pack) leaves the game with the DLC
+  Required notice, as the original does for a game at downloadable content it lacks.
 - **1-Up** (PC port addition): with a Skate 3 data folder linked, the custom match and the host's
   options list 1-Up (network type 4, challenge type 32) in the Map Pool's Skate 3 maps, a type the
   original's lists leave out (`unranked_custom_match`'s `m_1upIndex`, `ranked_custom`'s
@@ -853,7 +882,11 @@ to the lobby:
 - **A round's end** (a lobby reset or Leave Challenge): the challenge system's game unload shuts
   its activities down, then the HUD manager's update runs over the deleted groups, so every
   component they bound hides (S.K.A.T.E.'s trick list, the timers, the challenge's leaderboard)
-  before the system goes; overlay screens and the subtitle of a cutscene go with it. Every
+  before the system goes; overlay screens and the subtitle of a cutscene go with it. The Spot
+  Battle vote's `voting` group belongs to no activity (`Online.InitVoting` makes it and only the
+  script's `Online.DeInitVoting` deletes it), so the round's end ends the voting as
+  `ChallengeVotingManager::DeInit` does first: a player who leaves mid-vote no longer keeps the
+  voting HUD in the pre-game lobby. Every
   skater then scores as with no challenge: the multiplier a Spot Battle turns off is back and
   every trick kind is enabled. Leaving the game mid-challenge does the same through the game's
   unload.

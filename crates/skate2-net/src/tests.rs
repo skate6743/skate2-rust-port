@@ -1522,7 +1522,7 @@ fn a_kicked_player_never_sees_or_joins_that_game_again_under_any_name() {
 #[test]
 fn a_chat_shadowbanned_player_s_lines_come_back_to_it_alone() {
     let mut net = Net::new();
-    net.server.set_bans(BanList::from_bans([(IpAddr::from([10, 0, 0, 2]), "Guest")]), BanList::default());
+    net.server.set_bans(BanList::from_bans([(IpAddr::from([10, 0, 0, 2]), "Guest")]), BanList::default(), BanList::default());
     let clients = lobby(&mut net, &["Host", "Guest"]);
     let (host, guest) = (clients[0], clients[1]);
     enter(&mut net, host);
@@ -1539,7 +1539,7 @@ fn a_chat_shadowbanned_player_s_lines_come_back_to_it_alone() {
 #[test]
 fn a_banned_address_is_never_answered() {
     let mut net = Net::new();
-    net.server.set_bans(BanList::default(), BanList::from_bans([(IpAddr::from([10, 0, 0, 1]), "Banned")]));
+    net.server.set_bans(BanList::default(), BanList::default(), BanList::from_bans([(IpAddr::from([10, 0, 0, 1]), "Banned")]));
     let banned = net.add("Banned");
     let other = net.add("Other");
     net.run(1_000);
@@ -1573,10 +1573,136 @@ fn an_ip_ban_closes_the_address_s_connections_without_a_word_and_a_lift_lets_it_
     let view = answer.recv().expect("a view");
     assert_eq!(view.players.iter().map(|player| player.name.as_str()).collect::<Vec<_>>(), ["Host"]);
     assert_eq!(view.ip_bans, [(troll_address, "Troll".to_owned())]);
-    assert_eq!(ask(&mut net, Action::Lift { chat: vec![troll_address], ip: vec![troll_address] }), "A ticked chat shadowban was not in force. The IP ban on Troll is lifted.");
+    assert_eq!(
+        ask(&mut net, Action::Lift { chat: vec![troll_address], matchmaking: Vec::new(), ip: vec![troll_address] }),
+        "A ticked chat shadowban was not in force. The IP ban on Troll is lifted."
+    );
     let back = net.add_at("Back", Build::DEVELOPMENT, SocketAddr::from(([10, 0, 0, 2], 4001)));
     net.run(500);
     assert!(signed_in(&net.events(back)).is_some(), "the address connects again");
+}
+
+/// A matchmaking-shadowbanned player sees no game and joins none, and no one else is offered a
+/// game it made: each plays alone, even with another shadowbanned player searching.
+#[test]
+fn a_matchmaking_shadowbanned_player_is_offered_no_game_and_no_one_is_offered_theirs() {
+    let mut net = Net::new();
+    let banned = [(IpAddr::from([10, 0, 0, 2]), "Troll"), (IpAddr::from([10, 0, 0, 3]), "Other")];
+    net.server.set_bans(BanList::default(), BanList::from_bans(banned), BanList::default());
+    let host = net.add("Host");
+    let troll = net.add("Troll");
+    let other = net.add("Other");
+    let stranger = net.add("Stranger");
+    net.run(100);
+    net.send(host, &play(PlayNowMode::Custom, true, None));
+    net.run(100);
+    let (host_game, _) = joined_game(&net.messages(host)).expect("the host's game");
+    let mut own = Vec::new();
+    for client in [troll, other] {
+        net.events(client);
+        net.send(client, &ClientMessage::ListLobbies);
+        net.send(client, &play(PlayNowMode::Quick, false, None));
+        net.run(100);
+        let seen = net.messages(client);
+        assert_eq!(listing(&seen), Some(Vec::new()), "the browser lists nothing");
+        assert!(seen.contains(&ServerMessage::PlayNowResult { result: play_now::NO_MATCH }), "quick match finds nothing");
+        net.send(client, &ClientMessage::JoinLobby { game: host_game });
+        net.run(1_100);
+        let seen = net.messages(client);
+        assert!(seen.contains(&ServerMessage::PlayNowResult { result: play_now::NO_MATCH }));
+        assert_eq!(joined_game(&seen), None, "a join by its id is refused");
+        net.send(client, &play(PlayNowMode::Custom, false, None));
+        net.run(1_100);
+        let (game, players) = joined_game(&net.messages(client)).expect("a Join makes a game of its own");
+        assert_eq!(players, 1);
+        own.push(game);
+    }
+    assert_ne!(own[0], own[1], "not even with each other");
+    net.send(stranger, &ClientMessage::ListLobbies);
+    net.run(100);
+    let listed = listing(&net.messages(stranger)).map(|lobbies| lobbies.iter().map(|lobby| lobby.game).collect::<Vec<_>>());
+    assert_eq!(listed, Some(vec![host_game]), "no one else is shown the shadowbanned players' games");
+    for game in own {
+        net.send(stranger, &ClientMessage::JoinLobby { game });
+        net.run(1_100);
+        let seen = net.messages(stranger);
+        assert!(seen.contains(&ServerMessage::PlayNowResult { result: play_now::NO_MATCH }));
+        assert_eq!(joined_game(&seen), None, "nor joins one by its id");
+    }
+    net.send(stranger, &play(PlayNowMode::Custom, false, None));
+    net.run(100);
+    assert_eq!(joined_game(&net.messages(stranger)), Some((host_game, 2)), "matchmaking passes them over");
+    let (reply, answer) = std::sync::mpsc::channel();
+    net.server.moderate(Request::Stats(reply), net.now);
+    let games: Vec<Vec<String>> = answer.recv().expect("the statistics").games.into_iter().map(|game| game.players).collect();
+    assert_eq!(games, [vec!["Host".to_owned(), "Stranger".to_owned()]], "the statistics leave their games out");
+}
+
+/// A matchmaking shadowban takes its player out of the game it shares, at once: its connection
+/// closes as a lost one, as any, and the others play on. Back under any name it plays alone, in a
+/// game the statistics leave out, until the shadowban is lifted.
+#[test]
+fn a_matchmaking_shadowban_takes_its_player_out_of_a_shared_game_at_once() {
+    let mut net = Net::new();
+    let clients = lobby(&mut net, &["Troll", "Guest", "Third"]);
+    let (troll, guest) = (clients[0], clients[1]);
+    let troll_address = IpAddr::from([10, 0, 0, 1]);
+    let ask = |net: &mut Net, action: Action| {
+        let (reply, answer) = std::sync::mpsc::channel();
+        net.server.moderate(Request::Act(action, reply), net.now);
+        answer.recv().expect("an outcome")
+    };
+    let public_games = |net: &mut Net| -> Vec<Vec<String>> {
+        let (reply, answer) = std::sync::mpsc::channel();
+        net.server.moderate(Request::Stats(reply), net.now);
+        answer.recv().expect("the statistics").games.into_iter().map(|game| game.players).collect()
+    };
+    assert_eq!(
+        ask(&mut net, Action::MatchmakingShadowban(vec![(troll_address, "Troll".into())])),
+        "Troll is matchmaking-shadowbanned. 1 player was taken out of a game with others."
+    );
+    net.run(500);
+    assert!(net.events(troll).contains(&ClientEvent::Disconnected(Disconnect::Closed(leave::LOST_CONNECTION))), "nothing names the ban");
+    assert!(net.messages(guest).iter().any(|message| matches!(message, ServerMessage::PlayerLeave { reason: leave::LOST_CONNECTION, .. })));
+    assert_eq!(public_games(&mut net), [vec!["Guest".to_owned(), "Third".to_owned()]], "the others play on");
+    let back = net.add_at("Back", Build::DEVELOPMENT, SocketAddr::from(([10, 0, 0, 1], 4001)));
+    net.run(100);
+    net.send(back, &play(PlayNowMode::Custom, false, None));
+    net.run(100);
+    assert_eq!(joined_game(&net.messages(back)).map(|(_, players)| players), Some(1), "back under another name, alone");
+    assert_eq!(public_games(&mut net).len(), 1, "the statistics leave its game out");
+    let (reply, answer) = std::sync::mpsc::channel();
+    net.server.moderate(Request::View(reply), net.now);
+    let view = answer.recv().expect("a view");
+    assert_eq!(view.matchmaking_shadowbans, [(troll_address, "Troll".to_owned())]);
+    assert!(view.players.iter().any(|player| player.name == "Back" && player.matchmaking_shadowbanned && !player.chat_shadowbanned));
+    assert_eq!(
+        ask(&mut net, Action::MatchmakingShadowban(vec![(troll_address, "Back".into())])),
+        "Back was matchmaking-shadowbanned already.",
+        "a player alone is left where it is"
+    );
+    assert_eq!(
+        ask(&mut net, Action::Lift { chat: Vec::new(), matchmaking: vec![troll_address], ip: Vec::new() }),
+        "The matchmaking shadowban on Troll is lifted."
+    );
+    assert_eq!(public_games(&mut net).len(), 2, "listed again");
+}
+
+/// A matchmaking shadowban written into its file by hand takes its player out of the game it
+/// shares within a second, as one from the panel does.
+#[test]
+fn a_matchmaking_shadowban_written_by_hand_applies_within_a_second() {
+    let path = std::env::temp_dir().join(format!("skate2-net-matchmaking-shadowbans-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let mut net = Net::new();
+    net.server.set_bans(BanList::default(), BanList::from_file(path.clone()), BanList::default());
+    let clients = lobby(&mut net, &["Host", "Troll"]);
+    let (host, troll) = (clients[0], clients[1]);
+    std::fs::write(&path, "{\"10.0.0.2\": \"Troll\"}").unwrap();
+    net.run(1_100);
+    assert!(net.events(troll).contains(&ClientEvent::Disconnected(Disconnect::Closed(leave::LOST_CONNECTION))));
+    assert!(net.messages(host).iter().any(|message| matches!(message, ServerMessage::PlayerLeave { .. })));
+    std::fs::remove_file(&path).unwrap();
 }
 
 #[test]

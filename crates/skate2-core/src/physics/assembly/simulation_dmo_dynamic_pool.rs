@@ -392,6 +392,9 @@ pub(crate) struct SimulationDmoAssemblyPool {
     living_world_owners: Vec<(u64, Arc<SimulationDmoAssemblyPartOwner>)>,
     /// `DynamicPool::mMeshes`, rebuilt by every `BeginUpdate`.
     meshes: Vec<DmoMeshSlot>,
+    /// This frame's `BeginUpdate` filled the mesh collection and returned before the base
+    /// `AssemblyPool::BeginUpdate`, so its `EndUpdate` publishes the retained records.
+    base_update_skipped: bool,
 }
 
 impl SimulationDmoAssemblyPool {
@@ -457,6 +460,7 @@ impl SimulationDmoAssemblyPool {
             members,
             living_world_owners: Vec::new(),
             meshes: Vec::new(),
+            base_update_skipped: false,
         })
     }
 

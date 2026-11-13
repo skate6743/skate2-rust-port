@@ -118,9 +118,6 @@ pub(crate) enum DmoWorldError {
     Numeric(ReckoningHostNumericError),
     Cvar(InputCvarError),
     PoolUpdate(SimulationDmoPoolUpdateError<Infallible>),
-    /// `AddVolume` reached the 50-mesh capacity; native then skips the base
-    /// `AssemblyPool::BeginUpdate`, a route the port does not reproduce.
-    MeshCollectionFull,
 }
 
 impl fmt::Display for DmoWorldError {
@@ -453,13 +450,12 @@ impl<C> SimulationAssemblyConstraintSession<AssemblyPartMaterial, C> {
             .ok_or(DmoWorldError::MissingWorldQueries)?
             .try_sync_dmo_jobs()
             .map_err(DmoWorldError::DynamicQuerySync)?;
+        // A full mesh collection makes that pool's BeginUpdate return before the base
+        // AssemblyPool::BeginUpdate (its EndUpdate then publishes the retained records);
+        // the next pool's BeginUpdate still runs.
         let pool = self.dmos.as_mut().ok_or(DmoWorldError::MissingPool)?;
-        if !pool
-            .try_rebuild_meshes::<Infallible>(&self.backend, ignore_volume_enable)
-            .map_err(DmoWorldError::PoolUpdate)?
-        {
-            return Err(DmoWorldError::MeshCollectionFull);
-        }
+        pool.try_rebuild_meshes::<Infallible>(&self.backend, ignore_volume_enable)
+            .map_err(DmoWorldError::PoolUpdate)?;
         // Step_UpdatePrePhysics1: DMO, then vehicle, then pedestrian.
         // DynamicPool.BeginUpdate synchronizes all four query job families
         // before rebuilding meshes. It does not release their batch leases.
@@ -470,13 +466,10 @@ impl<C> SimulationAssemblyConstraintSession<AssemblyPartMaterial, C> {
         queries
             .try_sync_vehicle_jobs()
             .map_err(DmoWorldError::DynamicQuerySync)?;
-        if !queries
+        queries
             .vehicle
             .try_rebuild_meshes::<Infallible>(&self.backend, ignore_volume_enable)
-            .map_err(DmoWorldError::PoolUpdate)?
-        {
-            return Err(DmoWorldError::MeshCollectionFull);
-        }
+            .map_err(DmoWorldError::PoolUpdate)?;
         Ok(())
     }
 

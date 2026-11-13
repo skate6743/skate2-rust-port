@@ -44,6 +44,7 @@ pub mod map_menu;
 pub mod map_viewport;
 pub mod minimap;
 pub mod edit_skater;
+pub mod colour_picker;
 pub mod edit_skater_presentation;
 pub(crate) mod frontend_fade;
 

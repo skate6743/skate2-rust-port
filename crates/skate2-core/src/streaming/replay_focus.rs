@@ -2,7 +2,7 @@
 //! Load cost is bytes / 133333 from cStreamFile::Update824e0f8c, not elapsed
 //! frames. CalcStreamLoadStats824d6798 counts only the first eight entries,
 //! omitting resident collections and reads that have already delivered bytes.
-use skate2_formats::{stream::{CollectionSpace,CollectionMap,MAX_FOCUS_ENTRIES,merge_focus_collections},stream_xml::StreamXml};
+use skate2_formats::{stream::{CollectionSpace,CollectionMap,MAX_FOCUS_ENTRIES,merge_focus_collections},stream_xml::{StreamXml,TileRecords}};
 use std::sync::Arc;
 
 #[derive(Clone,Copy,Debug)]
@@ -26,15 +26,19 @@ pub struct VisualFocus {
     /// A loaded additional world's file of the type, which FindCollections824dfea8 merges
     /// with the first file's selection.
     pub additional:Option<(Arc<CollectionSpace>,Arc<CollectionMap>)>,
+    /// PC port: a linked Skate 3 world's records, which its selection takes from (Skate 3's
+    /// `FindCollections` 0x8247b3a0).
+    pub records:Option<Arc<TileRecords>>,
     pub radius:f32,
     pub resident:Vec<u64>,
     pub texture:bool,
 }
 impl VisualFocus {
     pub fn status(&self,position:[f32;3],xml_enabled:bool)->Result<Status,&'static str> {
-        let mut selected=match self.xml.as_ref().filter(|_|xml_enabled) {
-            Some(xml)=>xml.focus_collections(&self.space,position,self.radius,16),
-            None=>self.space.focus_collections(position,self.radius,16),
+        let mut selected=match (&self.records,self.xml.as_ref().filter(|_|xml_enabled)) {
+            (Some(records),_)=>records.focus_collections(&self.space,position),
+            (None,Some(xml))=>xml.focus_collections(&self.space,position,self.radius,16),
+            (None,None)=>self.space.focus_collections(position,self.radius,16),
         };
         if let Some((space,_))=&self.additional {
             selected=merge_focus_collections([selected,space.focus_collections(position,self.radius,MAX_FOCUS_ENTRIES)]);

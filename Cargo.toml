@@ -34,3 +34,7 @@ pedantic = "warn"
 incremental = true
 codegen-units = 16
 debug = "line-tables-only"
+
+# wgpu-hal 30.0.1 with the changes in vendor/wgpu-hal/PATCHES.md.
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }

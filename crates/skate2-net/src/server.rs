@@ -362,6 +362,10 @@ pub struct ServerCore {
     /// The chat-shadowbanned addresses (`chat-shadowbans.json`): a member's chat line from one
     /// comes back to it alone.
     chat_shadowbans: BanList,
+    /// The matchmaking-shadowbanned addresses (`matchmaking-shadowbans.json`): a player from one
+    /// plays alone. Matchmaking and the lobby browser offer it no game and no one a game it is in,
+    /// the statistics leave its game out, and one in a game with others is taken out of it.
+    matchmaking_shadowbans: BanList,
     /// The banned addresses (`ip-bans.json`): no datagram from one is read or answered.
     ip_bans: BanList,
     /// When the ban lists' files were last looked at for changes.
@@ -384,6 +388,7 @@ impl ServerCore {
             log,
             words: WordList::default(),
             chat_shadowbans: BanList::default(),
+            matchmaking_shadowbans: BanList::default(),
             ip_bans: BanList::default(),
             bans_checked: None,
         }
@@ -394,9 +399,11 @@ impl ServerCore {
         self.words = words;
     }
 
-    /// The chat-shadowbanned and the banned addresses (PC port addition).
-    pub fn set_bans(&mut self, chat_shadowbans: BanList, ip_bans: BanList) {
+    /// The chat-shadowbanned, the matchmaking-shadowbanned and the banned addresses (PC port
+    /// addition).
+    pub fn set_bans(&mut self, chat_shadowbans: BanList, matchmaking_shadowbans: BanList, ip_bans: BanList) {
         self.chat_shadowbans = chat_shadowbans;
+        self.matchmaking_shadowbans = matchmaking_shadowbans;
         self.ip_bans = ip_bans;
         self.bans_checked = None;
     }
@@ -695,9 +702,10 @@ impl ServerCore {
     /// picked. A free skate or private game is never ranked (`DoPlayNow` 0x827736b8). The search
     /// must be of the player's own version, a free skate searched as one and a challenge as one;
     /// a game with no one in it is never offered, nor one whose host kicked a player from the
-    /// searcher's address, nor one playing a freeskate activity (PC port addition).
+    /// searcher's address, nor one playing a freeskate activity, nor one a matchmaking-shadowbanned
+    /// player is in, and a matchmaking-shadowbanned searcher is offered none (PC port additions).
     fn play_now(&mut self, id: u32, user_id: u64, play: &PlayNow, now: Instant) {
-        let Some(version) = self.connections.get(&id).and_then(|c| c.user.as_ref()).map(|user| user.version.clone()) else { return };
+        let Some((version, name)) = self.connections.get(&id).and_then(|c| c.user.as_ref()).map(|user| (user.version.clone(), user.name.clone())) else { return };
         let Some(address) = self.address(id) else { return };
         let free_skate = play.challenge_type == challenge::ONLINE_FREE_SKATE;
         let consistent = play.game_version == version
@@ -715,8 +723,13 @@ impl ServerCore {
             self.leave_game(id, leave::QUIT, now);
         }
         let ranked = play.ranked && !play.private && !free_skate;
+        // A matchmaking-shadowbanned player finds no game: a Join makes a game of its own.
+        let shadowbanned = self.matchmaking_shadowbans.contains(address);
+        if shadowbanned && !play.create && !play.private {
+            (self.log)(&format!("{name} searched, matchmaking-shadowbanned: offered no game"));
+        }
         let content = self.connections.get(&id).and_then(|c| c.user.as_ref()).and_then(|user| user.content.as_ref());
-        let found = if play.create || play.private {
+        let found = if play.create || play.private || shadowbanned {
             None
         } else {
             // A game whose location is changing is matched on where it is going.
@@ -731,6 +744,7 @@ impl ServerCore {
                         && !game.members.is_empty()
                         && !game.full()
                         && !game.kicked.contains(&address)
+                        && !self.shadowbanned_member(game)
                         && game.activity.is_none()
                         && content.is_none_or(|content| content.contains(&attributes.challenge_key))
                         && match play.mode {
@@ -786,9 +800,10 @@ impl ServerCore {
 
     /// Whether the lobby browser lists a game to a player of `version` at `address`: public,
     /// unranked, of the version, wherever a location change is taking it, not one whose host
-    /// kicked a player from the address, with no freeskate activity under way, and at a challenge
-    /// the player's build has (`content`, PC port addition).
-    fn listed(game: &Game, version: &str, address: IpAddr, content: Option<&BTreeSet<u64>>) -> Option<GameAttributes> {
+    /// kicked a player from the address, with no freeskate activity under way, at a challenge the
+    /// player's build has (`content`), and with neither the player nor a member
+    /// matchmaking-shadowbanned (PC port additions).
+    fn listed(&self, game: &Game, version: &str, address: IpAddr, content: Option<&BTreeSet<u64>>) -> Option<GameAttributes> {
         let attributes = game.upcoming_attributes();
         (attributes.game_version == version
             && !attributes.private
@@ -796,8 +811,18 @@ impl ServerCore {
             && !game.members.is_empty()
             && !game.kicked.contains(&address)
             && game.activity.is_none()
-            && content.is_none_or(|content| content.contains(&attributes.challenge_key)))
+            && content.is_none_or(|content| content.contains(&attributes.challenge_key))
+            && !self.matchmaking_shadowbans.contains(address)
+            && !self.shadowbanned_member(game))
         .then_some(attributes)
+    }
+
+    /// Whether a member of the game plays from a matchmaking-shadowbanned address (PC port
+    /// addition): matchmaking and the lobby browser then offer the game to no one, and the
+    /// statistics leave it out.
+    fn shadowbanned_member(&self, game: &Game) -> bool {
+        !self.matchmaking_shadowbans.is_empty()
+            && game.members.iter().any(|member| self.address(member.connection).is_some_and(|address| self.matchmaking_shadowbans.contains(address)))
     }
 
     /// The lobby browser's listing (PC port addition): every game it lists to the player, the
@@ -808,7 +833,7 @@ impl ServerCore {
         let mut lobbies: Vec<(&Game, GameAttributes)> = self
             .games
             .values()
-            .filter_map(|game| Some((game, Self::listed(game, &user.version, address, user.content.as_ref())?)))
+            .filter_map(|game| Some((game, self.listed(game, &user.version, address, user.content.as_ref())?)))
             .collect();
         lobbies.sort_by_key(|(game, _)| (game.full(), std::cmp::Reverse(game.members.len()), game.id));
         lobbies
@@ -836,7 +861,7 @@ impl ServerCore {
         }
         let Some((version, content)) = self.connections.get(&id).and_then(|c| c.user.as_ref()).map(|user| (user.version.clone(), user.content.clone())) else { return };
         let Some(address) = self.address(id) else { return };
-        let full = self.games.get(&game_id).filter(|game| Self::listed(game, &version, address, content.as_ref()).is_some()).map(Game::full);
+        let full = self.games.get(&game_id).filter(|game| self.listed(game, &version, address, content.as_ref()).is_some()).map(Game::full);
         match full {
             None => self.send(id, &ServerMessage::PlayNowResult { result: play_now::NO_MATCH }),
             Some(true) => self.send(id, &ServerMessage::PlayNowResult { result: play_now::FULL }),
@@ -847,6 +872,7 @@ impl ServerCore {
     fn join(&mut self, id: u32, user_id: u64, game_id: u32, now: Instant) {
         let Some(name) = self.connections.get(&id).and_then(|c| c.user.as_ref()).map(|user| user.name.clone()) else { return };
         let Some(address) = self.address(id) else { return };
+        let shadowbanned = self.matchmaking_shadowbans.contains(address) || self.games.get(&game_id).is_some_and(|game| self.shadowbanned_member(game));
         let Some(game) = self.games.get_mut(&game_id) else { return };
         // A private game takes no one after the player who made it: matchmaking never offers one,
         // and nothing else may put a player in.
@@ -857,6 +883,12 @@ impl ServerCore {
         // Nor does a game take a player from an address its host kicked one from: matchmaking and
         // the lobby browser never offer it to one.
         if game.kicked.contains(&address) {
+            self.send(id, &ServerMessage::PlayNowResult { result: play_now::NO_MATCH });
+            return;
+        }
+        // Nor does a game with players take a matchmaking-shadowbanned player, or anyone while one
+        // is in it: neither is offered it (PC port addition).
+        if shadowbanned && !game.members.is_empty() {
             self.send(id, &ServerMessage::PlayNowResult { result: play_now::NO_MATCH });
             return;
         }
@@ -1583,15 +1615,24 @@ impl ServerCore {
     }
 
     /// Reads the ban lists' files again where they changed; an address the IP bans now hold
-    /// loses its connections.
+    /// loses its connections, and a player the matchmaking shadowbans now hold leaves any game it
+    /// shares.
     fn refresh_bans(&mut self, now: Instant) {
         self.bans_checked = Some(now);
         if let Some(line) = self.chat_shadowbans.refresh() {
             (self.log)(&line);
         }
+        let matchmaking = self.matchmaking_shadowbans.refresh();
+        if let Some(line) = &matchmaking {
+            (self.log)(line);
+        }
         if let Some(line) = self.ip_bans.refresh() {
             (self.log)(&line);
             self.close_banned(now);
+        }
+        // After the IP bans' closes: a banned address is never answered, not even to be taken out.
+        if matchmaking.is_some() {
+            self.isolate_shadowbanned(now);
         }
     }
 
@@ -1608,6 +1649,31 @@ impl ServerCore {
             }
         }
         banned.len()
+    }
+
+    /// Takes every matchmaking-shadowbanned player out of a game it shares (PC port addition), so
+    /// that none ever plays with anyone: its connection closes as a lost one, its game shows the
+    /// usual notice, and the game's other members see it leave. Of a game of none but
+    /// shadowbanned players the first member stays. The players taken out.
+    fn isolate_shadowbanned(&mut self, now: Instant) -> usize {
+        if self.matchmaking_shadowbans.is_empty() {
+            return 0;
+        }
+        let mut taken: Vec<(u32, String, u32)> = Vec::new();
+        for game in self.games.values().filter(|game| game.members.len() > 1) {
+            let shadowbanned: Vec<&Member> = game
+                .members
+                .iter()
+                .filter(|member| self.address(member.connection).is_some_and(|address| self.matchmaking_shadowbans.contains(address)))
+                .collect();
+            let kept = usize::from(shadowbanned.len() == game.members.len());
+            taken.extend(shadowbanned.into_iter().skip(kept).map(|member| (member.connection, member.name.clone(), game.id)));
+        }
+        for (connection, name, game) in &taken {
+            (self.log)(&format!("{name} is matchmaking-shadowbanned and shared game {game}: connection {connection} closed as lost"));
+            self.drop_connection(*connection, leave::LOST_CONNECTION, now);
+        }
+        taken.len()
     }
 
     /// The moderation panel's request (PC port addition), answered on its channel.
@@ -1627,12 +1693,13 @@ impl ServerCore {
     }
 
     /// The public statistics (PC port addition): how many players are signed in, and every game
-    /// that is not private with its players' nicknames in join order, oldest game first.
+    /// that is not private and has no matchmaking-shadowbanned member, with its players' nicknames
+    /// in join order, oldest game first.
     fn public_stats(&self) -> stats::Stats {
         let games = self
             .games
             .values()
-            .filter(|game| !game.attributes.private && !game.members.is_empty())
+            .filter(|game| !game.attributes.private && !game.members.is_empty() && !self.shadowbanned_member(game))
             .map(|game| stats::PublicGame {
                 challenge_type: game.attributes.challenge_type,
                 challenge_key: game.attributes.challenge_key,
@@ -1658,12 +1725,19 @@ impl ServerCore {
                     game: user.game.map(|game| (game, self.is_host(game, user.id))),
                     online: now.saturating_duration_since(connection.opened),
                     chat_shadowbanned: self.chat_shadowbans.contains(connection.addr.ip()),
+                    matchmaking_shadowbanned: self.matchmaking_shadowbans.contains(connection.addr.ip()),
                 })
             })
             .collect();
         players.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()).then(a.address.cmp(&b.address)));
         let bans = |list: &BanList| -> Vec<(IpAddr, String)> { list.iter().map(|(address, name)| (address, name.to_owned())).collect() };
-        panel::View { players, games: self.games.len(), chat_shadowbans: bans(&self.chat_shadowbans), ip_bans: bans(&self.ip_bans) }
+        panel::View {
+            players,
+            games: self.games.len(),
+            chat_shadowbans: bans(&self.chat_shadowbans),
+            matchmaking_shadowbans: bans(&self.matchmaking_shadowbans),
+            ip_bans: bans(&self.ip_bans),
+        }
     }
 
     /// Does what the panel asks: what came of it, for the page. A list's file edited by hand since
@@ -1684,6 +1758,23 @@ impl ServerCore {
                     ));
                 }
             }
+            panel::Action::MatchmakingShadowban(players) => {
+                for (address, name) in players {
+                    let written = self.matchmaking_shadowbans.insert(address, &name);
+                    outcome.push(self.moderated(
+                        written,
+                        address,
+                        format!("{name} is matchmaking-shadowbanned"),
+                        format!("{name} was matchmaking-shadowbanned already."),
+                        moderation::MATCHMAKING_SHADOWBANS_FILE,
+                    ));
+                }
+                match self.isolate_shadowbanned(now) {
+                    0 => {}
+                    1 => outcome.push("1 player was taken out of a game with others.".into()),
+                    taken => outcome.push(format!("{taken} players were taken out of games with others.")),
+                }
+            }
             panel::Action::IpBan(players) => {
                 for (address, name) in players {
                     let written = self.ip_bans.insert(address, &name);
@@ -1701,7 +1792,7 @@ impl ServerCore {
                     closed => outcome.push(format!("{closed} connections closed.")),
                 }
             }
-            panel::Action::Lift { chat, ip } => {
+            panel::Action::Lift { chat, matchmaking, ip } => {
                 for address in chat {
                     outcome.push(match self.chat_shadowbans.remove(address) {
                         Some((name, written)) => self.moderated(
@@ -1712,6 +1803,18 @@ impl ServerCore {
                             moderation::CHAT_SHADOWBANS_FILE,
                         ),
                         None => "A ticked chat shadowban was not in force.".to_owned(),
+                    });
+                }
+                for address in matchmaking {
+                    outcome.push(match self.matchmaking_shadowbans.remove(address) {
+                        Some((name, written)) => self.moderated(
+                            Some(written),
+                            address,
+                            format!("The matchmaking shadowban on {name} is lifted"),
+                            String::new(),
+                            moderation::MATCHMAKING_SHADOWBANS_FILE,
+                        ),
+                        None => "A ticked matchmaking shadowban was not in force.".to_owned(),
                     });
                 }
                 for address in ip {
@@ -1857,13 +1960,14 @@ pub fn run(config: &ServerConfig) -> std::io::Result<()> {
     core.set_words(words);
     let folder = moderation::folder();
     let mut chat_shadowbans = BanList::from_file(folder.join(moderation::CHAT_SHADOWBANS_FILE));
+    let mut matchmaking_shadowbans = BanList::from_file(folder.join(moderation::MATCHMAKING_SHADOWBANS_FILE));
     let mut ip_bans = BanList::from_file(folder.join(moderation::IP_BANS_FILE));
-    for list in [&mut chat_shadowbans, &mut ip_bans] {
+    for list in [&mut chat_shadowbans, &mut matchmaking_shadowbans, &mut ip_bans] {
         let read = list.refresh();
         let path = list.path().map(|path| path.display().to_string()).unwrap_or_default();
         console.line(&read.unwrap_or_else(|| format!("{path}: no bans")));
     }
-    core.set_bans(chat_shadowbans, ip_bans);
+    core.set_bans(chat_shadowbans, matchmaking_shadowbans, ip_bans);
     let panel = start_panel(config.bind, &folder, &console);
     let mut buffer = [0_u8; 2048];
     let mut last_status = Instant::now();

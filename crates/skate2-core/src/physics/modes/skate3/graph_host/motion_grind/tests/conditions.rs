@@ -10,6 +10,7 @@ fn physical() -> Physical {
         air_grind_443: true,
         air_time_184: 0.125,
         dropping_in_324: true,
+        drop_in_without_transition_325: false,
     }
 }
 #[test]

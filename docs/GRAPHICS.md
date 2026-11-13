@@ -59,7 +59,7 @@ the consolidated view; update it when a batch lands.
 | `apps/skate2-pc/src/gpu_renderer/shadow_map.rs` | `RenderShadows_CSM` GPU side: Z/HBLUR/ATLAS targets, skater `shadow` technique, `Variance_HBlur`/`VBlur` filters, `ShadowCascades` |
 | `apps/skate2-pc/src/render_shadows.rs` | `RenderShadows_CSM` CPU side: light basis, cascade rows, cascade 0 -> 1 transform, `ShadowView::Cull` |
 | `apps/skate2-pc/src/gpu_renderer/map_draw.rs` | Retained map draw list: instance records, globals packing, `push_environment` / `push_sky` / diagnostic pushes, culling, per-frame `set_view` |
-| `apps/skate2-pc/src/gpu_renderer.rs` | Surface (non-sRGB, Opaque alpha, 4x MSAA), `upload_mesh` (UV0 + lighting stream), texture/cube upload, material bind-group builders |
+| `apps/skate2-pc/src/gpu_renderer.rs` | Surface (non-sRGB, Opaque alpha, MSAA from Display Settings' Anti-Aliasing), `upload_mesh` (UV0 + lighting stream), texture/cube upload, material bind-group builders |
 | `apps/skate2-pc/src/render_environment.rs` | Vault reads: `g_envattributes`, sun vector + sun-direction map, CSM attributes, all `material_fog` / `material_sky` collections, every class's `m_params`, fresnel table |
 | `apps/skate2-pc/src/render_world_painter.rs` | `BlendAttrib` / `BlendAttribCollection` for fog and sky (exact fmadds/fsel) |
 | `apps/skate2-pc/src/render_inspection.rs` | Per-draw routing: effect selection, channel/texture resolution, fallback accounting, occlusion-cube skip, per-frame blend update, log lines |
@@ -388,9 +388,16 @@ transparent). The base/decal body is `environment_vs` + `environment_tone(surfac
   draws are not depth-sorted.
 - **Culling.** `SceneRenderView::Cull` 0x828500a8 does the entity -> island
   shape (`WorldPresEntityOptimesh::CullMeshes_VMX` 0x827d0ae8,
-  `FillMtlSrtKeyListWithCulledKeys` 0x827e3068). It is tested against the exact
-  rasterizer clip volume, so culling never changes the image. Sky draws are
-  never culled.
+  `FillMtlSrtKeyListWithCulledKeys` 0x827e3068). The frustum test uses the exact
+  rasterizer clip volume. As in the original, the view's anti-frustum occluders
+  then drop what they hide, and the island area rule drops small far islands.
+  Sky draws are never culled.
+- **Characters, vehicles and DMOs.** Skaters, pedestrians, NIS characters,
+  vehicles and DMOs outside the view are left out of the main pass
+  (`SceneRenderView::Cull` over each entity's world `m_BB`). That box is the
+  model's unrotated box moved to the entity, so the port first widens it on
+  every side by its own diagonal: a turned skater or car is never cut at the
+  screen edge. Their shadows keep `ShadowView::Cull` per cascade.
 - **Multi-pass meshes.** `SceneRenderView::RenderMeshes` 0x82850670 draws
   single-pass meshes in sorted order and collects the rest. It then draws those
   pass-major: pass 0 of every multi-pass mesh, then pass 1, and so on, each
@@ -545,6 +552,16 @@ review yet.
   for the district's own lights. The characters keep Skate 2's `g_charattributes`: Skate 3's
   shadow bias and softening (0.02 against 0.8) leave hard self-shadow edges under Skate 2's
   programs.
+- **Skate 3 worlds stream as Skate 3 does.** A linked Skate 3 district or downloadable content
+  map selects its Pres, Sim and Tex collections with Skate 3's records (title update 3
+  `cStreamFile::Update` 0x8247ce58, `FindCollections` 0x8247b3a0), not Skate 2's 195 m box
+  and 16-collection cap. Each level-0 collection's record holds the collections whose hulls
+  overlap a box at its centre (Pres 195 m out, Sim and Tex 95 m). The world's stream XML,
+  `data\stream\<world>_Pres.xml` and `_Sim.xml` named by the world record's `Name`,
+  replaces the records of the tiles it lists with the tiles seen from them (up to 64). A focus
+  takes the record of the tile it stands in, nearest first; a texture focus keeps four. In
+  Industrial a tile's Pres selection holds up to 33 collections reaching about 600 m, and the
+  downloadable content maps' reach most or all of the map.
 - **No stencil attachment.** The hair and ghost passes' STENCILPASS REPLACE
   255 writes are dropped; nothing reads the stencil yet.
 - **Depth bias precision.** The constant is exact for depths of 0.5 and up
@@ -565,7 +582,14 @@ review yet.
     percentage, over the lift it gives the scene without PostFX (1.22 x 1.15 x 1.10), before
     the HUD, movies and fades draw. At 100% the blit is as before. Edit Skater's room, drawn
     without the final blit, is not affected;
-  - 4x MSAA (`SKATE2_NO_MSAA` gives 1x); the character programs interpolate their
+  - MSAA, Display Settings' Anti-Aliasing (Off, 2x or 4x, 4x by default; its own profile leaf
+    `SK82_PC::Antialiasing`, so the version 9 display chunk is unchanged; `SKATE2_NO_MSAA` gives
+    1x). The row offers the counts the surface and depth formats support on the device (2x needs
+    the adapter's own format features, which the device requests). A change applies on the next
+    frame: the scene targets and every main-pass pipeline are
+    made again at the new count (the device pools identical bind group layouts, so existing
+    bindings stay valid), the final pass is made again, and the map's draw list builds again in
+    the background, the world not drawn meanwhile; the character programs interpolate their
     attributes at the centroid, so an edge pixel whose centre lies off the triangle does not
     sample past the surface (UVs, normals, the shadow lookup's world position);
   - VSync (Display Settings, display chunk version 7; earlier saves take it from their cap,
@@ -583,6 +607,12 @@ review yet.
     window's 8.3 ms timer, draw nothing and count as shown, so the simulation keeps
     wall-clock pace and fade-covered loads go on. Focus, or the cursor moving over the
     window, brings the redraws back;
+  - each frame asks for the next (`request_redraw`, Windows' internal `WM_PAINT`) and the loop
+    waits for it. A redraw asked for and not received within 250 ms is asked for again: a
+    message loop other than winit's that takes the `WM_PAINT` without dispatching it would
+    otherwise stop the frames for good. The window registers no drop target (winit's
+    `with_drag_and_drop(false)`; the game takes no dropped files): with winit's, a file dragged
+    over the window froze the game until it was restarted;
   - `SKATE2_NO_VSYNC` for uncapped presentation (VSync off, no cap).
 - **Backends.** Every wgpu backend is allowed (Vulkan first, then DX12), and the DX12 shaders
   compile with FXC, which ships with Windows: wgpu's automatic choice takes any `dxcompiler.dll`
@@ -591,6 +621,17 @@ review yet.
   `SKATE2_WGPU_LOG` prints wgpu's warnings and errors, with `WGPU_VALIDATION=1` also the
   validation layer's. A panic in the window thread shows the error, the adapter and the crash
   report's path in a message box.
+- **Swapchain results.** wgpu-hal is vendored (`vendor/wgpu-hal`, 30.0.1 with the changes in its
+  `PATCHES.md`): a Vulkan acquire or present that returns
+  `VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT` configures the swapchain again, as an
+  out-of-date one does, where upstream takes any result it does not handle for a lost device. On
+  Windows, an acquired image whose acquire fence does not signal within the acquire's second (a
+  covered or minimized window can hold it that long) is still drawn, and the next acquire waits
+  for that fence first and reports a timeout while it has not signaled; upstream took the
+  fence wait's `VK_TIMEOUT` for an unexpected error and lost the device, which ended the game with
+  "Unexpected error variant (driver implementation is at fault)" after an alt-tab. A lost device
+  fails every frame after it, so the game ends with the device-lost reason and the Vulkan result
+  the backend did not handle.
 - **Bundled draws and the stencil reference.** wgpu sends the stencil reference to the driver
   only while a pipeline that reads it is bound, and replaying a render bundle binds its pipelines
   without it. `WorldShadowView::Render` binds the world caster pipeline before setting

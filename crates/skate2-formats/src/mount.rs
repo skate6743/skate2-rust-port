@@ -290,6 +290,19 @@ impl MountedBig {
         &self.source
     }
 
+    /// PC port: this archive holding only the entries whose name `keep` passes, read from the same
+    /// file: a linked Skate 3 downloadable content pack's view in the game's mounts
+    /// (`skate2_core::skate3::dlc::game_view`).
+    #[must_use]
+    pub fn retaining(&self, keep: impl Fn(&str) -> bool) -> Self {
+        let mut view = self.clone();
+        view.archive.entries.retain(|entry| match &entry.key {
+            BigEntryKey::Name(name) => keep(name),
+            BigEntryKey::Hash(_) => false,
+        });
+        view
+    }
+
     #[must_use]
     pub fn header_path(&self) -> &Path {
         &self.header_path

@@ -88,7 +88,7 @@ mod tests {
         assert_eq!(parse("not json"), ControllerSettings::VANILLA);
         assert_eq!(parse("{}"), ControllerSettings::VANILLA);
         let settings = parse(r#"{"left_stick_multiplier": 3, "left_stick_deadzone": -4, "right_stick_anti_deadzone": 80, "other": "x"}"#);
-        assert_eq!(settings.left, StickSettings { multiplier: 110, deadzone: 0, anti_deadzone: 0 });
+        assert_eq!(settings.left, StickSettings { multiplier: 120, deadzone: 0, anti_deadzone: 0 });
         assert_eq!(settings.right, StickSettings { anti_deadzone: 50, ..StickSettings::VANILLA });
         assert_eq!(parse(r#"{"right_stick_deadzone": "12"}"#), ControllerSettings::VANILLA, "a number written as text is no number");
     }

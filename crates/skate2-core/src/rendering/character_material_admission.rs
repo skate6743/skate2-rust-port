@@ -95,6 +95,9 @@ pub struct CharacterMaterialAdmission {
     cloth: crate::skater_ropa_runtime::SkaterRopaRuntime,
     cvars: InputCvarReferences,
     vault: Arc<AttributeRuntimeVault>,
+    /// PC port: customization colours set after the scene was built (`set_colours`), which the
+    /// meshes take in place of the scene's own.
+    colours: Option<Vec<skate2_formats::recipe::customizations::Colour>>,
 }
 pub struct CharacterMaterialView<'a> {
     /// Prepared CPU stream uses the entity transform instead of skin matrices.
@@ -342,6 +345,7 @@ impl CharacterMaterialAdmission {
             cloth,
             vault,
             cvars,
+            colours: None,
         })
     }
     pub(crate) fn try_construct_from_header(
@@ -421,6 +425,7 @@ impl CharacterMaterialAdmission {
             cloth: crate::skater_ropa_runtime::SkaterRopaRuntime::without_effects(),
             cvars: self.cvars.clone(),
             vault: Arc::clone(&self.vault),
+            colours: self.colours.clone(),
         };
         copy.try_construct_scene_character()?;
         Ok(copy)
@@ -478,7 +483,12 @@ impl CharacterMaterialAdmission {
         let recipe_model =
             &self.scene.components[indices.component_index].models[indices.model_index];
         let mut colours = [[1.0; 4]; 2];
-        if let Some(custom) = &self.scene.customizations {
+        // PC port: colours set since the scene was built stand for its own (`set_colours`).
+        let custom_colours = self
+            .colours
+            .as_deref()
+            .or_else(|| self.scene.customizations.as_ref().map(|custom| custom.colours.as_slice()));
+        if let Some(custom_colours) = custom_colours {
             // The chosen LOD material vector is the same ordered material map
             // consumed by RebindToMaterials. Each instance maps one RModel mesh.
             if let Some(material) = lod
@@ -486,7 +496,7 @@ impl CharacterMaterialAdmission {
                 .get(mesh)
                 .and_then(|m| m.materials.first())
             {
-                if let Some(colour) = custom.colours.iter().find(|c| {
+                if let Some(colour) = custom_colours.iter().find(|c| {
                     c.model_id == recipe_model.asset_id && c.material_id == material.asset_id
                 }) {
                     for axis in 0..3 {
@@ -534,6 +544,11 @@ impl CharacterMaterialAdmission {
                 None
             },
         })
+    }
+    /// PC port: Edit Skater's change of colours alone (a colour row's, the colour picker's): the
+    /// customization colours the meshes take from here on, the scene and its GPU objects kept.
+    pub(crate) fn set_colours(&mut self, colours: Vec<skate2_formats::recipe::customizations::Colour>) {
+        self.colours = Some(colours);
     }
     pub fn meshes(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.entries.iter().map(|e| (e.part, e.mesh))

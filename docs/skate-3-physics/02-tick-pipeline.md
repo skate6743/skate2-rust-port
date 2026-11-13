@@ -74,7 +74,7 @@ Addresses below: Skate 2 functions for the host frame, TU3 functions for the Ska
 | Puddle response (PC rain feature) | |
 | **PostInput and state selection** | PostInput 0x82DB5588/0x82DB573C, CalcSuggestedState 0x82D8ADE8, SetPhysicsState 0x82DB8540 |
 | **PreState** | Update3_State 0x82DB6050 / 0x82DB60EC |
-| **State update** (by state: Revert, HandPlant, FootPlant, Boneless, Ground [reckoning, PreUpdate 0x82D37C50, ground phase, handplant query, ground input], GrindTrick, Air, KnownAir, BipedAir, BipedGround/OffBoardPushing [+ contact submit, geometry submit], GroundAnimation, LandingOnDeck, Slide, Wipeout, Teleporting, grinds/Nonspecific) | see `03-states-and-subsystems.md` |
+| **State update** (by state: Revert, HandPlant, FootPlant, Boneless, Ground [PreUpdate 0x82D37C50 (reckoning job 0x82D4E250 into a staged copy), ground phase on the previous tick's Reckoning, Post 3-State 0x82D37F38 (job result committed, handplant, ground input)], GrindTrick, Air, KnownAir, BipedAir, BipedGround/OffBoardPushing [+ contact submit, geometry submit], GroundAnimation, LandingOnDeck, Slide, Wipeout, Teleporting, grinds/Nonspecific) | see `03-states-and-subsystems.md` |
 | State timer += timestep | State 0x82DB6120 |
 | Board possession owner update | 0x82DB6150 |
 | Skeleton line tests end; hips ground start | World 0x8275ECA4 |

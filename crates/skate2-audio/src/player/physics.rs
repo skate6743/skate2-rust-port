@@ -143,6 +143,10 @@ pub struct PlayerPhysics {
     pub is_wipe_out_over: bool,
     /// TU3 `SFXCTL_PlayerPhysics` +0x301: the skater's darkcatch (Skate 3 physics only).
     pub skate3_dark_catch: bool,
+    /// TU3 `SFXCTL_PlayerPhysics` +0x329 and +0x32A: a drop-in's tail locking on the edge and
+    /// letting go (Skate 3 physics only).
+    pub skate3_drop_in_lock: bool,
+    pub skate3_drop_in_release: bool,
     /// PC port: the trick is a Skate 3-only scorable (`SkaterData::skate3_only_trick`).
     pub skate3_only_trick: bool,
     /// PC port: the skater runs Skate 3 physics.
@@ -275,6 +279,8 @@ impl Default for PlayerPhysics {
             is_wiping_out: false,
             is_wipe_out_over: false,
             skate3_dark_catch: false,
+            skate3_drop_in_lock: false,
+            skate3_drop_in_release: false,
             skate3_only_trick: false,
             skate3_physics: false,
             wheel_occlusion: 0.0,
@@ -409,6 +415,9 @@ impl PlayerPhysics {
         self.game_speed = 1.0;
         self.is_wipe_out_over = false;
         self.skate3_dark_catch = false;
+        // TU3 Reset 0x824b0c28.
+        self.skate3_drop_in_lock = false;
+        self.skate3_drop_in_release = false;
         self.skate3_only_trick = false;
         self.skate3_physics = false;
         self.last_player_speed = 0.0;
@@ -638,6 +647,9 @@ impl PlayerPhysics {
         self.is_wiping_out = skater.is_wiping_out;
         self.is_wipe_out_over = skater.is_wipe_out_over;
         self.skate3_dark_catch = skater.skate3_dark_catch;
+        // TU3 0x824b1964 and 0x824b1970.
+        self.skate3_drop_in_lock = skater.skate3_drop_in_lock;
+        self.skate3_drop_in_release = skater.skate3_drop_in_release;
         self.skate3_only_trick = skater.skate3_only_trick;
         self.skate3_physics = skater.skate3_physics;
         self.calculate_wheel_occlusion(up, look, mics, map);

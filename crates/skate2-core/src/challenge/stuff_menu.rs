@@ -49,23 +49,35 @@ pub mod category {
     pub const SPAWN_POINTS: i32 = 23;
     pub const DLC_SPAWN_POINTS: i32 = 24;
     pub const DLC_CAREER: i32 = 25;
-    /// PC port: linked Skate 3 data's districts under the downloaded content
-    /// (`crate::skate3::DISTRICTS`, in order), each listing its challenge map teleports.
-    pub const SKATE3_UNIVERSITY: i32 = 26;
-    pub const SKATE3_DOWNTOWN: i32 = 27;
-    pub const SKATE3_INDUSTRIAL: i32 = 28;
-    /// `eFEStuffMenuCategory_Max`, past the port's Skate 3 districts.
-    pub const MAX: i32 = 29;
+    /// PC port: linked Skate 3 data's areas under the downloaded content (its districts, then
+    /// its downloadable content's maps, `crate::skate3::Skate3Data::districts` in order), each
+    /// listing its challenge map teleports: `crate::skate3::AREA_SLOTS` categories from this one.
+    pub const SKATE3_FIRST_AREA: i32 = 26;
+    /// `eFEStuffMenuCategory_Max`, past the port's Skate 3 areas.
+    pub const MAX: i32 = 38;
 }
 use category as cat;
 
-/// The Skate 3 district categories, in `crate::skate3::DISTRICTS` order.
-const SKATE3_DISTRICTS: [i32; 3] = [cat::SKATE3_UNIVERSITY, cat::SKATE3_DOWNTOWN, cat::SKATE3_INDUSTRIAL];
+/// The linked Skate 3 areas' categories, in `crate::skate3::Skate3Data::districts` order.
+const SKATE3_DISTRICTS: [i32; crate::skate3::AREA_SLOTS] = [
+    cat::SKATE3_FIRST_AREA,
+    cat::SKATE3_FIRST_AREA + 1,
+    cat::SKATE3_FIRST_AREA + 2,
+    cat::SKATE3_FIRST_AREA + 3,
+    cat::SKATE3_FIRST_AREA + 4,
+    cat::SKATE3_FIRST_AREA + 5,
+    cat::SKATE3_FIRST_AREA + 6,
+    cat::SKATE3_FIRST_AREA + 7,
+    cat::SKATE3_FIRST_AREA + 8,
+    cat::SKATE3_FIRST_AREA + 9,
+    cat::SKATE3_FIRST_AREA + 10,
+    cat::SKATE3_FIRST_AREA + 11,
+];
 const CATEGORIES: usize = cat::MAX as usize;
 
 /// `FEStuffMenu::gSubCategory` (`0x82079860`): each category's sub-categories up to its
 /// `eFEStuffMenuCategory_None` (-99). PC port: the downloaded content also holds linked Skate 3
-/// data's districts.
+/// data's areas.
 const SUB_CATEGORIES: [&[i32]; CATEGORIES] = [
     &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 11],
     &[13, 14, 15, 16, 17, 18],
@@ -78,7 +90,16 @@ const SUB_CATEGORIES: [&[i32]; CATEGORIES] = [
     &[],
     &[],
     &[19, 20, 21, 22, 23],
-    &[24, 25, 26, 27, 28],
+    &[24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37],
+    &[],
+    &[],
+    &[],
+    &[],
+    &[],
+    &[],
+    &[],
+    &[],
+    &[],
     &[],
     &[],
     &[],
@@ -98,7 +119,7 @@ const SUB_CATEGORIES: [&[i32]; CATEGORIES] = [
     &[],
 ];
 
-/// `gStuffCategoryHAL` (`0x82fdb2f0`); the Skate 3 districts are named by
+/// `gStuffCategoryHAL` (`0x82fdb2f0`); the Skate 3 areas are named by
 /// `crate::skate3::DistrictSpec::title` instead.
 pub const CATEGORY_HAL: [&str; CATEGORIES] = [
     "ID_COMMON_UNKNOWN",
@@ -127,6 +148,15 @@ pub const CATEGORY_HAL: [&str; CATEGORIES] = [
     "ID_STUFFMENU_CATEGORY_SPAWNPOINTS",
     "ID_STUFFMENU_CATEGORY_DLC_SPAWNPOINTS",
     "ID_STUFFMENU_CATEGORY_DLC_CAREER",
+    "ID_COMMON_UNKNOWN",
+    "ID_COMMON_UNKNOWN",
+    "ID_COMMON_UNKNOWN",
+    "ID_COMMON_UNKNOWN",
+    "ID_COMMON_UNKNOWN",
+    "ID_COMMON_UNKNOWN",
+    "ID_COMMON_UNKNOWN",
+    "ID_COMMON_UNKNOWN",
+    "ID_COMMON_UNKNOWN",
     "ID_COMMON_UNKNOWN",
     "ID_COMMON_UNKNOWN",
     "ID_COMMON_UNKNOWN",
@@ -610,8 +640,9 @@ impl StuffMenu {
         }
     }
 
-    /// PC port: each linked Skate 3 district's teleports (`crate::skate3`), named by Skate 3's
-    /// English strings; none without linked Skate 3 data.
+    /// PC port: each linked Skate 3 area's teleports (`crate::skate3`: its districts', then its
+    /// downloadable content maps'), named by Skate 3's English strings; none without linked Skate
+    /// 3 data.
     fn populate_skate3_districts(&mut self) {
         let linked = crate::skate3::linked();
         for (index, category) in SKATE3_DISTRICTS.into_iter().enumerate() {
@@ -766,7 +797,8 @@ impl StuffMenu {
     pub fn category_hal(&mut self, world: &World, category: i32) -> MenuText {
         if let Some(index) = SKATE3_DISTRICTS.iter().position(|&district| district == category) {
             let count = self.num_sub_menu_items(world, category);
-            return MenuText::Copied(format!("{} ({count})", crate::skate3::DISTRICTS[index].title));
+            let title = crate::skate3::linked().and_then(|data| data.districts.get(index).map(|district| district.spec.title)).unwrap_or_default();
+            return MenuText::Copied(format!("{title} ({count})"));
         }
         match slot(category) {
             Some(0) => MenuText::Copied(ROOT_HAL.to_owned()),

@@ -1457,6 +1457,110 @@ impl MixMap {
     }
 }
 
+/// PC port: a state's master mix channel and preset blocks, measured.
+struct MasterLayout {
+    header: usize,
+    /// The master block: its four-word head, then the channel records up to `masters_end`.
+    masters: usize,
+    masters_end: usize,
+    presets: usize,
+    presets_end: usize,
+    /// Each channel's `objectID`, in order.
+    objects: Vec<u32>,
+}
+
+impl MasterLayout {
+    fn read(data: &[u8], state: usize) -> Option<Self> {
+        let word = |at: usize| -> Option<u32> {
+            let bytes = data.get(at..at.checked_add(4)?)?;
+            Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+        let offset = |at: usize| -> Option<usize> {
+            let bytes = data.get(at..at.checked_add(4)?)?;
+            usize::try_from(i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).ok()
+        };
+        if state >= offset(4)? {
+            return None;
+        }
+        let header = offset(offset(8)?.checked_add(4 * state)?)?;
+        let masters = header.checked_add(offset(header.checked_add(0x10)?)?)?;
+        let presets = header.checked_add(offset(header.checked_add(0x14)?)?)?;
+        let count = offset(masters)?;
+        let mut masters_end = masters.checked_add(16)?;
+        let mut presets_end = presets;
+        let mut objects = Vec::new();
+        for _ in 0..count {
+            let inputs = ((word(masters_end)? >> 16) & 0xFF) as usize;
+            objects.push(word(masters_end.checked_add(8)?)?);
+            masters_end = masters_end.checked_add(4 * (inputs + 3))?;
+            presets_end = presets_end.checked_add(4 * ((word(presets_end)? & 0xFF) as usize + 1))?;
+        }
+        (masters_end <= data.len() && presets_end <= data.len()).then_some(Self { header, masters, masters_end, presets, presets_end, objects })
+    }
+}
+
+/// PC port: the `objectID` each master mix channel of state `state` names, in order; `None` when
+/// the map has no such state or its master channels do not read whole.
+#[must_use]
+pub fn master_objects(data: &[u8], state: usize) -> Option<Vec<u32>> {
+    MasterLayout::read(data, state).map(|layout| layout.objects)
+}
+
+/// PC port: `data` with `records` appended to state `state`'s master mix channels and `presets`
+/// to its preset groups: each record as its words (id, swing, `objectID`, inputs), each group as
+/// its words (head, entries). The state's next block follows its presets, so both blocks are
+/// rebuilt at the end of the map and the state header names them anew; the channel count, and
+/// the count of output arrays (one for each run of channels of one SFX object), grow with them.
+/// `None` when the state does not read whole or a record or group is not one.
+#[must_use]
+pub fn with_master_channels(data: &[u8], state: usize, records: &[&[u32]], presets: &[&[u32]]) -> Option<Vec<u8>> {
+    let layout = MasterLayout::read(data, state)?;
+    if records.len() != presets.len() {
+        return None;
+    }
+    for record in records {
+        if record.len() != ((record.first()? >> 16) & 0xFF) as usize + 3 {
+            return None;
+        }
+    }
+    for group in presets {
+        if group.len() != (group.first()? & 0xFF) as usize + 1 {
+            return None;
+        }
+    }
+    let head = data.get(layout.masters..layout.masters + 16)?;
+    let head_word = |k: usize| u32::from_be_bytes([head[4 * k], head[4 * k + 1], head[4 * k + 2], head[4 * k + 3]]);
+    let mut arrays = head_word(1);
+    let mut previous = layout.objects.last().copied();
+    for record in records {
+        if previous != Some(record[2]) {
+            arrays += 1;
+        }
+        previous = Some(record[2]);
+    }
+    let count = u32::try_from(layout.objects.len() + records.len()).ok()?;
+    let mut out = data.to_vec();
+    out.resize(out.len().next_multiple_of(4), 0);
+    let new_masters = out.len();
+    for value in [count, arrays, head_word(2), head_word(3)] {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+    out.extend_from_slice(data.get(layout.masters + 16..layout.masters_end)?);
+    for value in records.iter().flat_map(|record| record.iter()) {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+    let new_presets = out.len();
+    out.extend_from_slice(data.get(layout.presets..layout.presets_end)?);
+    for value in presets.iter().flat_map(|group| group.iter()) {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+    let masters_offset = u32::try_from(new_masters - layout.header).ok()?;
+    let presets_offset = u32::try_from(new_presets - layout.header).ok()?;
+    out.get_mut(layout.header + 0x10..layout.header + 0x14)?.copy_from_slice(&masters_offset.to_be_bytes());
+    out.get_mut(layout.header + 0x14..layout.header + 0x18)?.copy_from_slice(&presets_offset.to_be_bytes());
+    Some(out)
+}
+
 impl EvtUnique {
     fn switch_off(&mut self) {
         self.elapsed = 0.0;

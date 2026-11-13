@@ -145,6 +145,8 @@ pub struct MissionFrame {
     /// (`0x827c4898`) gives the tricks back end (`+0x28`, the trick display's
     /// `mCurrentStance`).
     pub is_riding_switch: bool,
+    /// `PhysOut_Animation::mIsRidingFakie` (+0x97), which `Stance.IsFakie` reads.
+    pub is_riding_fakie: bool,
     pub is_wipeout_teleport_pending: bool,
     pub time_until_wipeout_teleport: f32,
     pub is_grabbing_object: bool,
@@ -469,5 +471,7 @@ pub fn player_state(frame: &MissionFrame, colliding_triggers: Vec<(u64, u64)>) -
         manual_time: frame.manual_time,
         anim_trick_bits: frame.anim_trick_bits,
         wiping_out: frame.wiping_out,
+        riding_fakie: frame.is_riding_fakie,
+        riding_switch: frame.is_riding_switch,
     }
 }

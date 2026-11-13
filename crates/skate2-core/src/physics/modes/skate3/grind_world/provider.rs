@@ -188,6 +188,14 @@ impl StaticProvider {
         }
         Ok(result)
     }
+
+    /// `GrindData::Implementation::BoxTest` (82C1EAD8) as its edge users read it: the chord of
+    /// each primitive in the box (82C1E568: D -> (A+B)+(C+D)), in [`Self::query`] order. The
+    /// host registers the props' splines after the world's, the native static then dynamic
+    /// provider order.
+    pub fn box_test(&self, min: [f32; 3], max: [f32; 3]) -> Result<Vec<&Primitive>, String> {
+        Ok(self.query(min, max)?.into_iter().map(|index| &self.primitives[index]).collect())
+    }
 }
 
 fn string(value: &Value, key: &str) -> Result<String, String> {

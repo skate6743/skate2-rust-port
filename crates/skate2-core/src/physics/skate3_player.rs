@@ -1676,6 +1676,7 @@ fn send_skitch_messages(world: &PhysicalAssemblyWorld, messages: &mut Vec<super:
                 wipeout_gesture: skater.animation_input.extra.wipeout_gesture,
                 stance: [packet.riding_fakie, packet.mirrored, packet.riding_switch, packet.regular_stance],
                 push_style: skater.player_state.push_style,
+                drop_in_sounds: skater.drop_in_sounds,
                 board_ground: physics.riding.ground.clone(),
                 wheel_lines: physics.riding.wheel_lines,
                 bone_contacts: contact.bones,

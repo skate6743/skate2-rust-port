@@ -12,6 +12,7 @@ What is not ported, not verified, or knowingly different. TU3 addresses.
 | Pushing: collision response while holding a prop | PhysState_OffBoard_Pushing (vtable 0x82327364) | the grab, its per-tick upkeep (re-check, re-grab, emergency exit), moving by forces, follow and hand IK are ported |
 | Skate 3 per-district emitter volumes (`reverb_<district>.ems`, `sfx_`, `music_`, `speakers_`, `crowds_`) | SFXObj_Reverb::UpdateParams 0x824de548 takes them first | Skate 2's city volumes are switched off in districts; districts use Skate 3's painted reverb layer and the default key |
 | Darkcatch effect values driven by the jitter mixer (effects whose "use attributes" flag is 0) | SFXObj_Jitter at AudioSystem+0x2D4, 0x824EF458 | those effects stay at plugin defaults (DistortionClip 100 = bypass, IIR gain 1 = flat) |
+| Skate 3's versions of the shared mixer channels | Skate 3's MixMapSK8.mxb: its player sub channels 0, 1, 4, 8 and 9 sum more MAIN events than Skate 2's (among them 42, 51, 139, 166, 188, 197, 219 and 220) and some of their shared events have other envelopes; its PLAYER mix control 13 is also scaled by mix control 95 (a curve of the physics controller's input 9) | the drop-in and darkcatch channels taken from Skate 3's map (`player/skate3_mix.rs`) read Skate 2's versions of these, as every other skater sound does |
 | Reverb mixer inputs | UpdateNicotine 0x824df468 has 7 inputs | the port keeps Skate 2's 4-input mix data |
 | Class_Flips hippy special cases | TU3 +0x1F6 byte / +mNumBails byte → type 3 | the port keeps its `was_hippy` levels |
 | Score output records with no consumer | ScoreHolder::FillPhysOut 0x82da6630, Sequence::FillPhysOut 0x82da4a48, TrickScoringSettings::LookupTrick 0x82da25b8, TrickDatabase::CollectTrickData 0x82da1bf0 | not yet diffed (`20-scoring-audit.md`) |
@@ -34,9 +35,27 @@ What is not ported, not verified, or knowingly different. TU3 addresses.
   5.78–6.54 m/s).
 - Prop pushing distances against TU3 (scripted pull: 2 m at ~2 m/s; Skate 2 physics stops on the
   same scenery).
+- Grind names where the deck barely moves along the edge: a drop-in from the University stadium
+  deck edge (354.53, 4.75, 385.94, yaw −2.9497) starts the same tipslide with the board within 2 cm
+  and about 1.5 degrees of TU3, but TU3 names it FS_BLUNT and the port BS_TAILSLIDE; the scripted
+  darkslide on the box east of it is BS_DARKSLIDE_F in TU3 and BS_DARKSLIDE_B in the port. Both
+  decide on the sign of the deck velocity crossed with the board's forward (CreateGrindAttributes
+  0x82BAF3C8), which is near zero in these two cases. Not shown to be a port difference.
 
 ## Resolved questions
 
+- Coasting speed through jump chains: the port's test street is surface mode 1 ("smooth", speed
+  model error bound 0.3) and TU3's Skate School yard is mode 2 ("rough", bound 0.2;
+  ProcessedPhysIn +2540, surface layout via +2544, bound at +260). A nose-manual chain
+  (272-degree spins, a 200-tick period) settled at 0.333 m/s in the port and 0.438 in TU3; with
+  TU3's smooth layout copied over its rough one the same chain settles at 0.332, and the speed,
+  heading, deck pitch and manual controller after each landing match the port's to 0.01 m/s,
+  0.07 degree, 0.15 degree and 0.0001.
+- Rolling noise: coasting on flat ground, the board's sideways speed and yaw rate depend on the
+  collision mesh under it. On Skate 3 ground the port gives 0.0001-0.0002 (m/s, rad/s) on most
+  patches (downtown core plaza), as TU3 does in its Skate School yard, and both give
+  0.003-0.010 / 0.002-0.022 on some patches; on a Skate 2 street the port's baseline is
+  0.001-0.0016 / 0.003-0.0036.
 - Heavy-landing input to the Hall of Meat: `export_frame`
   publishes the wipeout request 6 as `GameplayOutput::heavy_landing` (kind 1/2/0, speed; TU3 Update5
   0x82DB71C8), and `physical_player_phys_out_skate3.rs` passes it on as the special wipeout info.

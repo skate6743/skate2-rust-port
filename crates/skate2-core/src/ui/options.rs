@@ -13,7 +13,7 @@
 use super::{FeSoundRequest, pause_menu::PauseMenuInput};
 use crate::stick_settings::{ControllerSettings, DEADZONES, MULTIPLIERS, StickSettings};
 pub use skate2_formats::skater_profile::{
-    BRIGHTNESSES, FIELD_OF_VIEWS, FrameRateCap, PcDisplaySettings, ProfileSettings, RESOLUTION_SCALES, RESOLUTION_SCALE_STEP,
+    BRIGHTNESSES, FIELD_OF_VIEWS, FrameRateCap, Msaa, PcDisplaySettings, ProfileSettings, RESOLUTION_SCALES, RESOLUTION_SCALE_STEP,
     VANILLA_BRIGHTNESS, VANILLA_FIELD_OF_VIEW,
 };
 use super::gameplay_modes::{Difficulty, PcGameplayModes, PhysicsMode, RAIN_VOLUME_STEPS, Weather};
@@ -114,6 +114,8 @@ pub enum Row {
     VSync,
     /// PC port addition: the 3D scene's size in percent of the window.
     ResolutionScale,
+    /// PC port addition: the 3D scene's multisample anti-aliasing.
+    Msaa,
     FpsCounter,
     Fullscreen,
     /// `eSk8FEGameOption_SubtitlesToggle`: the profile's `mSubtitles`.
@@ -173,7 +175,7 @@ impl Row {
             | Self::PhysicsSettings | Self::WeatherSettings => "option",
             Self::SfxVolume | Self::DialogueVolume | Self::MusicVolume | Self::RainVolume => "slider",
             Self::StickDeadzone | Self::StickAntiDeadzone | Self::FieldOfView | Self::Brightness => "morph",
-            Self::PostFx | Self::Fisheye | Self::FrameRateCap | Self::VSync | Self::ResolutionScale
+            Self::PostFx | Self::Fisheye | Self::FrameRateCap | Self::VSync | Self::ResolutionScale | Self::Msaa
             | Self::FpsCounter | Self::Fullscreen | Self::Subtitles | Self::CameraAngle | Self::GrindTransparency
             | Self::MiniMap | Self::Hud | Self::OffboardYAxis | Self::Vibration | Self::ShowLobbyChat
             | Self::ShowGhostPlayers | Self::StickMultiplier | Self::PhysicsMode | Self::Difficulty | Self::Weather
@@ -198,6 +200,7 @@ impl Row {
             Self::FrameRateCap => "Frame Rate Cap",
             Self::VSync => "VSync",
             Self::ResolutionScale => "Resolution Scale",
+            Self::Msaa => "Anti-Aliasing (MSAA)",
             Self::FpsCounter => "Frame Rate Counter",
             Self::Fullscreen => "Fullscreen",
             Self::Subtitles => "ID_GAMESETTINGS_SUBTITLE_TOGGLE",
@@ -294,6 +297,7 @@ const DISPLAY: &[Row] = &[
     Row::FrameRateCap,
     Row::VSync,
     Row::ResolutionScale,
+    Row::Msaa,
     Row::FpsCounter,
     Row::Fullscreen,
     Row::Brightness,
@@ -474,6 +478,28 @@ const fn slide_due(frames: u32) -> bool {
 /// The value a knob row of the display settings moves.
 fn knob(values: &mut PcDisplaySettings, row: Row) -> &mut u8 {
     if row == Row::Brightness { &mut values.brightness } else { &mut values.field_of_view }
+}
+/// PC port: the anti-aliasing sample counts the renderer can draw with, as bits (1, 2, 4); all
+/// until the renderer says.
+static MSAA_SUPPORTED: AtomicU8 = AtomicU8::new(0b111);
+/// The sample counts this device's renderer supports, of which the Anti-Aliasing row offers only
+/// those (Off always).
+pub fn set_supported_msaa(samples: &[u32]) {
+    let bits = samples.iter().fold(1, |bits, &samples| bits | match samples { 2 => 2, 4 => 4, _ => 0 });
+    MSAA_SUPPORTED.store(bits, Ordering::Relaxed);
+}
+/// Off, 2x, 4x among those supported, wrapping past either end.
+fn step_msaa(value: Msaa, forward: bool) -> Msaa {
+    const ORDER: [Msaa; 3] = [Msaa::Off, Msaa::X2, Msaa::X4];
+    let supported = MSAA_SUPPORTED.load(Ordering::Relaxed);
+    let mut index = ORDER.iter().position(|&v| v == value).unwrap_or(2);
+    for _ in 0..3 {
+        index = if forward { (index + 1) % 3 } else { (index + 2) % 3 };
+        if supported & (ORDER[index] as u8) != 0 {
+            break;
+        }
+    }
+    ORDER[index]
 }
 /// One step up or down, stopping at either end of `RESOLUTION_SCALES`.
 fn step_resolution_scale(value: u8, forward: bool) -> u8 {
@@ -742,7 +768,7 @@ impl Controller {
                 self.sounds.push(if input.right { "FE_SOUND_CORE_MUSIC_VOLUME_RIGHT" } else { "FE_SOUND_CORE_MUSIC_VOLUME_LEFT" });
                 &mut settings.music_volume
             }
-            Row::PostFx | Row::Fisheye | Row::FrameRateCap | Row::VSync | Row::ResolutionScale | Row::FpsCounter
+            Row::PostFx | Row::Fisheye | Row::FrameRateCap | Row::VSync | Row::ResolutionScale | Row::Msaa | Row::FpsCounter
             | Row::Fullscreen | Row::ShowLobbyChat | Row::ShowGhostPlayers => {
                 // The PC selectors sound core_nav_left/core_nav_right by key and, as
                 // Prev/NextValueCalc do, wrap past either end; Resolution Scale stops at its ends.
@@ -766,6 +792,7 @@ impl Controller {
                     Row::Fullscreen => values.fullscreen = !values.fullscreen,
                     Row::VSync => values.vsync = !values.vsync,
                     Row::ResolutionScale => values.resolution_scale = step_resolution_scale(values.resolution_scale, input.right),
+                    Row::Msaa => values.msaa = step_msaa(values.msaa, input.right),
                     _ => values.frame_rate_cap = step_frame_rate_cap(values.frame_rate_cap, input.right),
                 }
                 return Action::None;
@@ -1023,7 +1050,7 @@ mod tests {
         assert_eq!(
             menu.snapshot().values,
             PcDisplaySettings { postfx: false, fisheye: false, frame_rate_cap: FrameRateCap::RefreshRate, fps_counter: false, fullscreen: false,
-                resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS }
+                resolution_scale: 100, vsync: true, field_of_view: VANILLA_FIELD_OF_VIEW, brightness: VANILLA_BRIGHTNESS, msaa: Msaa::X4 }
         );
         menu.update(press(|i| i.down = true), &mut settings);
         menu.update(press(|i| i.left = true), &mut settings);
@@ -1055,6 +1082,17 @@ mod tests {
             menu.update(press(|i| i.right = true), &mut settings);
         }
         assert_eq!(menu.snapshot().values.resolution_scale, 200);
+        // Anti-Aliasing steps Off, 2x and 4x, wrapping past either end.
+        menu.update(press(|i| i.down = true), &mut settings);
+        assert_eq!(menu.snapshot().values.msaa, Msaa::X4);
+        for expected in [Msaa::X2, Msaa::Off, Msaa::X4] {
+            menu.update(press(|i| i.left = true), &mut settings);
+            assert_eq!(menu.snapshot().values.msaa, expected);
+        }
+        for expected in [Msaa::Off, Msaa::X2, Msaa::X4] {
+            menu.update(press(|i| i.right = true), &mut settings);
+            assert_eq!(menu.snapshot().values.msaa, expected);
+        }
         menu.update(press(|i| i.down = true), &mut settings);
         menu.update(press(|i| i.right = true), &mut settings);
         assert!(menu.snapshot().values.fps_counter);

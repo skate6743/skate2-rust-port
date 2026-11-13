@@ -137,6 +137,38 @@ fn admitted_occurrences_share_manager_ids_and_move_with_their_publication() {
 }
 
 #[test]
+fn end_update_after_a_full_mesh_collection_publishes_the_retained_records() {
+    let (mut backend, mut manager, owner) = fixture(3, 1);
+    let mut pool = SimulationDmoAssemblyPool::try_new(&manager, &backend, false).unwrap();
+    let handle = pool
+        .try_insert(
+            &mut manager,
+            &mut backend,
+            SimulationDmoAssemblyCandidate::try_from_locator(&owner).unwrap(),
+            4,
+            &mut HostSerialisedAssemblyBBoxNumeric,
+        )
+        .unwrap();
+    let created = pool.publication(&handle).unwrap().header().aabb;
+    // BeginUpdate met a full mesh collection and returned before the base update.
+    pool.base_update_skipped = true;
+    backend.begin_dynamic_update_frame(1. / 60.);
+    let frame = backend.collision_body_pool().frame_identity().unwrap();
+    assert!(!pool.publication(&handle).unwrap().has_bounds_for_frame(frame));
+    let active = pool
+        .try_end_update(&backend, &mut HostSerialisedAssemblyBBoxNumeric)
+        .unwrap();
+    assert!(!pool.base_update_skipped);
+    let publication = pool.publication(&handle).unwrap();
+    assert!(publication.has_bounds_for_frame(frame));
+    assert_eq!(publication.header().aabb, created);
+    // EndUpdate's own active list: the assembly is active unless every Part is frozen.
+    let body = publication.rigid_bodies()[0];
+    let frozen = backend.collision_body_pool().try_raw_state(body).unwrap() & 2 != 0;
+    assert_eq!(active, if frozen { Vec::new() } else { vec![0] });
+}
+
+#[test]
 fn preflight_refuses_foreign_backend_before_world_id_or_attachment() {
     let (backend, manager, owner) = fixture(2, 1);
     assert!(matches!(

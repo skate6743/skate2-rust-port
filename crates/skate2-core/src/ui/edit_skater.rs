@@ -37,10 +37,13 @@ pub enum EditSkaterMenu {
     /// PC port: with Skate 3 data linked, the style menu's Skate 3 Physics row opens the Skate 3
     /// physics mode's posture and style.
     Skate3Physics = 28,
+    /// PC port: with Skate 3's emo hair joined (`Skate3Data::clothing_for`), Back Alley Pete's
+    /// Hair first asks which game's hair styles to show.
+    HairPools = 29,
 }
 
 /// The menus, `EditSkaterMenu` values `0..MENU_COUNT`.
-const MENU_COUNT: usize = 29;
+const MENU_COUNT: usize = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -157,6 +160,9 @@ pub enum EditSkaterOption {
     /// 48), which the Skate 3 physics mode rides on in place of Skate 2's.
     Skate3Trucks = 103,
     Skate3Wheels = 104,
+    /// PC port: the Hair Pools rows.
+    Skate2Hair = 105,
+    Skate3Hair = 106,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -803,6 +809,18 @@ impl EditSkaterOption {
                 submenu: Some(M::Slappys),
                 kind: "option",
             },
+            Self::Skate2Hair => OptionDefinition {
+                title: "#Skate 2",
+                description: "0",
+                submenu: Some(M::Hair),
+                kind: "option",
+            },
+            Self::Skate3Hair => OptionDefinition {
+                title: "#Skate 3",
+                description: "0",
+                submenu: Some(M::Hair),
+                kind: "option",
+            },
         }
     }
 }
@@ -839,6 +857,7 @@ impl EditSkaterMenu {
             Self::BrandFilters => "ID_CAC_BRAND_FILTERS_TITLE",
             Self::MerchandisePools => "ID_CAC_SLAPPYS_MERCH_TITLE",
             Self::Skate3Physics => "#Skate 3 Physics",
+            Self::HairPools => "ID_CAC_HAIR_TITLE",
         }
     }
     pub const fn movie_mode(self) -> &'static str {
@@ -872,6 +891,7 @@ impl EditSkaterMenu {
             Self::BrandFilters => "list",
             Self::MerchandisePools => "list",
             Self::Skate3Physics => "morph",
+            Self::HairPools => "list",
         }
     }
     pub const fn banner(self) -> &'static str {
@@ -905,6 +925,7 @@ impl EditSkaterMenu {
             Self::BrandFilters => "slappys",
             Self::MerchandisePools => "slappys",
             Self::Skate3Physics => "none",
+            Self::HairPools => "petes",
         }
     }
     pub const fn initial_options(self) -> &'static [EditSkaterOption] {
@@ -997,6 +1018,7 @@ impl EditSkaterMenu {
             Self::BrandFilters => &[],
             Self::MerchandisePools => &[O::Skate2Merchandise, O::Skate3Merchandise],
             Self::Skate3Physics => &[O::Skate3Posture, O::Skate3Style, O::Skate3Trucks, O::Skate3Wheels],
+            Self::HairPools => &[O::Skate2Hair, O::Skate3Hair],
         }
     }
 }
@@ -1021,6 +1043,14 @@ pub struct EditSkaterInput {
     pub right: bool,
     pub morph_axis: f32,
     pub morph_axis_secondary: f32,
+    /// PC port: the colour picker's controls (`ui::colour_picker`): `ManualLStickY` (the left
+    /// stick up, `morph_axis` being its right), `ManualRStickX` and `ManualRStickY`, the triggers'
+    /// travel (`GP_LTrigger`, `GP_RTrigger`) and the D-pad alone (`AptDUp`, `AptDDown`,
+    /// `AptDLeft`, `AptDRight`).
+    pub left_stick_y: f32,
+    pub right_stick: [f32; 2],
+    pub triggers: [f32; 2],
+    pub dpad: [bool; 4],
 }
 
 /// Commands target the existing character/room owners. No duplicate CACRecord.
@@ -1080,6 +1110,11 @@ pub struct EditSkaterController {
     /// PC port: Skate 3 data is linked, so the style menu ends with the Gesture Set, Style and
     /// Posture rows.
     pub skate3_gestures: bool,
+    /// PC port: Skate 3's emo hair joined Back Alley Pete's, so Hair opens
+    /// [`EditSkaterMenu::HairPools`].
+    pub skate3_hair: bool,
+    /// PC port: the Hair Pools row last chosen: the hair style selector steps through Skate 3's.
+    pub skate3_hair_pool: bool,
 }
 impl Default for EditSkaterController {
     fn default() -> Self {
@@ -1102,6 +1137,8 @@ impl Default for EditSkaterController {
             skate3_merchandise: false,
             skate3_pool: false,
             skate3_gestures: false,
+            skate3_hair: false,
+            skate3_hair_pool: false,
         }
     }
 }
@@ -1414,6 +1451,17 @@ impl EditSkaterController {
                             self.skate3_pool = option == EditSkaterOption::Skate3Merchandise;
                             option.definition().submenu
                         }
+                        // PC port: with Skate 3's emo hair joined, Hair asks which game's hair
+                        // styles its selector steps through first.
+                        EditSkaterOption::Hair if self.skate3_hair => Some(EditSkaterMenu::HairPools),
+                        EditSkaterOption::Hair => {
+                            self.skate3_hair_pool = false;
+                            option.definition().submenu
+                        }
+                        EditSkaterOption::Skate2Hair | EditSkaterOption::Skate3Hair => {
+                            self.skate3_hair_pool = option == EditSkaterOption::Skate3Hair;
+                            option.definition().submenu
+                        }
                         _ => option.definition().submenu,
                     };
                     if option == EditSkaterOption::WearStylesGraphic {
@@ -1474,10 +1522,20 @@ pub struct EditSkaterView {
     pub help_a: String,
     pub help_b: String,
     pub help_start: String,
+    /// PC port: X's button help, `#` for none (the colour picker's Undo Changes).
+    pub help_x: String,
+    /// PC port: the open colour picker.
+    pub colour_picker: Option<ColourPickerView>,
     /// The `ID_CAC_NOT_ENOUGH_CASH` popup is up.
     pub cash_popup: bool,
     /// The pushed `FrontEndState_Receipt` (screen 122).
     pub receipt: Option<ReceiptView>,
+}
+
+/// PC port: what the colour picker shows (`ui::colour_picker`): the colour picked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColourPickerView {
+    pub colour: super::colour_picker::Hsv,
 }
 
 /// The receipt's menu picker options, `FrontEndState_Receipt::mReceiptOptionText`

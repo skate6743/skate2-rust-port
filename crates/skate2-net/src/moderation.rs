@@ -1,6 +1,6 @@
 //! The dedicated server's moderation (PC port addition): the ban lists the server checks
-//! datagrams and chat lines against, and the settings and key of its moderation panel
-//! ([`crate::panel`]). A ban holds an IP address, as a nickname changes at will.
+//! datagrams, chat lines and matchmaking against, and the settings and key of its moderation
+//! panel ([`crate::panel`]). A ban holds an IP address, as a nickname changes at will.
 //!
 //! The files sit together in the folder of `server-config.json`: beside the server's executable
 //! or, when only it holds one, the working directory. They stay with the server: git ignores
@@ -21,6 +21,10 @@ pub const CONFIG_FILE: &str = "server-config.json";
 pub const KEY_FILE: &str = "moderation-key.txt";
 /// The chat-shadowbanned addresses: their chat lines reach only themselves.
 pub const CHAT_SHADOWBANS_FILE: &str = "chat-shadowbans.json";
+/// The matchmaking-shadowbanned addresses: they play alone. Matchmaking and the lobby browser
+/// offer them no game and no one a game they are in, and one in a game with others is taken out
+/// of it.
+pub const MATCHMAKING_SHADOWBANS_FILE: &str = "matchmaking-shadowbans.json";
 /// The banned addresses: the server ignores every datagram from them.
 pub const IP_BANS_FILE: &str = "ip-bans.json";
 /// The fewest characters a panel key holds, and the most.

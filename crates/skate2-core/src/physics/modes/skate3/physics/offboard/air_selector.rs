@@ -71,6 +71,7 @@ impl AirSelector {
     pub(crate) fn consume_launch(
         &mut self,
         world: &BoardWorld,
+        grind: &crate::skate3_native::grind_world::StaticProvider,
         vehicles: &[(usize, skate_dynamics::SolidBody)],
         context: Context,
         deck_half_wheelbase: f32,
@@ -90,6 +91,7 @@ impl AirSelector {
             let edges = cache.with_primary_edges(|vehicle_edges| {
                 with_world_scene(
                     world,
+                    grind,
                     vehicle_edges,
                     &[],
                     |scene| scene.edge_candidates(&search),
@@ -180,13 +182,14 @@ impl AirSelector {
     pub(crate) fn consume(
         &mut self,
         world: &BoardWorld,
+        grind: &crate::skate3_native::grind_world::StaticProvider,
         vehicles: &[(usize, skate_dynamics::SolidBody)],
         context: Context,
         deck_half_wheelbase: f32,
     ) -> Result<Option<usize>, &'static str> {
         self.core.sampling.preinitialized_8494 = false;
         let selected = if self.core.sampling.pending_8492 {
-            self.consume_launch(world, vehicles, context, deck_half_wheelbase)?
+            self.consume_launch(world, grind, vehicles, context, deck_half_wheelbase)?
         } else {
             None
         };

@@ -12,6 +12,10 @@ use skate2_formats::{
 };
 use std::sync::Arc;
 
+#[path = "edit_skater_colour_picker.rs"]
+mod custom_colour;
+use custom_colour::{ColourPicker, ColourStep, ZoneColour};
+
 #[derive(Default, Debug)]
 pub(crate) struct EditSkaterEffects {
     pub recipe_changed: bool,
@@ -55,6 +59,10 @@ pub(crate) struct EditSkaterFrontend {
     slider: bool,
     /// The shop and its receipt (`mpReceiptState`).
     pub(crate) shop: EditSkaterShop,
+    /// PC port: the open colour picker (`edit_skater_colour_picker.rs`).
+    colour_picker: Option<ColourPicker>,
+    /// PC port: each colour zone's last custom colour, the swatch after its row's own.
+    custom_colours: [Option<ZoneColour>; 13],
 }
 const MAIN: u64 = 0xad45_4a0e_cd0e_2edf;
 const SHOP: u64 = 0xb5c3_cac4_b3dc_0165;
@@ -152,6 +160,67 @@ mod parity_tests {
                 assert!(materials.len() > 1, "{option:?}: HUD changed but material did not");
             }
         }
+    }
+    /// PC port: the colour picker opens on a hair colour (a row of tints; an eye colour is a part),
+    /// the skater wears the colour it picks as the row's custom swatch, B puts the old colour back,
+    /// and a colour A keeps stays as the row's last swatch after the row steps off it.
+    #[test]
+    #[ignore = "requires original SKATE2_GAME_ROOT assets"]
+    fn the_colour_picker_wears_its_colour_and_b_puts_the_old_one_back() {
+        use skate2_formats::mount::{MountSet, MountedBig, SKATE2_ARCHIVES};
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").expect("game root"));
+        let mut mounts = MountSet::new();
+        for spec in SKATE2_ARCHIVES {
+            let path = spec.path_under(&root);
+            if path.is_file() { mounts.push(MountedBig::open(path, spec.use_external_header).unwrap()); }
+        }
+        let db = Arc::new(CacPartDb::parse(&mounts.read_path(skate2_formats::cac_parts::DATABASE_PATH).unwrap()).unwrap());
+        let vault = AttributeRuntimeVault::try_load_mounted(&mounts, "data/db/skater.vlt",
+            &[record_ops::COLOUR_CLASS, record_ops::COLOUR_ZONE_CLASS, MORPH_CLASS, SPONSOR]).unwrap();
+        let record = record_ops::fresh_record(&db, &vault, true).unwrap();
+        let shop = EditSkaterShop::new(&db, 0, &|_, _| true, &|_, _| false).unwrap();
+        let mut frontend = EditSkaterFrontend::new(db.clone(), vault.clone(), record,
+            EditSkaterPolicy { unlock_all_clothing: true }, shop, false).unwrap();
+        let option = EditSkaterOption::HairColour;
+        assert!(frontend.colour_pickable(option).unwrap());
+        assert!(!frontend.colour_pickable(EditSkaterOption::EyesColour).unwrap(), "an eye colour is a part of its own");
+        let own = frontend.colours(option).unwrap();
+        let before = frontend.record.clone();
+        let mut e = EditSkaterEffects::default();
+        let step = |frontend: &mut EditSkaterFrontend, input: EditSkaterInput, e: &mut EditSkaterEffects| {
+            frontend.colour_picker_input(input, 16, e).unwrap();
+        };
+        frontend.open_colour_picker(option).unwrap();
+        let start = frontend.colour_picker_view().unwrap().colour;
+        for _ in 0..10 {
+            step(&mut frontend, EditSkaterInput { morph_axis: 1.0, ..Default::default() }, &mut e);
+            step(&mut frontend, EditSkaterInput { triggers: [0.0, 1.0], ..Default::default() }, &mut e);
+        }
+        assert!(e.recipe_changed);
+        assert_ne!(frontend.colour_picker_view().unwrap().colour, start);
+        let mut row = EditSkaterRow::default();
+        assert!(frontend.colour_row(option, &mut row).unwrap());
+        assert_eq!((row.value as usize, row.colours.len()), (own.len(), own.len() + 1), "the picked colour is the last swatch, worn");
+        assert_ne!(frontend.record.customizations_bytes().unwrap(), before.customizations_bytes().unwrap());
+        assert!(own.contains(&frontend.record.colour_ids[1]), "the hair colour stands for one of the row's own");
+        assert_eq!(frontend.record.colour_ids[8], frontend.record.colour_ids[1]);
+        step(&mut frontend, EditSkaterInput { back: true, ..Default::default() }, &mut e);
+        assert!(frontend.colour_picker_view().is_none());
+        assert_eq!(frontend.record.customizations_bytes().unwrap(), before.customizations_bytes().unwrap());
+        assert_eq!(frontend.record.colour_ids, before.colour_ids);
+        frontend.colour_row(option, &mut row).unwrap();
+        assert_eq!(row.colours.len(), own.len(), "nothing was kept");
+        frontend.open_colour_picker(option).unwrap();
+        for _ in 0..10 {
+            step(&mut frontend, EditSkaterInput { morph_axis: -1.0, ..Default::default() }, &mut e);
+        }
+        step(&mut frontend, EditSkaterInput { select: true, ..Default::default() }, &mut e);
+        frontend.adjust_colour(option, false).unwrap();
+        frontend.colour_row(option, &mut row).unwrap();
+        assert_eq!((row.value as usize, row.colours.len()), (own.len() - 1, own.len() + 1), "the custom swatch stays");
+        frontend.adjust_colour(option, true).unwrap();
+        frontend.colour_row(option, &mut row).unwrap();
+        assert_eq!(row.value as usize, own.len(), "Right steps back onto it");
     }
     /// `GetSponsorLogoFileName`: a part whose brand a `sponsor` names shows that sponsor's logo,
     /// an image `screens.big` holds.
@@ -307,6 +376,8 @@ impl EditSkaterFrontend {
             sounds: Vec::new(),
             slider: false,
             shop,
+            colour_picker: None,
+            custom_colours: [None; 13],
         };
         let a = s.controller.open(new_career);
         s.action(a, &mut EditSkaterEffects::default())?;
@@ -482,6 +553,13 @@ impl EditSkaterFrontend {
                     self.switch_gender()?;
                     e.recipe_changed = true;
                 }
+            }
+            return Ok(e);
+        }
+        // PC port: the colour picker takes every key while it is open.
+        if self.colour_picker.is_some() {
+            if self.controller.visible && !self.controller.busy {
+                self.colour_picker_input(input, elapsed_ms, &mut e)?;
             }
             return Ok(e);
         }
@@ -839,6 +917,12 @@ impl EditSkaterFrontend {
                     self.gender_confirmation = Some(0);
                     self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_POPUP"));
                 }
+                // PC port: A on a colour row of tints opens the colour picker on its colour.
+                _ if o.definition().kind == "color" => {
+                    if self.colour_pickable(o)? {
+                        self.open_colour_picker(o)?;
+                    }
+                }
                 _ if o.definition().kind != "option" => {}
                 _ => {
                     return Err(
@@ -959,6 +1043,7 @@ impl EditSkaterFrontend {
 
         record_ops::switch_gender(&mut self.record, &self.db, &self.vault)?;
         self.undo = self.record.clone();
+        self.custom_colours = [None; 13];
 
         self.controller.set_options(if self.record.data.is_male {
             vec![
@@ -1086,10 +1171,21 @@ impl EditSkaterFrontend {
                             let p = &self.db.parts[*i];
                             p.model_id == id.model && p.material_id == id.material
                         }
-                    })
-                    .unwrap_or(0);
+                    });
+                // PC port: a Hair Pools list without the worn style (Skate 3's while a Skate 2
+                // style is worn, or the other way round) starts at its first style, or its last
+                // going back; an empty one has nothing to step to.
+                let pooled = o == O::HairStyle && self.controller.skate3_hair;
+                if pooled && parts.is_empty() {
+                    return Ok(false);
+                }
+                let next = match current {
+                    Some(current) => cycle(current, parts.len(), forward),
+                    None if pooled => if forward { 0 } else { parts.len() - 1 },
+                    None => cycle(0, parts.len(), forward),
+                };
                 match parts
-                    .get(cycle(current, parts.len(), forward))
+                    .get(next)
                     .ok_or("CAC body selector empty")?
                 {
                     Some(i) => {
@@ -1148,8 +1244,10 @@ impl EditSkaterFrontend {
                 continue;
             }
             let accept = if o == O::HairStyle {
-                // Skate 2's hair styles only: linked Skate 3 hair does not fit the Skate 2 heads.
-                p.slot == 2 && self.db.string(p.attributes[16])? == "full" && !self.db.is_skate3(i)
+                // The game's whose Hair Pools row was chosen: Skate 2's, else the Skate 3 styles
+                // that joined (`Skate3Data::clothing_for`; Skate 3's other hair does not fit the
+                // Skate 2 heads).
+                p.slot == 2 && self.db.string(p.attributes[16])? == "full" && self.db.is_skate3(i) == self.controller.skate3_hair_pool
             } else {
                 p.slot == 3
                     && [13, 35, 14, 15]
@@ -1177,7 +1275,7 @@ impl EditSkaterFrontend {
             })?;
         }
         let mut parts: Vec<_> = parts.into_iter().map(Some).collect();
-        if o == O::HairStyle && self.record.data.is_male {
+        if o == O::HairStyle && self.record.data.is_male && !self.controller.skate3_hair_pool {
             parts.insert(0, None);
         }
         Ok(parts)
@@ -1348,17 +1446,30 @@ impl EditSkaterFrontend {
     fn adjust_colour(&mut self, o: EditSkaterOption, forward: bool) -> RecordResult<()> {
         let slot = self.colour_slot(o)?;
         let colours = self.colours(o)?;
-        let at = self.colour_position(slot, &colours)?;
-        // FrontEndState_CaC::OnKey clamps colour selection at either end.
-        // Unlike a style selector, a colour strip does not wrap around.
-        let next = if forward { at.saturating_add(1).min(colours.len().saturating_sub(1)) }
-            else { at.saturating_sub(1) };
+        // PC port: a row of tints ends in its custom colour's swatch (`edit_skater_colour_picker.rs`).
+        let next = match self.colour_step(o, slot, forward)? {
+            ColourStep::Custom => return Ok(()),
+            ColourStep::Own(next) => next,
+            ColourStep::Native => {
+                let at = self.colour_position(slot, &colours)?;
+                // FrontEndState_CaC::OnKey clamps colour selection at either end.
+                // Unlike a style selector, a colour strip does not wrap around.
+                if forward { at.saturating_add(1).min(colours.len().saturating_sub(1)) }
+                    else { at.saturating_sub(1) }
+            }
+        };
         let key = *colours
             .get(next)
             .ok_or("CAC colour list empty")?;
         let colour = self.vault.instance(record_ops::COLOUR_CLASS, key);
         let base = [word(&colour, 32)?, word(&colour, 36)?, word(&colour, 40)?];
         let highlight = [word(&colour, 0)?, word(&colour, 4)?, word(&colour, 8)?];
+        self.set_zone_colour(slot, key, base, highlight)
+    }
+    /// Puts colour `key`, tinting with `base` and `highlight`, on `slot`'s zone and the zones set
+    /// with it: their `colour_ids` and customizations, bound to the part worn; an eye or deck colour
+    /// wears its own part as well.
+    fn set_zone_colour(&mut self, slot: usize, key: u64, base: [u32; 3], highlight: [u32; 3]) -> RecordResult<()> {
         let (mut custom, _) =
             CharacterCustomizations::parse_prefix(self.record.customizations_bytes()?)?;
         if slot == record_ops::BOTTOM_COLOUR {
@@ -1382,6 +1493,7 @@ impl EditSkaterFrontend {
             c.highlight_rgb_bits = highlight;
         }
         if slot == 6 || slot == 11 {
+            let colour = self.vault.instance(record_ops::COLOUR_CLASS, key);
             let name = colour
                 .try_cached_layout_text(52)?
                 .ok_or("CAC colour name missing")?;
@@ -1539,7 +1651,8 @@ impl EditSkaterFrontend {
                     row.description = skate3_text(d.description);
                     row.subtitle = skate3_text(SKATE3_POSTURE_HAL[self.skate3_style.posture as usize]);
                 }
-                if d.kind == "color" {
+                // PC port: a row of tints shows its custom colour after its own.
+                if d.kind == "color" && !self.colour_row(o, &mut row)? {
                     let colours = self.colours(o)?;
                     row.value = self.colour_position(self.colour_slot(o)?, &colours)? as i32;
                     for key in colours {
@@ -1566,13 +1679,19 @@ impl EditSkaterFrontend {
                             3
                         };
                         let id = self.record.installed_parts[slot];
-                        if let Some(p) = self.db.find(slot as u8, id.model, id.material) {
+                        let found = self.db.slot_range(slot as u8).find(|&i| {
+                            let p = &self.db.parts[i];
+                            p.model_id == id.model && p.material_id == id.material
+                        });
+                        if let Some(i) = found {
+                            let p = &self.db.parts[i];
                             let (prefix, attr) = match o {
                                 EditSkaterOption::HairStyle => ("ID_CAC_HAIRSTYLE_", 19),
                                 EditSkaterOption::FacialHairStyle => ("ID_CAC_FACIAL_HAIR_", 14),
                                 _ => ("ID_CAC_EYEBROW_", 11),
                             };
-                            row.subtitle = hal(prefix, self.db.attribute(p, attr)?);
+                            let style = self.db.attribute(p, attr)?;
+                            row.subtitle = if self.db.is_skate3(i) { skate3_style_name(&hal(prefix, style), style) } else { hal(prefix, style) };
                         } else {
                             row.subtitle = "ID_CAC_HAIRSTYLE_BALD".into();
                         }
@@ -1628,17 +1747,25 @@ impl EditSkaterFrontend {
                 rows.push(row);
             }
         }
-        let help_a = if matches!(menu.movie_mode(), "list" | "thumbs")
+        // PC port: the colour picker's own title and buttons; a colour row of tints offers it.
+        let picking = self.colour_picker.is_some();
+        let help_a = if picking {
+            "ID_COMMON_ACCEPT"
+        } else if matches!(menu.movie_mode(), "list" | "thumbs")
             || self
                 .controller
                 .selected_option()
                 .is_some_and(|o| o.definition().kind == "option")
         {
             "ID_COMMON_SELECT"
+        } else if self.controller.selected_option().map(|o| self.colour_pickable(o)).transpose()?.unwrap_or(false) {
+            "#Pick Color"
         } else {
             "#"
         };
-        let title = if menu == EditSkaterMenu::PartThumbnails {
+        let title = if picking {
+            "#Pick Color"
+        } else if menu == EditSkaterMenu::PartThumbnails {
             self.controller
                 .category
                 .map(|o| o.definition().title)
@@ -1662,13 +1789,17 @@ impl EditSkaterFrontend {
             window_start: self.controller.window_start(),
             wallet: self.shop.balance(&self.db),
             help_a: help_a.into(),
-            help_b: "ID_COMMON_BACK".into(),
-            help_start: if menu == EditSkaterMenu::EditSkaterMain {
+            help_b: if picking { "ID_COMMON_CANCEL" } else { "ID_COMMON_BACK" }.into(),
+            help_start: if picking {
+                "#"
+            } else if menu == EditSkaterMenu::EditSkaterMain {
                 "ID_CAC_FINISHED_TITLE"
             } else {
                 "ID_COMMON_CONTINUE"
             }
             .into(),
+            help_x: if picking { "ID_CAC_MORPHING_UNDO" } else { "#" }.into(),
+            colour_picker: self.colour_picker_view(),
             cash_popup: self.shop.not_enough_cash,
             receipt: self.receipt_view()?,
         })
@@ -1768,13 +1899,33 @@ fn hal(prefix: &str, value: &str) -> String {
     // space with '_'. Do not strip punctuation or collapse repeated spaces.
     format!("{prefix}{value}").to_ascii_uppercase().replace(' ', "_")
 }
+/// PC port: a joined Skate 3 hair style's name: Skate 3's English for its id, else the style's
+/// own words (`emo short`), each capitalised.
+fn skate3_style_name(id: &str, style: &str) -> String {
+    let own = || {
+        let words: Vec<String> = style
+            .split(' ')
+            .map(|word| {
+                let mut letters = word.chars();
+                match letters.next() {
+                    Some(first) => first.to_uppercase().chain(letters).collect(),
+                    None => String::new(),
+                }
+            })
+            .collect();
+        format!("#{}", words.join(" "))
+    };
+    crate::skate3::linked()
+        .and_then(|data| data.text(id).filter(|text| !text.is_empty()).map(|text| format!("#{text}")))
+        .unwrap_or_else(own)
+}
 fn menu_option(m: EditSkaterMenu) -> Option<EditSkaterOption> {
     use EditSkaterMenu as M;
     use EditSkaterOption as O;
     Some(match m {
         M::Skin => O::Skin,
         M::BodyShape => O::BodyShape,
-        M::Hair => O::Hair,
+        M::Hair | M::HairPools => O::Hair,
         M::FacialHair => O::FacialHair,
         M::Eyes => O::Eyes,
         M::Brow => O::Brow,

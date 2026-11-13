@@ -7,6 +7,7 @@ use skate2_formats::{
     hash::rw_hash64_string,
     mount::{ArchiveSource, MountSet, MountedBig},
     stream::{AssetToc, CollectionMap, CollectionSpace, CompressedArenaHeader, StreamFile, skate3_high_detail_tile, tiled_high_detail_collection_filename},
+    stream_xml::TileRecords,
 };
 use std::path::PathBuf;
 
@@ -397,4 +398,36 @@ fn skate3_online_stream_xml_reads_on_its_district() {
     }
     assert!(read > 0, "no online game's stream XML read");
     eprintln!("{read} read, {beyond_skate2} past Skate 2's capacity");
+}
+
+/// Each district's Pres and Sim stream XML (`data\\stream\\<world>_<type>.xml`, `miscload.big`)
+/// over its stream, as Skate 3 selects (`TileRecords`): a focus at a tile's centre takes that
+/// tile first, and the Pres tiles take more than Skate 2's 16 collections, reaching past its
+/// 195 m box.
+#[test]
+fn district_stream_xml_records_reach_past_skate2s_box() {
+    let Some(root) = data() else { return };
+    let mut mounts = MountSet::new();
+    mounts.push(MountedBig::open_source(ArchiveSource::File(root.join("data").join("big").join("miscload.big"))).expect("miscload mounts"));
+    for (district, world) in DISTRICTS.into_iter().zip(["dist_university", "dist_downtown", "dist_industrial"]) {
+        let path = root.join("data").join("content").join(format!("world{district}.big"));
+        mounts.push(MountedBig::open_source(ArchiveSource::File(path)).expect("district archive mounts"));
+        for kind in ["Pres", "Sim"] {
+            let space = CollectionSpace::parse(&mounts.read_path(&format!("data\\content\\world\\stream\\{district}\\{district}_{kind}.xss")).unwrap()).unwrap();
+            let mut records = TileRecords::new(&space, kind);
+            records.apply_stream_xml(&mounts.read_path(&format!("data\\stream\\{world}_{kind}.xml")).unwrap()).unwrap();
+            let (mut most, mut reach) = (0, 0.0_f32);
+            for entry in space.collections.iter().filter(|entry| entry.lod == 0) {
+                let centre = [(entry.hull_min[0] + entry.hull_max[0]) * 0.5, 0.0, (entry.hull_min[2] + entry.hull_max[2]) * 0.5];
+                let selected = records.focus_collections(&space, centre);
+                assert_eq!(selected.first().map(|first| first.id), Some(entry.id), "{district} {kind}: a tile's selection starts with the tile");
+                most = most.max(selected.len());
+                reach = selected.iter().map(|collection| collection.distance_xz).fold(reach, f32::max);
+            }
+            eprintln!("{district} {kind}: at most {most} collections, reaching {reach:.0} m");
+            if kind == "Pres" {
+                assert!(most > 16 && reach > 195.0, "{district}: the stream XML reaches past Skate 2's selection");
+            }
+        }
+    }
 }

@@ -1,9 +1,9 @@
 //! The dedicated server's public statistics (PC port addition): `GET /serverstats` on the
 //! moderation panel's port ([`crate::panel`]) answers, with no key, a JSON object of how many
-//! players are signed in and every public game: its challenge type and challenge by their
-//! English names, whether its challenge (or a free skate's activity) is in progress, and its
-//! players' nicknames in join order. It names no address, no private game and no one signed in
-//! outside the public games.
+//! players are signed in and every public game without a matchmaking-shadowbanned player in it:
+//! its challenge type and challenge by their English names, whether its challenge (or a free
+//! skate's activity) is in progress, and its players' nicknames in join order. It names no
+//! address, no private game and no one signed in outside the games it lists.
 
 use crate::json;
 use crate::protocol::challenge;
