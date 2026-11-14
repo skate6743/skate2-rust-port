@@ -68,10 +68,12 @@ to intensity 1, then the full colour lightened toward white, half way at 2.5.
 - `colour_ids` takes the key of the row's colour nearest the picked primary. The game reads hair
   and skin colours by that colour's name: the face's hairline shadow (`GetRostralID`) and the
   skin parts (`SKIN_TONE`). The bottom zone has no `colour_ids` entry.
-- A zone wears a custom colour when its base and highlight are none of the row's own colours'.
-  The row then shows the custom colour's swatch after its own, selected.
-- Left and Right step onto and off that swatch. A custom colour stepped off stays as the row's last
-  swatch while the editor is open. Switching gender clears it.
+- The picked colour goes on the skater only. The row keeps its own colours and swatches, and no
+  swatch is added for the picked colour. Its lit swatch is the row's colour that `colour_ids`
+  names, the nearest. The bottom zone lights the colour whose base is nearest the one worn; a
+  colour of the row's own is still found by its exact base.
+- Left and Right from a picked colour step to the lit colour's neighbours and wear them, as from
+  any of the row's own colours. At either end of the row, they wear the colour at that end.
 - The online game closing the editor for the player puts back the colour an open picker opened on.
 - A change of colours alone keeps the built skater: `EditSkaterSession` compares the record's
   assembled parts and customizations with the ones the skater was built from. When only the
@@ -89,7 +91,7 @@ to intensity 1, then the full colour lightened toward white, half way at 2.5.
   hidden.
 - A colour row of tints shows A Pick Color while it is selected.
 - In the morph menu's place, from its first row: the colour row (`highlight_color`, arrows hidden),
-  its last swatch the colour picked.
+  its own swatches, lit on the colour nearest the one picked.
 - Below it, 168 units down, the wheel: 80 units in radius, with a cream rim, centred over the middle
   of the Intensity row's line. Its cursor is `highlight_color`'s swatch item in its selected (`on`)
   state, painted the colour picked.
@@ -97,8 +99,8 @@ to intensity 1, then the full colour lightened toward white, half way at 2.5.
   replaces its line, under its knob, inside the line's width. The colour under the knob's middle
   is the intensity's along the knob's travel, black at its bottom and the brightest tint at its top,
   each held out to the frame's ends.
-- A new colour moves the cursor, the knob, the ramp and the swatches without replaying their
-  selection; a swatch's state is recorded and replayed only when it changes.
+- A new colour moves the cursor, the knob, the ramp and the row's lit swatch without replaying
+  their selection; a swatch's state is recorded and replayed only when it changes.
 
 ## The morph knob's travel
 

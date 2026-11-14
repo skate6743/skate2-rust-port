@@ -1218,6 +1218,87 @@ pub(crate) fn complete_challenge_by_name(world: &mut World, name: &str) {
     complete_challenge_by_key(world, challenge);
 }
 
+/// PC port addition (Max Out Save, `max_out.rs`): every progression challenge completed as
+/// `ChallengeComplete` (`0x825e00f8`) completes one, in key order and with progression enabled:
+/// its completion BLOG entry, its awards, its place in the completed map, its photo articles and
+/// its groups' exits. The state machines a completion would trigger are not run.
+/// `SKATE2_TRACE_MAX_OUT` logs the challenges left incomplete.
+pub(crate) fn complete_every_challenge(world: &mut World) {
+    let enabled = std::mem::replace(&mut world.enable_progression, true);
+    for signpost in world.signpost.progression_challenges.clone() {
+        challenge_complete(world, signpost);
+    }
+    world.enable_progression = enabled;
+    world.signpost.triggered.clear();
+    world.signpost.state_machine_triggered = false;
+    if std::env::var_os("SKATE2_TRACE_MAX_OUT").is_some() {
+        let sp = &world.signpost;
+        let left: Vec<&str> = sp
+            .progression_challenges
+            .iter()
+            .filter(|&&key| !sp.is_challenge_complete(key))
+            .map(|&key| world.db.layout_text(class::PROGRESSION_CHALLENGES, key, 0).unwrap_or("?"))
+            .collect();
+        eprintln!(
+            "max out: {} of {} progression challenges complete ({} completed in all), left {left:?}",
+            sp.progression_challenges.len() - left.len(),
+            sp.progression_challenges.len(),
+            sp.completed.len()
+        );
+    }
+}
+
+/// PC port addition (Max Out Save, `max_out.rs`): the names the progression handlers' scripts
+/// pass to the native `call` (`Namespace.Function`) as a literal first argument outside a
+/// comment, in handler order, each once.
+pub(crate) fn scripted_names(db: &AttribDb, call: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for &handler in db.collections(class::PROGRESSION_HANDLERS) {
+        let Some(source) = db.attribute(class::PROGRESSION_HANDLERS, handler, field::HANDLER_SOURCE).and_then(|a| a.text(0)) else {
+            continue;
+        };
+        for name in literal_arguments(source, call) {
+            if !names.iter().any(|known| known == name) {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    names
+}
+
+/// The literal first arguments of `call` in Lua `source`, each line read up to its `--` comment.
+fn literal_arguments<'a>(source: &'a str, call: &str) -> Vec<&'a str> {
+    let mut names = Vec::new();
+    for line in source.lines() {
+        let mut rest = line.split("--").next().unwrap_or_default();
+        while let Some(at) = rest.find(call) {
+            rest = &rest[at + call.len()..];
+            let name = rest
+                .trim_start()
+                .strip_prefix('(')
+                .and_then(|arguments| arguments.trim_start().strip_prefix('"'))
+                .and_then(|literal| literal.split_once('"'))
+                .map(|(name, _)| name);
+            if let Some(name) = name.filter(|name| !name.is_empty()) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+#[cfg(test)]
+mod max_out_tests {
+    /// A call's literal first arguments count only outside comments, each where it is written.
+    #[test]
+    fn literal_arguments_skip_comments_and_other_calls() {
+        let source = "\tUnlock.UnlockLocationForFreeskate( \"svpeak\" );\n\t-- Unlock.UnlockLocationForFreeskate( \"gvr\" );\n\
+            Progression.SendMessage( \"x\" ); Unlock.UnlockLocationForFreeskate(\"megapark\") -- Unlock.UnlockLocationForFreeskate(\"dam\")\n\
+            Unlock.UnlockLocationForFreeskate( name );";
+        assert_eq!(super::literal_arguments(source, "Unlock.UnlockLocationForFreeskate"), ["svpeak", "megapark"]);
+    }
+}
+
 /// `cSignPostManager::ProcessChallengeResults` (`0x825e10c0`): trigger the
 /// state machines matching each result, complete the won challenges, and
 /// autosave when no machine was triggered (a triggered machine saves when it

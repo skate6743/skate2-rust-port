@@ -389,6 +389,20 @@ struct MasterObject {
     loading_screen_volume: i32,
 }
 
+/// `SKATE2_TRACE_AWAY_TIME`: the player-input flag each time it changes and `mAwayTime` each
+/// five seconds it grows, which the speech context's idle lines wait on.
+fn trace_away_time(providing_input: bool, away_time: i32) {
+    static LAST: std::sync::Mutex<(bool, i32)> = std::sync::Mutex::new((false, 0));
+    if std::env::var_os("SKATE2_TRACE_AWAY_TIME").is_none() {
+        return;
+    }
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.0 != providing_input || last.1 / 5000 != away_time / 5000 {
+        eprintln!("audio away time: providing_input={providing_input} away_time={away_time}ms");
+    }
+    *last = (providing_input, away_time);
+}
+
 /// `delayIdle`, `startCount` and `endCount` (0x82fd9410-0x82fd9418).
 const DELAY_IDLE: bool = true;
 const IDLE_START_COUNT: f32 = 0.8;
@@ -1823,6 +1837,7 @@ impl AudioSystem {
             } else if !self.is_paused && !self.is_loading() && self.fe_music_state == music::fe_state::IN_GAME {
                 self.away_time = self.away_time.wrapping_add(elapsed);
             }
+            trace_away_time(self.player_providing_input, self.away_time);
         }
         self.time_since_unpaused = self.time_since_unpaused.wrapping_add(elapsed);
     }

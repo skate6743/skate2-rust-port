@@ -7,6 +7,15 @@ use std::{
 #[path = "frame_profile.rs"]
 mod profile;
 
+/// Diagnostic: a capture a scripted demo asked for ([`request_diagnostic_capture`]).
+static DIAGNOSTIC_CAPTURE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Diagnostic: the next frame is also captured, beside the completion capture as
+/// `<capture>_s<n>.png`.
+pub(crate) fn request_diagnostic_capture() {
+    DIAGNOSTIC_CAPTURE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[derive(Debug)]
 struct CapturePending;
 impl std::fmt::Display for CapturePending {
@@ -265,6 +274,7 @@ pub fn run_with_options(
         .map_or(Duration::ZERO, Duration::from_secs_f32);
     let mut periodic_next = periodic.map(|every| Instant::now() + periodic_from + every);
     let mut periodic_index = 0_u32;
+    let mut requested_index = 0_u32;
     let mut video_save:Option<crate::replay_media::VideoSave>=None;
     // SKATE2_DIAGNOSTIC_CAPTURE_COUNT: the periodic captures stop after that many.
     let periodic_count = std::env::var("SKATE2_DIAGNOSTIC_CAPTURE_COUNT")
@@ -440,6 +450,23 @@ pub fn run_with_options(
                                     .frame_limit
                                     .is_none_or(|limit| presented + 1 == limit)
                             };
+                        if !capture_now
+                            && let Some(base) = periodic_base.as_ref()
+                            && DIAGNOSTIC_CAPTURE.swap(false, std::sync::atomic::Ordering::Relaxed)
+                        {
+                            requested_index += 1;
+                            let path = base.with_file_name(format!(
+                                "{}_s{requested_index:03}.png",
+                                base.file_stem().and_then(|stem| stem.to_str()).unwrap_or("capture")
+                            ));
+                            if let Err(error) = renderer.render_capture(&scene, &path) {
+                                eprintln!("diagnostic capture {}: {error}", path.display());
+                            }
+                            client.frame_presented(&scene);
+                            presented += 1;
+                            window.request_redraw();
+                            return Ok(());
+                        }
                         if !capture_now
                             && periodic_index < periodic_count
                             && let (Some(every), Some(next), Some(base)) = (periodic, periodic_next, periodic_base.as_ref())

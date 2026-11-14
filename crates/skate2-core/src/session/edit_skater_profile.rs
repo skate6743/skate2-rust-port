@@ -278,6 +278,17 @@ impl EditSkaterProfileStore {
         audio: Option<&AudioProfile<'_>>,
         savables: &[(&str, &[&str], &[(&str, u32, Vec<Vec<u8>>)])],
     ) -> Result<(), EditSkaterProfileError> {
+        self.save_memcard_and_record(data, audio, savables, None)
+    }
+    /// [`Self::save_memcard`] with, when given, the CAC record (PC port addition: Extras' Max
+    /// Out Save), all committed together after read-back validation.
+    pub fn save_memcard_and_record(
+        &mut self,
+        data: &ProfileData,
+        audio: Option<&AudioProfile<'_>>,
+        savables: &[(&str, &[&str], &[(&str, u32, Vec<Vec<u8>>)])],
+        record: Option<&CacRecord>,
+    ) -> Result<(), EditSkaterProfileError> {
         let _file = access();
         let mut next = Self::read(self.path.clone())?.profile.unwrap_or_else(SkaterProfile::new_empty);
         next.set_profile_data(data)?;
@@ -288,6 +299,9 @@ impl EditSkaterProfileStore {
             for (leaf, version, tuples) in *leaves {
                 next.set_leaf(savable, after, leaf, *version, tuples)?;
             }
+        }
+        if let Some(record) = record {
+            next.set_cac_record(record)?;
         }
         let bytes = next.encode()?;
         let validated = SkaterProfile::parse(&bytes)?;
@@ -303,6 +317,11 @@ impl EditSkaterProfileStore {
                     return Err(ProfileError("savable read-back mismatch").into());
                 }
             }
+        }
+        if let Some(record) = record
+            && validated.cac_record()?.as_ref() != Some(record)
+        {
+            return Err(ProfileError("CAC save read-back mismatch").into());
         }
         self.commit(&bytes, validated)
     }

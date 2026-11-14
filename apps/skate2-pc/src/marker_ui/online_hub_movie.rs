@@ -367,6 +367,13 @@ impl OnlineHubMovie {
                         let text = String::from_utf16(&localizer::format_string_text(assets, "ID_MESSENGER_KICK_CONFIRM", std::slice::from_ref(&kick.name))?)?;
                         ("ID_COMMON_WARNING_TITLE", format!("#{text}"), &["ID_COMMON_YES", "ID_COMMON_NO"], kick.selected)
                     }
+                    // PC port addition: Make Host's confirmation, as Kick Player's.
+                    Popup::MakeHost(popup) => (
+                        "ID_COMMON_WARNING_TITLE",
+                        format!("#Are you sure you want to make {} the host?", popup.name),
+                        &["ID_COMMON_YES", "ID_COMMON_NO"],
+                        popup.selected,
+                    ),
                     Popup::Matching => ("ID_EANATION", "ID_ONLINE_MATCHING_SKATERS".to_owned(), &[], 0),
                     Popup::SigningIn => ("ID_EANATION", "ID_ONLINE_SIGNING_IN".to_owned(), &[], 0),
                     Popup::Notice(text) => ("ID_EANATION", (*text).to_owned(), &["ID_COMMON_OK"], 0),

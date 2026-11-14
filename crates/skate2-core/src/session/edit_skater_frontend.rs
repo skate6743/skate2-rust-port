@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 #[path = "edit_skater_colour_picker.rs"]
 mod custom_colour;
-use custom_colour::{ColourPicker, ColourStep, ZoneColour};
+use custom_colour::ColourPicker;
+#[path = "edit_skater_colour_filter.rs"]
+mod colour_filter;
 
 #[derive(Default, Debug)]
 pub(crate) struct EditSkaterEffects {
@@ -61,8 +63,9 @@ pub(crate) struct EditSkaterFrontend {
     pub(crate) shop: EditSkaterShop,
     /// PC port: the open colour picker (`edit_skater_colour_picker.rs`).
     colour_picker: Option<ColourPicker>,
-    /// PC port: each colour zone's last custom colour, the swatch after its row's own.
-    custom_colours: [Option<ZoneColour>; 13],
+    /// PC port: Apply Color (Y) opened the wear styles menu, whose colour row is then the colour
+    /// filter's (`edit_skater_colour_filter.rs`).
+    colour_filter: bool,
 }
 const MAIN: u64 = 0xad45_4a0e_cd0e_2edf;
 const SHOP: u64 = 0xb5c3_cac4_b3dc_0165;
@@ -161,9 +164,10 @@ mod parity_tests {
             }
         }
     }
-    /// PC port: the colour picker opens on a hair colour (a row of tints; an eye colour is a part),
-    /// the skater wears the colour it picks as the row's custom swatch, B puts the old colour back,
-    /// and a colour A keeps stays as the row's last swatch after the row steps off it.
+    /// PC port: the colour picker opens on a hair colour (a row of tints; an eye colour is a part)
+    /// and the skater wears the colour it picks, which stands for the nearest of the row's own
+    /// colours; the row keeps its own colours, lit on that one. B puts the old colour back; after
+    /// A, Left wears one of the row's own colours again.
     #[test]
     #[ignore = "requires original SKATE2_GAME_ROOT assets"]
     fn the_colour_picker_wears_its_colour_and_b_puts_the_old_one_back() {
@@ -184,7 +188,22 @@ mod parity_tests {
         let option = EditSkaterOption::HairColour;
         assert!(frontend.colour_pickable(option).unwrap());
         assert!(!frontend.colour_pickable(EditSkaterOption::EyesColour).unwrap(), "an eye colour is a part of its own");
+        let slot = frontend.colour_slot(option).unwrap();
         let own = frontend.colours(option).unwrap();
+        let tints: Vec<_> = own
+            .iter()
+            .map(|&key| {
+                let c = frontend.vault.instance(record_ops::COLOUR_CLASS, key);
+                let words = |at: usize| [word(&c, at).unwrap(), word(&c, at + 4).unwrap(), word(&c, at + 8).unwrap()];
+                (words(32), words(0))
+            })
+            .collect();
+        let worn = |frontend: &EditSkaterFrontend| {
+            let custom = CharacterCustomizations::parse_prefix(frontend.record.customizations_bytes().unwrap()).unwrap().0;
+            let c = custom.colours.iter().find(|c| c.key == slot as i32).unwrap();
+            (c.base_rgb_bits, c.highlight_rgb_bits)
+        };
+        let lit = |frontend: &EditSkaterFrontend| frontend.colour_position(slot, &own).unwrap();
         let before = frontend.record.clone();
         let mut e = EditSkaterEffects::default();
         let step = |frontend: &mut EditSkaterFrontend, input: EditSkaterInput, e: &mut EditSkaterEffects| {
@@ -198,29 +217,154 @@ mod parity_tests {
         }
         assert!(e.recipe_changed);
         assert_ne!(frontend.colour_picker_view().unwrap().colour, start);
-        let mut row = EditSkaterRow::default();
-        assert!(frontend.colour_row(option, &mut row).unwrap());
-        assert_eq!((row.value as usize, row.colours.len()), (own.len(), own.len() + 1), "the picked colour is the last swatch, worn");
-        assert_ne!(frontend.record.customizations_bytes().unwrap(), before.customizations_bytes().unwrap());
+        assert!(!tints.contains(&worn(&frontend)), "the skater wears the picked colour");
+        assert_eq!(frontend.colours(option).unwrap(), own, "the row keeps its own colours");
         assert!(own.contains(&frontend.record.colour_ids[1]), "the hair colour stands for one of the row's own");
+        assert_eq!(own[lit(&frontend)], frontend.record.colour_ids[1], "the row is lit on it");
         assert_eq!(frontend.record.colour_ids[8], frontend.record.colour_ids[1]);
         step(&mut frontend, EditSkaterInput { back: true, ..Default::default() }, &mut e);
         assert!(frontend.colour_picker_view().is_none());
         assert_eq!(frontend.record.customizations_bytes().unwrap(), before.customizations_bytes().unwrap());
         assert_eq!(frontend.record.colour_ids, before.colour_ids);
-        frontend.colour_row(option, &mut row).unwrap();
-        assert_eq!(row.colours.len(), own.len(), "nothing was kept");
         frontend.open_colour_picker(option).unwrap();
         for _ in 0..10 {
             step(&mut frontend, EditSkaterInput { morph_axis: -1.0, ..Default::default() }, &mut e);
         }
         step(&mut frontend, EditSkaterInput { select: true, ..Default::default() }, &mut e);
+        assert!(frontend.colour_picker_view().is_none());
+        assert!(!tints.contains(&worn(&frontend)), "A keeps the picked colour on the skater");
+        let at = lit(&frontend);
         frontend.adjust_colour(option, false).unwrap();
-        frontend.colour_row(option, &mut row).unwrap();
-        assert_eq!((row.value as usize, row.colours.len()), (own.len() - 1, own.len() + 1), "the custom swatch stays");
-        frontend.adjust_colour(option, true).unwrap();
-        frontend.colour_row(option, &mut row).unwrap();
-        assert_eq!(row.value as usize, own.len(), "Right steps back onto it");
+        assert_eq!(worn(&frontend), tints[at.saturating_sub(1)], "Left wears the row's colour before the lit one");
+    }
+    /// PC port: Apply Color (Y) on a T-shirt with no colour of its own wears it and opens its wear
+    /// styles menu on the clothing colours, standing on white (no filter). A colour goes on that
+    /// shirt alone: another shirt's preview shows none, the shirt's own shows it again, and wearing
+    /// another shirt leaves it behind. White and the colour picker's B take it off; the picker's A
+    /// keeps the colour picked.
+    #[test]
+    #[ignore = "requires original SKATE2_GAME_ROOT assets"]
+    fn apply_color_filters_the_shirt_it_was_picked_for() {
+        use skate2_formats::mount::{MountSet, MountedBig, SKATE2_ARCHIVES};
+        use skate2_formats::skater_profile::CacPartId;
+        let root = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").expect("game root"));
+        let mut mounts = MountSet::new();
+        for spec in SKATE2_ARCHIVES {
+            let path = spec.path_under(&root);
+            if path.is_file() { mounts.push(MountedBig::open(path, spec.use_external_header).unwrap()); }
+        }
+        let db = Arc::new(CacPartDb::parse(&mounts.read_path(skate2_formats::cac_parts::DATABASE_PATH).unwrap()).unwrap());
+        let vault = AttributeRuntimeVault::try_load_mounted(&mounts, "data/db/skater.vlt",
+            &[record_ops::COLOUR_CLASS, record_ops::COLOUR_ZONE_CLASS, MORPH_CLASS, SPONSOR]).unwrap();
+        let record = record_ops::fresh_record(&db, &vault, true).unwrap();
+        let shop = EditSkaterShop::new(&db, 0, &|_, _| true, &|_, _| false).unwrap();
+        let mut frontend = EditSkaterFrontend::new(db.clone(), vault.clone(), record,
+            EditSkaterPolicy { unlock_all_clothing: true }, shop, false).unwrap();
+        let mut e = EditSkaterEffects::default();
+        let run = |frontend: &mut EditSkaterFrontend, input: EditSkaterInput, e: &mut EditSkaterEffects| {
+            for a in frontend.controller.update(input) {
+                frontend.action(a, e).unwrap();
+            }
+        };
+        let filter = |record: &CacRecord| {
+            let custom = CharacterCustomizations::parse_prefix(record.customizations_bytes().unwrap()).unwrap().0;
+            record_ops::filter(&custom, record_ops::TOP_FILTER).map(|c| (c.base_rgb_bits, CacPartId { model: c.model_id, material: c.material_id }))
+        };
+        let assembled = |record: &CacRecord| {
+            let mut record = record.clone();
+            record_ops::assemble_parts(&mut record, &db, &vault, false, true).unwrap();
+            filter(&record)
+        };
+        let id = |row: usize, frontend: &EditSkaterFrontend| {
+            let part = &db.parts[frontend.parts[row].unwrap()];
+            CacPartId { model: part.model_id, material: part.material_id }
+        };
+        frontend.controller.category = Some(EditSkaterOption::TShirts);
+        let a = frontend.controller.push(EditSkaterMenu::PartThumbnails);
+        frontend.action(a, &mut e).unwrap();
+        frontend.action(EditSkaterAction::LoadParts(EditSkaterOption::TShirts), &mut e).unwrap();
+        let plain: Vec<usize> = (0..frontend.parts.len())
+            .filter(|&row| frontend.parts[row].is_some_and(|i| !flag(db.parts[i].colourizable) && !flag(db.parts[i].logoable)))
+            .collect();
+        assert!(plain.len() >= 2, "plain T-shirts");
+        let (tee, other) = (plain[0], plain[1]);
+        let other_id = id(other, &frontend);
+        frontend.action(EditSkaterAction::ApplyColour(tee), &mut e).unwrap();
+        assert_eq!(frontend.controller.menu(), EditSkaterMenu::WearStyles);
+        assert_eq!(frontend.controller.options().first(), Some(&EditSkaterOption::WearStylesFilter));
+        assert_eq!(frontend.record.installed_parts[23], id(tee, &frontend), "Apply Color wears the shirt");
+        let option = EditSkaterOption::WearStylesFilter;
+        let slot = frontend.colour_slot(option).unwrap();
+        let filters = frontend.filter_colours().unwrap();
+        let white = filters.iter().position(|(_, colour)| *colour == [1.0; 3]).expect("a white");
+        assert_eq!(frontend.colour_position(slot, &[]).unwrap(), white, "no filter stands on white");
+        assert!(frontend.colour_pickable(option).unwrap());
+        // The colour after white (or before, at the row's end).
+        let forward = white + 1 < filters.len();
+        frontend.adjust_colour(option, forward).unwrap();
+        let picked = if forward { white + 1 } else { white - 1 };
+        let (tint, bound) = filter(&frontend.record).expect("a filter");
+        assert_eq!(bound, id(tee, &frontend));
+        assert_eq!(tint, filters[picked].1.map(|c| (c * c).to_bits()), "the tint is the colour on screen squared");
+        assert_eq!(frontend.colour_position(slot, &[]).unwrap(), picked);
+        assert_eq!(assembled(&frontend.record), filter(&frontend.record), "assembly keeps the worn shirt's filter");
+        // Back to the shirts: another's preview has none; the shirt's own has it.
+        run(&mut frontend, EditSkaterInput { back: true, ..Default::default() }, &mut e);
+        assert_eq!(frontend.controller.menu(), EditSkaterMenu::PartThumbnails);
+        frontend.action(EditSkaterAction::PreviewPart(other), &mut e).unwrap();
+        assert_eq!(assembled(frontend.preview_record()), None, "another shirt's preview has no filter");
+        assert!(filter(&frontend.record).is_some(), "the worn shirt keeps it");
+        frontend.action(EditSkaterAction::PreviewPart(tee), &mut e).unwrap();
+        assert_eq!(assembled(frontend.preview_record()), filter(&frontend.record));
+        frontend.action(EditSkaterAction::ClearPreview, &mut e).unwrap();
+        // Wearing another shirt leaves it behind, for good.
+        frontend.action(EditSkaterAction::SelectPart(other), &mut e).unwrap();
+        assert_eq!(filter(&frontend.record), None);
+        frontend.action(EditSkaterAction::ApplyColour(tee), &mut e).unwrap();
+        assert_eq!(frontend.colour_position(slot, &[]).unwrap(), white, "the shirt is back without it");
+        // White takes it off.
+        frontend.adjust_colour(option, forward).unwrap();
+        frontend.adjust_colour(option, !forward).unwrap();
+        assert_eq!(filter(&frontend.record), None, "white is no filter");
+        // The picker: B puts it back as it was, A keeps what it picked.
+        frontend.open_colour_picker(option).unwrap();
+        for _ in 0..10 {
+            frontend.colour_picker_input(EditSkaterInput { morph_axis: 1.0, ..Default::default() }, 16, &mut e).unwrap();
+        }
+        assert!(filter(&frontend.record).is_some(), "the picked colour is on");
+        frontend.colour_picker_input(EditSkaterInput { back: true, ..Default::default() }, 16, &mut e).unwrap();
+        assert_eq!(filter(&frontend.record), None, "B takes it off again");
+        frontend.open_colour_picker(option).unwrap();
+        for _ in 0..10 {
+            frontend.colour_picker_input(EditSkaterInput { morph_axis: 1.0, ..Default::default() }, 16, &mut e).unwrap();
+        }
+        frontend.colour_picker_input(EditSkaterInput { select: true, ..Default::default() }, 16, &mut e).unwrap();
+        let (_, bound) = filter(&frontend.record).expect("A keeps the picked colour");
+        assert_eq!(bound, id(tee, &frontend));
+        // The legs take theirs in the bottom filter.
+        run(&mut frontend, EditSkaterInput { back: true, ..Default::default() }, &mut e);
+        frontend.controller.category = Some(EditSkaterOption::Legs);
+        frontend.action(EditSkaterAction::LoadParts(EditSkaterOption::Legs), &mut e).unwrap();
+        let pants = (0..frontend.parts.len()).find(|&row| frontend.parts[row].is_some_and(|i| !flag(db.parts[i].colourizable))).expect("plain pants");
+        frontend.action(EditSkaterAction::ApplyColour(pants), &mut e).unwrap();
+        assert_eq!(frontend.colour_slot(EditSkaterOption::WearStylesFilter).unwrap(), record_ops::BOTTOM_FILTER);
+        frontend.adjust_colour(option, forward).unwrap();
+        let custom = CharacterCustomizations::parse_prefix(frontend.record.customizations_bytes().unwrap()).unwrap().0;
+        assert!(record_ops::filter(&custom, record_ops::BOTTOM_FILTER).is_some());
+        assert!(record_ops::filter(&custom, record_ops::TOP_FILTER).is_some(), "the shirt keeps its own");
+        // The cart giving the slot back the undo point's shirt gives back its filter.
+        let a = frontend.controller.push(EditSkaterMenu::EditSkaterMain);
+        frontend.action(a, &mut e).unwrap();
+        let undone = filter(&frontend.record);
+        let worn = frontend.record.installed_parts[23];
+        frontend.record.installed_parts[23] = other_id;
+        frontend.drop_unworn_filters().unwrap();
+        assert_eq!(filter(&frontend.record), None, "another shirt in the tee's place");
+        frontend.restore_undo_filters().unwrap();
+        assert_eq!(filter(&frontend.record), None, "not the undo point's shirt");
+        frontend.record.installed_parts[23] = worn;
+        frontend.restore_undo_filters().unwrap();
+        assert_eq!(filter(&frontend.record), undone, "the undo point's shirt has its filter back");
     }
     /// `GetSponsorLogoFileName`: a part whose brand a `sponsor` names shows that sponsor's logo,
     /// an image `screens.big` holds.
@@ -377,7 +521,7 @@ impl EditSkaterFrontend {
             slider: false,
             shop,
             colour_picker: None,
-            custom_colours: [None; 13],
+            colour_filter: false,
         };
         let a = s.controller.open(new_career);
         s.action(a, &mut EditSkaterEffects::default())?;
@@ -454,6 +598,9 @@ impl EditSkaterFrontend {
         let mut options = Vec::new();
         if flag(part.colourizable) && category_has_colour(self.controller.category) {
             options.push(O::WearStylesColour);
+        } else if self.colour_filter && record_ops::part_filter(part.slot).is_some() {
+            // PC port: Apply Color's colour filter, in the colour row's place.
+            options.push(O::WearStylesFilter);
         }
         self.wear_styles = Vec::new();
         if part.slot != SKATE_DECK {
@@ -659,6 +806,7 @@ impl EditSkaterFrontend {
     pub(crate) fn drop_receipt(&mut self) -> RecordResult<()> {
         if !self.shop.receipt().is_empty() {
             self.shop.update_receipt_list(&self.db, &self.available_parts, &mut self.record, &self.undo, &[])?;
+            self.restore_undo_filters()?;
         }
         Ok(())
     }
@@ -802,70 +950,20 @@ impl EditSkaterFrontend {
                     e.recipe_changed = true;
                     return Ok(());
                 }
-                let p = *self.parts.get(row).ok_or("CAC selected row out of range")?;
-                // OnThumbnailSelect8268aee0: the remove row, an owned part and one already on
-                // the receipt sound core_a_button; a locked part, or one the balance does not
-                // cover (whose popup's FrontEndState_Popup::OnEnter82658474 sounds core_popup),
-                // sounds core_error and stays off; a new part joins the receipt (cas_accept)
-                // before it is worn.
-                let verdict = match p {
-                    Some(i) if !self.policy.unlock_all_clothing => self.shop.select(&self.db, &self.record, i),
-                    _ => ShopSelection::Wear,
+                self.colour_filter = false;
+                self.select_part(row, e)?;
+            }
+            // PC port: Apply Color on a row of a shirt or pants list. A part with a colour of its
+            // own opens its colour row, as A does; any other opens the colour filter's. The
+            // remove row has neither.
+            A::ApplyColour(row) => {
+                let Some(i) = *self.parts.get(row).ok_or("CAC selected row out of range")? else {
+                    return Ok(());
                 };
-                match verdict {
-                    ShopSelection::Locked => {
-                        self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_ERROR"));
-                        return Ok(());
-                    }
-                    ShopSelection::NotEnoughCash => {
-                        self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_ERROR"));
-                        self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_POPUP"));
-                        return Ok(());
-                    }
-                    ShopSelection::AddedToReceipt => self.sounds.push(FeSoundRequest::Play("FE_SOUND_CAS_ACCEPT")),
-                    ShopSelection::Wear => self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_A_BUTTON")),
-                }
-                self.preview = None;
-                if let Some(i) = p {
-                    // A colourizable or logoable part, or one with other wear styles, opens its
-                    // wear styles menu; a deck of the worn deck's style subcategory leaves the worn
-                    // deck on (worn again), and is not worn when it is that deck.
-                    let db = Arc::clone(&self.db);
-                    let part = &db.parts[i];
-                    let mut wear = Some(part);
-                    let alternates = shop::wear_style_alternates(&db, &self.available_parts, i).len();
-                    let colour = flag(part.colourizable) && category_has_colour(self.controller.category);
-                    if colour || alternates > 1 || flag(part.logoable) {
-                        self.current_part = Some(i);
-                        let a = self.controller.push(M::WearStyles);
-                        self.action(a, e)?;
-                        let style = part.attributes[PART_STYLE_SUBCATEGORY];
-                        let worn = self.record.installed_parts[usize::from(SKATE_DECK)];
-                        if part.slot == SKATE_DECK
-                            && style != u16::MAX
-                            && let Some(deck) = db.find(SKATE_DECK, worn.model, worn.material)
-                            && deck.attributes[PART_STYLE_SUBCATEGORY] == style
-                        {
-                            wear = (deck.model_id != part.model_id || deck.material_id != part.material_id).then_some(deck);
-                        }
-                    }
-                    if let Some(part) = wear {
-                        record_ops::wear_part(&mut self.record, &db, part)?;
-                    }
-                } else {
-                    record_ops::remove_part(
-                        &mut self.record,
-                        &self.db,
-                        &self.undo,
-                        clothing_slot(
-                            self.controller
-                                .category
-                                .ok_or("CAC remove category missing")?,
-                        )
-                        .ok_or("CAC remove slot missing")?,
-                    )?;
-                }
-                e.recipe_changed = true;
+                let part = &self.db.parts[i];
+                self.colour_filter = !(flag(part.colourizable) && category_has_colour(self.controller.category))
+                    && record_ops::part_filter(part.slot).is_some();
+                self.select_part(row, e)?;
             }
             A::AdjustOption { option, forward } => {
                 if self.adjust(option, forward, e)? {
@@ -933,6 +1031,78 @@ impl EditSkaterFrontend {
         }
         Ok(())
     }
+    /// `OnThumbnailSelect`'s (`0x8268aee0`) part rows, A's and Apply Color's (`colour_filter`).
+    fn select_part(&mut self, row: usize, e: &mut EditSkaterEffects) -> RecordResult<()> {
+        use EditSkaterMenu as M;
+        let p = *self.parts.get(row).ok_or("CAC selected row out of range")?;
+        // OnThumbnailSelect8268aee0: the remove row, an owned part and one already on
+        // the receipt sound core_a_button; a locked part, or one the balance does not
+        // cover (whose popup's FrontEndState_Popup::OnEnter82658474 sounds core_popup),
+        // sounds core_error and stays off; a new part joins the receipt (cas_accept)
+        // before it is worn.
+        let verdict = match p {
+            Some(i) if !self.policy.unlock_all_clothing => self.shop.select(&self.db, &self.record, i),
+            _ => ShopSelection::Wear,
+        };
+        match verdict {
+            ShopSelection::Locked => {
+                self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_ERROR"));
+                return Ok(());
+            }
+            ShopSelection::NotEnoughCash => {
+                self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_ERROR"));
+                self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_POPUP"));
+                return Ok(());
+            }
+            ShopSelection::AddedToReceipt => self.sounds.push(FeSoundRequest::Play("FE_SOUND_CAS_ACCEPT")),
+            ShopSelection::Wear => self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_A_BUTTON")),
+        }
+        self.preview = None;
+        if let Some(i) = p {
+            // A colourizable or logoable part, or one with other wear styles, opens its
+            // wear styles menu; a deck of the worn deck's style subcategory leaves the worn
+            // deck on (worn again), and is not worn when it is that deck. PC port: so does a
+            // part Apply Color chose.
+            let db = Arc::clone(&self.db);
+            let part = &db.parts[i];
+            let mut wear = Some(part);
+            let alternates = shop::wear_style_alternates(&db, &self.available_parts, i).len();
+            let colour = flag(part.colourizable) && category_has_colour(self.controller.category);
+            if colour || alternates > 1 || flag(part.logoable) || self.colour_filter {
+                self.current_part = Some(i);
+                let a = self.controller.push(M::WearStyles);
+                self.action(a, e)?;
+                let style = part.attributes[PART_STYLE_SUBCATEGORY];
+                let worn = self.record.installed_parts[usize::from(SKATE_DECK)];
+                if part.slot == SKATE_DECK
+                    && style != u16::MAX
+                    && let Some(deck) = db.find(SKATE_DECK, worn.model, worn.material)
+                    && deck.attributes[PART_STYLE_SUBCATEGORY] == style
+                {
+                    wear = (deck.model_id != part.model_id || deck.material_id != part.material_id).then_some(deck);
+                }
+            }
+            if let Some(part) = wear {
+                record_ops::wear_part(&mut self.record, &db, part)?;
+            }
+        } else {
+            record_ops::remove_part(
+                &mut self.record,
+                &self.db,
+                &self.undo,
+                clothing_slot(
+                    self.controller
+                        .category
+                        .ok_or("CAC remove category missing")?,
+                )
+                .ok_or("CAC remove slot missing")?,
+            )?;
+        }
+        // PC port: the garment worn before leaves its colour filter behind.
+        self.drop_unworn_filters()?;
+        e.recipe_changed = true;
+        Ok(())
+    }
     /// `FrontEndState_Receipt::ReceiveInput` (`0x82680e08`) and `OnMenuSelect`
     /// (`0x82680ef0`) behind `cas/receipt`'s `UpdateInput`: the menu picker (no wrap) takes
     /// Purchase, Edit Cart or Back to Store; the list moves with Up and Down and toggles its
@@ -960,12 +1130,14 @@ impl EditSkaterFrontend {
                     0 => {
                         play(&mut self.sounds, "FE_SOUND_CAS_PUCHASE_ITEM");
                         self.shop.update_receipt_list(&self.db, &self.available_parts, &mut self.record, &self.undo, &kept)?;
+                        self.restore_undo_filters()?;
                         self.shop.purchase(&self.db, &self.available_parts, &mut self.record)?;
                         self.close_receipt(0, e)?;
                     }
                     1 => screen.state = ReceiptState::ReceiptList,
                     _ => {
                         self.shop.update_receipt_list(&self.db, &self.available_parts, &mut self.record, &self.undo, &kept)?;
+                        self.restore_undo_filters()?;
                         self.close_receipt(2, e)?;
                     }
                 }
@@ -992,6 +1164,7 @@ impl EditSkaterFrontend {
                     if screen.mode == 1 {
                         let kept = screen.kept.clone();
                         self.shop.update_receipt_list(&self.db, &self.available_parts, &mut self.record, &self.undo, &kept)?;
+                        self.restore_undo_filters()?;
                         self.close_receipt(-1, e)?;
                     } else {
                         screen.state = ReceiptState::MenuPicker;
@@ -1043,7 +1216,6 @@ impl EditSkaterFrontend {
 
         record_ops::switch_gender(&mut self.record, &self.db, &self.vault)?;
         self.undo = self.record.clone();
-        self.custom_colours = [None; 13];
 
         self.controller.set_options(if self.record.data.is_male {
             vec![
@@ -1203,7 +1375,11 @@ impl EditSkaterFrontend {
                 self.wear_style_index = cycle(self.wear_style_index, self.wear_styles.len(), forward);
                 let index = self.wear_styles[self.wear_style_index];
                 self.current_part = Some(index);
+                let slot = self.db.parts[index].slot;
+                let previous = self.record.installed_parts[usize::from(slot)];
                 record_ops::wear_part(&mut self.record, &self.db, &self.db.parts[index])?;
+                // PC port: the garment's colour filter goes on with the style worn.
+                self.move_filter(slot, previous)?;
             }
             _ if o.definition().kind == "morph"
                 || o.definition().kind == "option"
@@ -1296,6 +1472,11 @@ impl EditSkaterFrontend {
                 .ok_or("CAC colour part slot absent")?,
             )
             .ok_or("CAC part has no colour zone")?,
+            O::WearStylesFilter => record_ops::part_filter(
+                clothing_slot(self.controller.category.ok_or("CAC colour category absent")?)
+                    .ok_or("CAC colour part slot absent")?,
+            )
+            .ok_or("CAC part has no colour filter")?,
             _ => return Err("CAC option has no colour zone".into()),
         })
     }
@@ -1406,8 +1587,11 @@ impl EditSkaterFrontend {
         Ok(())
     }
     fn colours(&self, o: EditSkaterOption) -> RecordResult<Vec<u64>> {
-        let slot = self.colour_slot(o)?;
-        let slot = if slot == record_ops::BOTTOM_COLOUR { TOP_COLOUR } else { slot };
+        self.zone_colours(self.colour_slot(o)?)
+    }
+    /// The colours of `slot`'s row; the bottom zone and the colour filters offer the tops'.
+    fn zone_colours(&self, slot: usize) -> RecordResult<Vec<u64>> {
+        let slot = if slot == record_ops::BOTTOM_COLOUR || record_ops::filter_part_slot(slot).is_some() { TOP_COLOUR } else { slot };
         let mut selected = None;
         for key in self
             .vault
@@ -1428,39 +1612,51 @@ impl EditSkaterFrontend {
             .descendants_sorted(record_ops::COLOUR_CLASS, seed)?)
     }
     /// The row of `colours` the zone's colour is. The bottom zone has no `colour_ids` entry: its
-    /// customization's colour tells, the first row without one.
+    /// customization's colour tells, the first row without one. PC port: a colour the picker set
+    /// (`edit_skater_colour_picker.rs`) is none of the row's own; the bottom row stands on the one
+    /// whose base is nearest, as `colour_ids` names the nearest for the other zones.
     fn colour_position(&self, slot: usize, colours: &[u64]) -> RecordResult<usize> {
+        if record_ops::filter_part_slot(slot).is_some() {
+            return self.filter_position(slot);
+        }
         if let Some(&worn) = self.record.colour_ids.get(slot) {
             return Ok(colours.iter().position(|&key| key == worn).unwrap_or(0));
         }
         let (custom, _) = CharacterCustomizations::parse_prefix(self.record.customizations_bytes()?)?;
         let Some(worn) = custom.colours.iter().find(|c| c.key == slot as i32) else { return Ok(0) };
+        let mut nearest = (f32::INFINITY, 0);
         for (index, &key) in colours.iter().enumerate() {
             let colour = self.vault.instance(record_ops::COLOUR_CLASS, key);
-            if [word(&colour, 32)?, word(&colour, 36)?, word(&colour, 40)?] == worn.base_rgb_bits {
+            let base = [word(&colour, 32)?, word(&colour, 36)?, word(&colour, 40)?];
+            if base == worn.base_rgb_bits {
                 return Ok(index);
             }
+            let distance: f32 = base
+                .iter()
+                .zip(&worn.base_rgb_bits)
+                .map(|(&own, &worn)| (f32::from_bits(own) - f32::from_bits(worn)).abs())
+                .sum();
+            if distance < nearest.0 {
+                nearest = (distance, index);
+            }
         }
-        Ok(0)
+        Ok(nearest.1)
     }
     fn adjust_colour(&mut self, o: EditSkaterOption, forward: bool) -> RecordResult<()> {
         let slot = self.colour_slot(o)?;
         let colours = self.colours(o)?;
-        // PC port: a row of tints ends in its custom colour's swatch (`edit_skater_colour_picker.rs`).
-        let next = match self.colour_step(o, slot, forward)? {
-            ColourStep::Custom => return Ok(()),
-            ColourStep::Own(next) => next,
-            ColourStep::Native => {
-                let at = self.colour_position(slot, &colours)?;
-                // FrontEndState_CaC::OnKey clamps colour selection at either end.
-                // Unlike a style selector, a colour strip does not wrap around.
-                if forward { at.saturating_add(1).min(colours.len().saturating_sub(1)) }
-                    else { at.saturating_sub(1) }
-            }
-        };
+        let at = self.colour_position(slot, &colours)?;
+        // FrontEndState_CaC::OnKey clamps colour selection at either end.
+        // Unlike a style selector, a colour strip does not wrap around.
+        let next = if forward { at.saturating_add(1).min(colours.len().saturating_sub(1)) }
+            else { at.saturating_sub(1) };
         let key = *colours
             .get(next)
             .ok_or("CAC colour list empty")?;
+        if record_ops::filter_part_slot(slot).is_some() {
+            let (_, colour) = *self.filter_colours()?.get(next).ok_or("CAC colour list empty")?;
+            return self.set_filter_colour(slot, colour);
+        }
         let colour = self.vault.instance(record_ops::COLOUR_CLASS, key);
         let base = [word(&colour, 32)?, word(&colour, 36)?, word(&colour, 40)?];
         let highlight = [word(&colour, 0)?, word(&colour, 4)?, word(&colour, 8)?];
@@ -1470,6 +1666,10 @@ impl EditSkaterFrontend {
     /// with it: their `colour_ids` and customizations, bound to the part worn; an eye or deck colour
     /// wears its own part as well.
     fn set_zone_colour(&mut self, slot: usize, key: u64, base: [u32; 3], highlight: [u32; 3]) -> RecordResult<()> {
+        // PC port: a colour filter's colour (the colour picker's), its base the colour on screen.
+        if record_ops::filter_part_slot(slot).is_some() {
+            return self.set_filter_colour(slot, base.map(f32::from_bits));
+        }
         let (mut custom, _) =
             CharacterCustomizations::parse_prefix(self.record.customizations_bytes()?)?;
         if slot == record_ops::BOTTOM_COLOUR {
@@ -1651,8 +1851,7 @@ impl EditSkaterFrontend {
                     row.description = skate3_text(d.description);
                     row.subtitle = skate3_text(SKATE3_POSTURE_HAL[self.skate3_style.posture as usize]);
                 }
-                // PC port: a row of tints shows its custom colour after its own.
-                if d.kind == "color" && !self.colour_row(o, &mut row)? {
+                if d.kind == "color" {
                     let colours = self.colours(o)?;
                     row.value = self.colour_position(self.colour_slot(o)?, &colours)? as i32;
                     for key in colours {
@@ -1763,6 +1962,16 @@ impl EditSkaterFrontend {
         } else {
             "#"
         };
+        // PC port: Apply Color on a part of a shirt or pants list.
+        let help_y = if !picking
+            && menu == EditSkaterMenu::PartThumbnails
+            && self.controller.category.is_some_and(colour_filter_category)
+            && self.parts.get(self.controller.selected()).is_some_and(Option::is_some)
+        {
+            "#Apply Color"
+        } else {
+            "#"
+        };
         let title = if picking {
             "#Pick Color"
         } else if menu == EditSkaterMenu::PartThumbnails {
@@ -1799,6 +2008,7 @@ impl EditSkaterFrontend {
             }
             .into(),
             help_x: if picking { "ID_CAC_MORPHING_UNDO" } else { "#" }.into(),
+            help_y: help_y.into(),
             colour_picker: self.colour_picker_view(),
             cash_popup: self.shop.not_enough_cash,
             receipt: self.receipt_view()?,

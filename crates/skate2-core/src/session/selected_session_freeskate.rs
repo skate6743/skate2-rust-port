@@ -30,6 +30,9 @@ pub(super) struct FreeSkate {
     /// `CommonBackEnd::sGameInfo`'s traffic, pedestrian and security settings, which the
     /// screen reads on entry and writes on EnterGame.
     pub(super) settings: Settings,
+    /// PC port: the game running is a profile free skate whose AI Skaters setting is off. Every
+    /// game start sets it (`set_game_mode`), so the career, party play and online keep theirs.
+    pub(super) ai_skaters_off: bool,
     /// EnterGame, waiting for the fade.
     pub(super) start: Option<GameSettings>,
     /// The skater the front end loads (a marquee, or the created skater), waiting for the
@@ -503,6 +506,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     .map_err(|e| error(format!("{e:?}")))?;
             }
         }
+        self.freeskate.ai_skaters_off = mode == GM_PROFILE_FREE_SKATE && settings.is_some_and(|settings| !settings.ai_skaters);
         // GameLoad8273c01c -> PreLoadStateGraphs8272550c -> InitPropData.
         // Graphs stay loaded in the host, but a prior game unload destroyed
         // the tracker Prop. Recreate it through the original spawn path.

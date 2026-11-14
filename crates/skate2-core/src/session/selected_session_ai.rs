@@ -68,6 +68,8 @@ pub(crate) struct SessionAi {
     pub(crate) camera: [V4; 4],
     pub(crate) in_front_end: bool,
     pub(crate) party_play: bool,
+    /// PC port: the profile free skate's AI Skaters setting is off (`AmbientFrame::ambient_off`).
+    pub(crate) ambient_off: bool,
     /// `SkaterManager::GetLocalSimIndex` 0x825eddb8: the local player the AI reads.
     pub(crate) local_player: Option<i32>,
     /// `AI::GetChallengeType` 0x824bf008: the main challenge's `ChallengeType`, 52 without one.
@@ -188,6 +190,7 @@ impl SessionAi {
             camera: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
             in_front_end: false,
             party_play: false,
+            ambient_off: false,
             local_player: None,
             challenge_type: challenge_type::NONE,
             respawn_locations: Vec::new(),
@@ -399,6 +402,7 @@ impl SelectedTickAi for SessionAiFrame<'_> {
             let mut frame = AmbientFrame {
                 in_front_end: self.ai.in_front_end,
                 party_play: self.ai.party_play,
+                ambient_off: self.ai.ambient_off,
                 camera: self.ai.camera,
                 skaters: &managed,
                 paths: &paths,

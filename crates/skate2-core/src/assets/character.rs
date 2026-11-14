@@ -393,6 +393,14 @@ impl CharacterScene {
                             {
                                 Some(index) => Ok(index),
                                 None => {
+                                    // PC port: a linked Skate 3 data folder's helper bone follows
+                                    // its limb (`crate::skate3::helper_bone_stand_in`).
+                                    let stand_in = crate::skate3::helper_bone_stand_in(name).and_then(|bone| {
+                                        hierarchy.bone_names.iter().position(|candidate| candidate.eq_ignore_ascii_case(bone))
+                                    });
+                                    if let Some(index) = stand_in {
+                                        return Ok(index);
+                                    }
                                     fallback_bone_count += 1;
                                     if crate::skate3::linked().is_some() {
                                         crate::skate3::note_unmatched_bone(name, &hierarchy.bone_names);

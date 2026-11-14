@@ -37,7 +37,13 @@ the netcode and the Lobby Browser are the port's own.
   or `create:<type>` (each with an optional `:<challenge name>`) signs in from the main menu and
   matchmakes a custom match of a network challenge type, and `list` prints every type's online
   challenges with their names, locations and titles; `SKATE2_DIAGNOSTIC_ONLINE_START=<ticks>` has the host start the challenge after
-  that many lobby ticks; `SKATE2_DIAGNOSTIC_TURN_TRICK=<push>:<flick>[:<step>]` plays each of the
+  that many lobby ticks; `SKATE2_DIAGNOSTIC_ONLINE_MAKE_HOST=<ticks>` has the host hand the game
+  to the first other player in its list after that many lobby ticks with every other skater
+  showing, and `SKATE2_DIAGNOSTIC_ONLINE_HUB_MAKE_HOST=<updates>` does it through the hub: Back,
+  then a press every second and a half to the Player List, its first player's menu and Make
+  Host, whose confirmation stays up four seconds before Yes, and
+  `SKATE2_DIAGNOSTIC_ONLINE_HUB_SPECTATE=<updates>` walks a host's or a guest's hub the same way to
+  the first player's Spectate; `SKATE2_DIAGNOSTIC_TURN_TRICK=<push>:<flick>[:<step>]` plays each of the
   local skater's turns; `SKATE2_DIAGNOSTIC_ONLINE_FRAME_DUMP=<path>` writes every tick's frame,
   its pose included, for `crates/skate2-net/examples/frame_stats.rs` (`<dump> [ack delay]
   [run length]`); `SKATE2_DIAGNOSTIC_NET=<delay ms>:<jitter ms>:<loss %>` delays, reorders and
@@ -164,8 +170,14 @@ game's state:
   together in the folder of `server-config.json` (beside the server's executable or, when only it
   holds one, the working directory). Like `badwords.txt`, git ignores them, no release zip
   carries them and an update never replaces them.
-- **Members**: the first member is the game host peer (the one with the host menus); when the
-  host leaves the next member takes over. A member silent for 10 seconds is dropped; one that
+- **Members**: the server keeps each game's host peer (the one with the host menus; PC port
+  addition, where the original's host was its first player). The player who made the game is
+  its host until it hands the game on (`GameRequest(MakeHost)` with the member's user id, from the
+  player menu's Make Host) or leaves. When the host leaves, the host is the first member in join
+  order (the Player List's order) whose skater is in the game's world, else the first member.
+  `GameJoined` names the host, and `HostChanged` tells every member of a new one, after the old
+  host's `PlayerLeave`. A hand to a member that left as it crossed changes nothing; the server
+  then tells the asker alone that it is still the host. A member silent for 10 seconds is dropped; one that
   sends neither a replay frame nor `Busy` for 2 seconds (a frozen or paused game) is kicked for
   inactivity ([facts.md](facts.md)).
 - **Lobby state machine**: lobby skate → `GameReset(LoadChallenge)` with the seed and the
@@ -221,11 +233,11 @@ game's state:
   online free skate, not during a location change), privacy, kick; `RequestChange` broadcasts
   `GameChange` and moves the game two seconds later. A player who joins in those two seconds
   joins at the new location (`GameJoined` carries the change's challenge), and matchmaking
-  matches the game on where it is going. These and `ResetAttributes` come only from the game host peer: a member that sends one
+  matches the game on where it is going. These, `MakeHost` and `ResetAttributes` come only from the game host peer: a member that sends one
   while another member is the host is not running the game (the game sends them only while the
-  server's messages so far make it the first member, and the host changes only when the host
-  leaves), so its connection is dropped (`leave::KICKED_FOR_HOST_REQUEST`). One that arrives
-  after its sender left the game is ignored.
+  server's messages so far make it the host, and stops the moment it asks to hand the game on;
+  the host changes only by its own hand or when it leaves), so its connection is dropped
+  (`leave::KICKED_FOR_HOST_REQUEST`). One that arrives after its sender left the game is ignored.
 - **Freeskate activities** (the original's game host peer held their proposals): a
   `GameProposal(Propose)` in an online free skate's lobby skate, with no change of location
   counting down, no other proposal open and at least two members in the game's world, the
@@ -719,7 +731,8 @@ to the lobby:
   play under the fade (`StateGameUnload`) and loads the online game as from the main menu.
 - **Online hub** (Back, `FrontEndState_OnlineHubMenu`): the host's and a client's menus,
   Player List (n/7) (the original prints a literal 5; the total here is the other players of a
-  full eight-player game), each player's menu with Kick Player and its confirmation, Host Options
+  full eight-player game), each player's menu with Make Host (PC port addition) and Kick Player,
+  each with its Yes/No confirmation, to the host alone, Host Options
   (Match Setup and Change Location over the hub in their host states, Session Access);
   Start Challenge only in a challenge lobby with another player, outside a challenge and a
   change. The original closes Host Options while a game is on and offers Kick Player only with

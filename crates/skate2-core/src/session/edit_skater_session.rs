@@ -47,6 +47,7 @@ impl EditSkaterSession {
         let skate3 = crate::skate3::linked().and_then(|data| data.clothing_for(&db));
         let skate3_merchandise = skate3.is_some();
         let db = Arc::new(skate3.unwrap_or(db));
+        edit_skater_record::log_limbs(&db);
         let store = EditSkaterProfileStore::open(EditSkaterProfileStore::default_path()?)?;
         let record = match store.load_record()? {
             Some(record) if !new_career => record,
@@ -205,6 +206,10 @@ impl EditSkaterSession {
         let mut recipe = crate::edit_skater_character::compose_recipe(&self.db, &parts, custom)?;
         recipe.clone_type = 3;
         record.data.recipe = recipe.encode()?;
+        // SKATE2_DIAGNOSTIC_COLOUR_FILTER: the recipe's size, which the record keeps within 8192.
+        if std::env::var_os("SKATE2_DIAGNOSTIC_COLOUR_FILTER").is_some() {
+            eprintln!("colour filter: the gameplay recipe is {} bytes", record.data.recipe.len());
+        }
         Ok(record)
     }
 }

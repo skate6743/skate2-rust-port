@@ -37,7 +37,11 @@ pub(crate) fn changelog() -> Option<skate2_core::ui::update_prompt::Changelog> {
     let asked = std::env::args_os().skip(1).any(|argument| argument == CHANGELOG_FLAG);
     let first = player_launch() && changelog_unseen(version);
     (asked || first)
-        .then(|| skate2_core::ui::update_prompt::Changelog::parse(version, CHANGELOG))
+        .then(|| {
+            // SKATE2_DIAGNOSTIC_CHANGELOG=<file>: that file's changes instead of this release's.
+            let text = std::env::var_os("SKATE2_DIAGNOSTIC_CHANGELOG").and_then(|path| std::fs::read_to_string(path).ok());
+            skate2_core::ui::update_prompt::Changelog::parse(version, text.as_deref().unwrap_or(CHANGELOG))
+        })
         .filter(|changelog| !changelog.entries.is_empty())
 }
 

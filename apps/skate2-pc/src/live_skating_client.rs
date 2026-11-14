@@ -1610,6 +1610,48 @@ impl LiveSkatingClient {
                             _ => {}
                         }
                     }
+                    // SKATE2_DIAGNOSTIC_MAIN_MENU_SCRIPT=<steps>: from 360, one step each 30 ticks, logged
+                    // with the Extras page: A, B, U, D, L, R, S (a capture), 0 (Up unless row 0 is
+                    // selected), anything else a wait.
+                    if let Ok(script) = std::env::var("SKATE2_DIAGNOSTIC_MAIN_MENU_SCRIPT")
+                        && tick >= 360
+                        && tick % 30 == 0
+                        && let Some(step) = script.split(',').map(str::trim).nth(usize::try_from((tick - 360) / 30).unwrap_or(usize::MAX))
+                    {
+                        let frame = self.session.main_menu_frame()?;
+                        eprintln!(
+                            "main menu script {tick}: step {} {step}: row {:?} extras {:?}",
+                            (tick - 360) / 30,
+                            frame.as_ref().map(|frame| frame.selected),
+                            frame.as_ref().and_then(|frame| frame.extras.as_ref())
+                        );
+                        sample.buttons = match step {
+                            "A" => 0x1000,
+                            "B" => 0x2000,
+                            "U" => 0x0001,
+                            "D" => 0x0002,
+                            "L" => 0x0004,
+                            "R" => 0x0008,
+                            "S" => {
+                                crate::render_window::request_diagnostic_capture();
+                                0
+                            }
+                            "0" if frame.as_ref().is_some_and(|frame| frame.selected != 0) => 0x0001,
+                            _ => 0,
+                        };
+                    }
+                    // SKATE2_DIAGNOSTIC_FE_RIGHT_STICK=<from>:<ticks>:<y>[;...]: from that front-end tick,
+                    // the right stick's up at y (-1 to 1) for those ticks.
+                    if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_FE_RIGHT_STICK") {
+                        for entry in spec.split(';') {
+                            if let [from, ticks, y] = entry.split(':').map(str::trim).collect::<Vec<_>>()[..]
+                                && let (Ok(from), Ok(ticks), Ok(y)) = (from.parse::<u64>(), ticks.parse::<u64>(), y.parse::<f32>())
+                                && (from..from.saturating_add(ticks)).contains(&tick)
+                            {
+                                sample.right_y = (y.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+                            }
+                        }
+                    }
                     // SKATE2_DIAGNOSTIC_SHOP=<Slappy's row>: the editor shops instead of leaving
                     // at once; SKATE2_DIAGNOSTIC_SHOP_REOPEN=<tick> opens it again from the hub.
                     let shop_row = std::env::var("SKATE2_DIAGNOSTIC_SHOP").ok().and_then(|row| row.parse::<usize>().ok());
@@ -2628,6 +2670,18 @@ impl LiveSkatingClient {
                                 } else {
                                     0x0002
                                 };
+                            } else if std::env::var_os("SKATE2_DIAGNOSTIC_FREESKATE_AI_OFF").is_some()
+                                && (screen.ai_skaters || screen.selection != skate2_core::ui::freeskate_option::Row::Location)
+                            {
+                                // SKATE2_DIAGNOSTIC_FREESKATE_AI_OFF: the AI Skaters row (down from
+                                // Location) turns off first, then Location is selected again.
+                                use skate2_core::ui::freeskate_option::Row;
+                                eprintln!("Free Skate AI skaters {tick}: {} at {:?}", screen.ai_skaters, screen.selection);
+                                sample.buttons = match (screen.ai_skaters, screen.selection) {
+                                    (true, Row::AiSkaters) => 0x0008,
+                                    (true, _) => 0x0002,
+                                    (false, _) => 0x0001,
+                                };
                             } else if !screen.location.to_lowercase().contains(&target.to_lowercase()) {
                                 eprintln!("Free Skate location {tick}: {}", screen.location);
                                 sample.buttons=0x0008;
@@ -2806,11 +2860,114 @@ impl LiveSkatingClient {
                     && self.session.edit_skater_view()?.is_none() {
                     sample.buttons = if pause.options()[pause.selected] == skate2_core::ui::pause_menu::PauseMenuOption::EditSkater { 0x1000 } else { 0x0002 };
                 }
+                // SKATE2_DIAGNOSTIC_EDIT_SKATER_FEMALE (the plain demo): Body Mods, Gender and its
+                // acceptance make the skater female, as edit-skater-gender does, then B goes back
+                // to the main menu, and the path below starts from there at 1020.
+                let female = matches!(demo, ControlsDemo::EditSkater) && std::env::var_os("SKATE2_DIAGNOSTIC_EDIT_SKATER_FEMALE").is_some();
+                if female && matches!(tick, 660 | 720 | 900) {
+                    sample.buttons = 0x1000;
+                }
+                if female && tick == 960 {
+                    sample.buttons = 0x2000;
+                }
+                // SKATE2_DIAGNOSTIC_EDIT_SKATER_PICK=<ticks> (the plain demo, the path ending on a
+                // colour row): once A has opened the colour picker, the left stick holds right and
+                // the right trigger in for that many ticks, then A keeps the colour, after which the
+                // path presses nothing more.
+                static PICK_OPENED: AtomicU64 = AtomicU64::new(0);
+                static PICKED: AtomicBool = AtomicBool::new(false);
+                let pick = std::env::var("SKATE2_DIAGNOSTIC_EDIT_SKATER_PICK")
+                    .ok()
+                    .and_then(|ticks| ticks.parse::<u64>().ok())
+                    .filter(|_| matches!(demo, ControlsDemo::EditSkater));
+                let picker_open = pick.is_some() && self.session.edit_skater_view()?.is_some_and(|view| view.colour_picker.is_some());
+                if let Some(hold) = pick
+                    && picker_open
+                {
+                    let opened = match PICK_OPENED.load(Ordering::Relaxed) {
+                        0 => {
+                            PICK_OPENED.store(tick, Ordering::Relaxed);
+                            tick
+                        }
+                        at => at,
+                    };
+                    if tick < opened + hold {
+                        sample.left_x = i16::MAX;
+                        sample.right_trigger = u8::MAX;
+                    } else if tick == opened + hold + 30 {
+                        sample.buttons = 0x1000;
+                        PICKED.store(true, Ordering::Relaxed);
+                        eprintln!("edit skater {tick}: the colour picker keeps its colour");
+                    }
+                }
+                // SKATE2_DIAGNOSTIC_EDIT_SKATER_FIRST=<title>[,<title>...]|<text> (the plain demo):
+                // before the path below, the same walk to a first part, A on it to wear it, then B
+                // every 30 ticks back to Edit Skater's own menu, buying it at the cart on the way.
+                static FIRST_STAGE: AtomicU64 = AtomicU64::new(0);
+                let first = std::env::var("SKATE2_DIAGNOSTIC_EDIT_SKATER_FIRST").ok();
+                let first_pending = first.is_some() && FIRST_STAGE.load(Ordering::Relaxed) < 2;
+                if matches!(demo, ControlsDemo::EditSkater) && tick >= if female { 1020 } else { 660 } && tick % 30 == 0
+                    && first_pending
+                    && let Some((titles, wanted)) = first.as_deref().and_then(|first| first.split_once('|'))
+                    && let Some(view) = self.session.edit_skater_view()?
+                {
+                    use skate2_core::ui::edit_skater::EditSkaterMenu as M;
+                    if FIRST_STAGE.load(Ordering::Relaxed) == 1 {
+                        sample.buttons = if let Some(receipt) = &view.receipt {
+                            // The cart on the way out: Purchase Items, its picker's first option.
+                            if receipt.list {
+                                0x4000
+                            } else if receipt.option == 0 {
+                                0x1000
+                            } else {
+                                0x0001
+                            }
+                        } else if view.menu == M::EditSkaterMain {
+                            FIRST_STAGE.store(2, Ordering::Relaxed);
+                            eprintln!("edit skater {tick}: back from the first part");
+                            0
+                        } else {
+                            0x2000
+                        };
+                    } else {
+                        let titled = view.rows.iter().position(|row| titles.split(',').any(|title| title == row.title));
+                        let wanted = wanted.to_ascii_lowercase();
+                        let thumbnail = view.rows.iter().position(|row| row.texture.as_deref().is_some_and(|texture| texture.to_ascii_lowercase().contains(&wanted)));
+                        sample.buttons = match (titled, thumbnail) {
+                            (Some(row), _) if row == view.selected => 0x1000,
+                            (Some(row), _) => if row > view.selected { 0x0002 } else { 0x0001 },
+                            (None, Some(part)) if part == view.selected => {
+                                FIRST_STAGE.store(1, Ordering::Relaxed);
+                                eprintln!("edit skater {tick}: A on the first part {}", view.rows[part].texture.as_deref().unwrap_or_default());
+                                0x1000
+                            }
+                            (None, Some(part)) if part / 3 > view.selected / 3 => 0x0002,
+                            (None, Some(part)) if part / 3 < view.selected / 3 => 0x0001,
+                            (None, Some(part)) if part > view.selected => 0x0008,
+                            (None, Some(_)) => 0x0004,
+                            _ => 0,
+                        };
+                    }
+                }
+                // SKATE2_DIAGNOSTIC_EDIT_SKATER_APPLY=<step>[,<step>...] (the plain demo, once the path
+                // below has reached its part): a step every 30 ticks. A, B, X and Y press their
+                // buttons and U, D, L and R the D-pad's; S captures the screen (<capture>_s<n>.png);
+                // - waits; H<ticks> holds the left stick right that long (the colour picker's
+                // cursor). Each step logs the menu, the selected row and its value, and the button
+                // help.
+                static APPLY_AT: AtomicU64 = AtomicU64::new(0);
+                static APPLY_STEP: AtomicU64 = AtomicU64::new(0);
+                static APPLY_HOLD: AtomicU64 = AtomicU64::new(0);
+                let apply = std::env::var("SKATE2_DIAGNOSTIC_EDIT_SKATER_APPLY").ok().filter(|_| matches!(demo, ControlsDemo::EditSkater));
                 // SKATE2_DIAGNOSTIC_EDIT_SKATER_PATH=<title>[,<title>...] (the plain demo): every 30
                 // ticks from 660, A on the row titled one of them, moving to it first; then
                 // SKATE2_DIAGNOSTIC_EDIT_SKATER_PART=<text> steps right to the first part whose
                 // thumbnail names it. Each menu reached logs its rows once.
-                if matches!(demo, ControlsDemo::EditSkater) && tick >= 660 && tick % 30 == 0
+                if matches!(demo, ControlsDemo::EditSkater) && tick >= if female { 1020 } else { 660 } && tick % 30 == 0
+                    && !first_pending
+                    && !picker_open
+                    && !PICKED.load(Ordering::Relaxed)
+                    && APPLY_AT.load(Ordering::Relaxed) == 0
                     && let Ok(path) = std::env::var("SKATE2_DIAGNOSTIC_EDIT_SKATER_PATH")
                     && let Some(view) = self.session.edit_skater_view()?
                 {
@@ -2836,6 +2993,55 @@ impl LiveSkatingClient {
                         (None, Some(part)) if part < view.selected => 0x0004,
                         _ => 0,
                     };
+                    if apply.is_some() && titled.is_none() && thumbnail == Some(view.selected)
+                        && view.menu == skate2_core::ui::edit_skater::EditSkaterMenu::PartThumbnails
+                    {
+                        APPLY_AT.store(tick, Ordering::Relaxed);
+                        eprintln!("edit skater {tick}: the part is reached; the apply script starts");
+                    }
+                }
+                let started = APPLY_AT.load(Ordering::Relaxed);
+                if let Some(script) = apply.as_deref()
+                    && started != 0
+                {
+                    if tick < APPLY_HOLD.load(Ordering::Relaxed) {
+                        sample.left_x = i16::MAX;
+                    } else if tick > started && (tick - started) % 30 == 0
+                        && let Some(view) = self.session.edit_skater_view()?
+                    {
+                        let steps: Vec<&str> = script.split(',').collect();
+                        let at = APPLY_STEP.fetch_add(1, Ordering::Relaxed) as usize;
+                        if let Some(&step) = steps.get(at) {
+                            let row = view.rows.get(view.selected);
+                            eprintln!(
+                                "edit skater {tick}: apply step {at} {step}: {:?} {} row {} {} value {} picker {} help Y {:?} A {:?}",
+                                view.menu, view.title, view.selected, row.map_or("", |row| row.title.as_str()),
+                                row.map_or(0, |row| row.value), view.colour_picker.is_some(), view.help_y, view.help_a
+                            );
+                            sample.buttons = match step {
+                                "A" => 0x1000,
+                                "B" => 0x2000,
+                                "X" => 0x4000,
+                                "Y" => 0x8000,
+                                "U" => 0x0001,
+                                "D" => 0x0002,
+                                "L" => 0x0004,
+                                "R" => 0x0008,
+                                "S" => {
+                                    crate::render_window::request_diagnostic_capture();
+                                    0
+                                }
+                                hold if hold.starts_with('H') => {
+                                    APPLY_HOLD.store(tick + hold[1..].parse::<u64>().unwrap_or(0), Ordering::Relaxed);
+                                    sample.left_x = i16::MAX;
+                                    0
+                                }
+                                _ => 0,
+                            };
+                        } else if at == steps.len() {
+                            eprintln!("edit skater {tick}: the apply script is done");
+                        }
+                    }
                 }
                 if matches!(demo, ControlsDemo::EditSkaterCouch | ControlsDemo::EditSkaterStyles | ControlsDemo::EditSkaterRemoveShirt) {
                     if tick == 660 { sample.buttons = 0x0002; }
@@ -3023,22 +3229,41 @@ impl LiveSkatingClient {
                     }
                 }
             }
-            // SKATE2_DIAGNOSTIC_HOLD=<button>:<from>:<period>:<frames>: from that frame, every period
-            // frames, the face button (a, b, x, y) held for the given frames.
-            if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_HOLD")
-                && let [button, from, period, frames] = spec.split(':').collect::<Vec<_>>()[..]
-                && let (Ok(from), Ok(period), Ok(frames)) = (from.parse::<u64>(), period.parse::<u64>(), frames.parse::<u64>())
-                && period > 0
-                && self.completed_frames >= from
-                && (self.completed_frames - from) % period < frames
-            {
-                sample.buttons |= match button {
-                    "a" => 0x1000,
-                    "b" => 0x2000,
-                    "x" => 0x4000,
-                    "y" => 0x8000,
-                    _ => 0,
-                };
+            // SKATE2_DIAGNOSTIC_HOLD=<button>:<from>:<period>:<frames>[;...]: from that frame, every
+            // period frames, the button (a, b, x, y, lb, rb) held for the given frames.
+            if let Ok(specs) = std::env::var("SKATE2_DIAGNOSTIC_HOLD") {
+                for spec in specs.split(';') {
+                    if let [button, from, period, frames] = spec.split(':').map(str::trim).collect::<Vec<_>>()[..]
+                        && let (Ok(from), Ok(period), Ok(frames)) = (from.parse::<u64>(), period.parse::<u64>(), frames.parse::<u64>())
+                        && period > 0
+                        && self.completed_frames >= from
+                        && (self.completed_frames - from) % period < frames
+                    {
+                        sample.buttons |= match button {
+                            "a" => 0x1000,
+                            "b" => 0x2000,
+                            "x" => 0x4000,
+                            "y" => 0x8000,
+                            "lb" => 0x0100,
+                            "rb" => 0x0200,
+                            _ => 0,
+                        };
+                    }
+                }
+            }
+            // SKATE2_DIAGNOSTIC_STICK=<from>:<frames>:<x>,<y>[;...]: the left stick at (x, y), each
+            // from -1 to 1 with y forward, for those frames.
+            if let Ok(spec) = std::env::var("SKATE2_DIAGNOSTIC_STICK") {
+                for entry in spec.split(';') {
+                    if let [from, frames, point] = entry.split(':').map(str::trim).collect::<Vec<_>>()[..]
+                        && let (Ok(from), Ok(frames)) = (from.parse::<u64>(), frames.parse::<u64>())
+                        && (from..from.saturating_add(frames)).contains(&self.completed_frames)
+                        && let [Some(x), Some(y)] = point.split(',').map(|v| v.trim().parse::<f32>().ok()).collect::<Vec<_>>()[..]
+                    {
+                        sample.left_x = (x.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+                        sample.left_y = (y.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+                    }
+                }
             }
             // SKATE2_DIAGNOSTIC_TRIGGER_TAPS=<from>:<period>:<frames>[:<l|r|b>[:<count>]][;...]: from
             // that frame, every period frames, the right trigger (l the left, b both) pulled fully for
@@ -3728,6 +3953,8 @@ impl LiveSkatingClient {
                 update.request(request);
             }
         }
+        // PC: the changelog popup's layout bounds its scrolling.
+        self.session.set_changelog_scroll_limit(view.changelog_scroll_limit());
         // PC: the Downloadable Content screen's Link DLCs: the file picker, the picked files read
         // under ID_DLC_REGISTERING, then the new packs' strings join the screens'.
         if self.session.take_dlc_link_request() {
@@ -3924,7 +4151,8 @@ impl LiveSkatingClient {
             }
             if matches!(self.controls_demo, Some(ControlsDemo::EditSkater))
                 && self.frontend_demo_ticks >= 600 {
-                if !editor_view.visible || !intro {
+                // An apply script (SKATE2_DIAGNOSTIC_EDIT_SKATER_APPLY) may finish the editor.
+                if (!editor_view.visible || !intro) && std::env::var_os("SKATE2_DIAGNOSTIC_EDIT_SKATER_APPLY").is_none() {
                     return Err("Edit Skater diagnostic did not finish its intro".into());
                 }
                 eprintln!("Edit Skater diagnostic: room and character rendered; menu {:?}, {} rows, intro complete", editor_view.menu, editor_view.rows.len());

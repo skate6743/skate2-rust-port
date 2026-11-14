@@ -10,7 +10,7 @@ use crate::challenge::invisible_boundary::InvisibleBoundaries;
 use crate::challenge::players::{GM_PROFILE_FREE_SKATE, GM_SINGLE_PLAYER};
 use crate::ui::FeSoundRequest;
 use crate::ui::online_config::OnlineConfig;
-use crate::ui::online_hub::{Action, Controller, HUB_SOUND, HubKind, Lobby, Popup, ScreenCall, Snapshot};
+use crate::ui::online_hub::{Action, Controller, HUB_SOUND, HubKind, Lobby, MAKE_HOST, Popup, SPECTATE, ScreenCall, Snapshot, Title};
 use crate::ui::online_match;
 use crate::ui::pause_menu::PauseMenuInput;
 use crate::ui::profile_name::Prompt;
@@ -109,6 +109,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// HUD; then the hub, or a screen over it, takes the input, after an open popup. The input
     /// the game should still see.
     pub(in super::super) fn update_online_hub(&mut self, input: PauseMenuInput, focused: bool, can_open: bool) -> Result<PauseMenuInput, SelectedLiveError> {
+        let (input, focused) = self.online_diagnostic_hub_input(input, focused);
         let playing = self.online.network_resumed && self.online.game.as_ref().is_some_and(|game| game.entered) && self.map_travel.is_none();
         let input = self.update_online_popup(input, focused)?;
         let lobby = if playing { self.online_hub_lobby() } else { self.single_player_hub_lobby()? };
@@ -153,6 +154,81 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.online.hub.sounds.extend(sounds);
         self.online_hub_action(action)?;
         Ok(PauseMenuInput::default())
+    }
+
+    /// `SKATE2_DIAGNOSTIC_ONLINE_HUB_MAKE_HOST=<updates>`: once the host's game has shown every
+    /// other skater in lobby skate for that many updates, Back opens the hub, and a press every
+    /// second and a half goes to the Player List, its first player's menu and Make Host. The
+    /// confirmation stays up four seconds, then Yes hands the game on. Its presses count as
+    /// focused. `SKATE2_DIAGNOSTIC_ONLINE_HUB_SPECTATE=<updates>` walks a host's or a guest's hub
+    /// the same way to the first player's Spectate.
+    fn online_diagnostic_hub_input(&mut self, input: PauseMenuInput, focused: bool) -> (PauseMenuInput, bool) {
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        static UPDATES: AtomicU32 = AtomicU32::new(0);
+        static CONFIRMING: AtomicU32 = AtomicU32::new(0);
+        static DONE: AtomicBool = AtomicBool::new(false);
+        let updates = |name: &str| std::env::var(name).ok().and_then(|ticks| ticks.parse::<u32>().ok());
+        let Some((start, item)) = updates("SKATE2_DIAGNOSTIC_ONLINE_HUB_MAKE_HOST")
+            .map(|start| (start, MAKE_HOST))
+            .or_else(|| updates("SKATE2_DIAGNOSTIC_ONLINE_HUB_SPECTATE").map(|start| (start, SPECTATE)))
+        else {
+            return (input, focused);
+        };
+        if DONE.load(Ordering::Relaxed) {
+            return (input, focused);
+        }
+        let press = |input: PauseMenuInput| (input, true);
+        let Some(hub) = self.online.hub.menu.as_ref() else {
+            let ready = (item == SPECTATE || self.online_is_host())
+                && self.online.round.is_none()
+                && self.online.game.as_ref().is_some_and(|game| {
+                    game.entered && game.players.len() >= 2 && game.remotes.values().all(super::remote_skater::RemoteSkater::visible)
+                });
+            if !ready || UPDATES.fetch_add(1, Ordering::Relaxed) + 1 < start {
+                return (input, focused);
+            }
+            trace(format_args!("diagnostic opens the hub"));
+            return press(PauseMenuInput { back: true, ..Default::default() });
+        };
+        if !hub.ready {
+            return press(PauseMenuInput::default());
+        }
+        if matches!(hub.popup(), Some(Popup::MakeHost(_))) {
+            let held = CONFIRMING.fetch_add(1, Ordering::Relaxed) + 1;
+            if held == 1 {
+                trace(format_args!("diagnostic: Make Host's confirmation is up"));
+            }
+            if held < 240 {
+                return press(PauseMenuInput::default());
+            }
+            DONE.store(true, Ordering::Relaxed);
+            trace(format_args!("diagnostic says Yes"));
+            return press(PauseMenuInput { select: true, ..Default::default() });
+        }
+        if UPDATES.fetch_add(1, Ordering::Relaxed) % 90 != 0 {
+            return press(PauseMenuInput::default());
+        }
+        let snapshot = hub.snapshot();
+        let Some(menu) = snapshot.stack.last() else { return press(PauseMenuInput::default()) };
+        let wanted = Title::Literal(item.to_owned());
+        let target = menu
+            .items
+            .iter()
+            .position(|(title, enabled)| *enabled && *title == wanted)
+            .or_else(|| menu.items.iter().position(|(title, enabled)| *enabled && matches!(title, Title::Count { label: "ID_ONLINE_HUB_PLAYER_LIST", .. })))
+            .or_else(|| (menu.title == Title::Hal("ID_ONLINE_HUB_PLAYER_LIST")).then_some(0));
+        trace(format_args!("diagnostic hub menu {:?}: {:?} at {}, target {target:?}", menu.title, menu.items, menu.selected));
+        match target {
+            Some(target) if target == menu.selected => {
+                if menu.items.get(target).is_some_and(|(title, _)| *title == wanted) && item == SPECTATE {
+                    DONE.store(true, Ordering::Relaxed);
+                    trace(format_args!("diagnostic spectates"));
+                }
+                press(PauseMenuInput { select: true, ..Default::default() })
+            }
+            Some(_) => press(PauseMenuInput { down: true, ..Default::default() }),
+            None => press(PauseMenuInput::default()),
+        }
     }
 
     /// `CheckForOnlineHubMenu`'s sound and `PushState(44)`.
@@ -374,6 +450,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             Action::Spectate(user_id) => {
                 self.close_online_hub()?;
                 self.online_start_spectating(user_id)?;
+            }
+            Action::MakeHost(user_id) => {
+                self.online_make_host(user_id);
+                self.close_online_hub()?;
             }
             Action::ActivitySignUp(key) => self.online_open_activity_signup(key),
         }

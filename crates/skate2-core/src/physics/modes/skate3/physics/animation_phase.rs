@@ -401,11 +401,12 @@ pub(crate) fn advance(
         action_intents.insert(intent.name, intent.value);
     }
     let pushing = action_intents.contains_key("NewPush") || action_intents.contains_key("Pushing");
-    if skate3_core::input::riding_intentions::no_input(
+    let no_input = skate3_core::input::riding_intentions::no_input(
         &controls.controller,
         pushing,
         physical.air.use_air_reckoning_452 != 0,
-    ) {
+    );
+    if no_input {
         action_intents.insert("NoInput", 1.0);
     }
     // The S2 Actor's scripted pin applies after every S3 Fill producer,
@@ -423,6 +424,7 @@ pub(crate) fn advance(
         &mut output.reset,
     );
     skater.animation.motion.animation.host_offboard_reset = false;
+    skater.player_providing_input = !no_input;
     advanced?;
     Ok(output)
 }

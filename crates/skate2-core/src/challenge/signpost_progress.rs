@@ -473,6 +473,62 @@ pub(crate) fn add_cash(world: &mut World, cash: i32, credit: usize) {
     }
 }
 
+/// PC port addition (Max Out Save, `max_out.rs`): each completed challenge's save values as the
+/// best play leaves them: `Highest Rank` first place, and `Killed It`, `Spot Found`, `Unlocked`,
+/// `PlayerOwns`, `PropertyOwned` and `Paid Entry Fee` set. Its other values (best heat times,
+/// points, a declined spot) stay as they are.
+pub(crate) fn max_out_challenge_save_data(world: &mut World) {
+    let db = Arc::clone(&world.db);
+    let signpost = &mut world.signpost;
+    for save in signpost.progress.challenge_save.values_mut() {
+        if !signpost.completed.contains_key(&save.challenge) {
+            continue;
+        }
+        if matches!(
+            db.layout_text(classes::CHALLENGE_SAVE_TYPES, save.save_type, 0),
+            Some("Highest Rank" | "Killed It" | "Spot Found" | "Unlocked" | "PlayerOwns" | "PropertyOwned" | "Paid Entry Fee")
+        ) {
+            save.value = 1;
+        }
+    }
+}
+
+/// PC port addition (Max Out Save, `max_out.rs`): the `Cash` pool at `cash` (within the pool's
+/// bounds, layout words 2 and 3) and each of the `counters` at its maximum (word 3).
+pub(crate) fn max_out_point_pools(world: &mut World, cash: i32, counters: &[&str]) {
+    let db = Arc::clone(&world.db);
+    let pools = &mut world.signpost.progress.point_pools;
+    for name in counters {
+        let pool = point_pool_key(&db, name);
+        if let Some(points) = pools.get_mut(&pool) {
+            *points = layout_int(&db, classes::POINT_POOLS, pool, 3);
+        }
+    }
+    let pool = point_pool_key(&db, "Cash");
+    if let Some(points) = pools.get_mut(&pool) {
+        *points = cash.max(layout_int(&db, classes::POINT_POOLS, pool, 2)).min(layout_int(&db, classes::POINT_POOLS, pool, 3));
+    }
+}
+
+/// PC port addition (Max Out Save, `max_out.rs`): each ranking group at its last level's ranking
+/// (the rankings of the group's id, layout word 2, the highest level, word 3): the board sponsor's
+/// pro model, both magazines' covers, the Circulate video's last stage and the last path ending.
+pub(crate) fn max_out_rankings(world: &mut World) {
+    let db = Arc::clone(&world.db);
+    for (&group, ranking) in &mut world.signpost.progress.rankings {
+        let id = db.layout_word(classes::RANKING_GROUPS, group, 1);
+        let last = db
+            .collections(classes::RANKINGS)
+            .iter()
+            .copied()
+            .filter(|&key| db.layout_word(classes::RANKINGS, key, 2) == id)
+            .max_by_key(|&key| db.layout_word(classes::RANKINGS, key, 3));
+        if let Some(last) = last {
+            *ranking = last;
+        }
+    }
+}
+
 /// The save entry of a challenge (`ConvertChallengeKeyToSignpostKey`) whose
 /// save type is named `name`: `GetChallengeSaveData` (`0x825cf418`) and
 /// `SetChallengeSaveData` (`0x825cf560`) search `mChallengeSaveData` for it.

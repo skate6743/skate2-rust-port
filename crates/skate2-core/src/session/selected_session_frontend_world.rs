@@ -144,6 +144,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         ai.camera = std::array::from_fn(|row| std::array::from_fn(|lane| camera[row * 4 + lane]));
         ai.in_front_end = true;
         ai.party_play = false;
+        ai.ambient_off = false;
         ai.local_player = Some(FIRST_PLAYER);
         ai.set_recipes_in_use(Vec::new());
         self.inner

@@ -45,6 +45,10 @@ use std::{
 #[path = "skate3_dlc.rs"]
 pub mod dlc;
 
+/// Skate 2's head under Skate 3's tops.
+#[path = "skate3_head_fit.rs"]
+pub mod head_fit;
+
 /// One of Port Carverton's districts the link adds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DistrictSpec {
@@ -1747,6 +1751,41 @@ pub fn district_active() -> bool {
     DISTRICT_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The skater's bone a linked Skate 3 clothing model's helper bone follows. Skate 3's rig adds a
+/// helper at each shoulder and hip joint (`LeftShoulderHlp`, `LeftUpLegHlp` and the right ones),
+/// which its character animators set each frame from the arm or thigh beside its twist bones
+/// (`CASCharacterAnimator::Init` 0x82533ca8, `SkaterPresentation::InitAnimation` 0x82787ea8 list
+/// them together); Skate 2's hierarchy has none. Skate 3's shirts and arms skin the shoulder's
+/// vertices to one and its shorts and legs the hip's, so on the hips (the bone a model's other
+/// unknown bones take) those vertices would stay with the hips as the arm, spine or thigh moved.
+/// Each follows its limb's bone instead, with that bone's own bind pose.
+/// `SKATE2_DIAGNOSTIC_S3_HELPER_PARENT` gives each the joint's parent side instead (the clavicle,
+/// the hips), for comparison.
+#[must_use]
+pub fn helper_bone_stand_in(bone: &str) -> Option<&'static str> {
+    let parent = std::env::var_os("SKATE2_DIAGNOSTIC_S3_HELPER_PARENT").is_some();
+    HELPER_BONES
+        .iter()
+        .find(|(helper, _, _)| helper.eq_ignore_ascii_case(bone))
+        .map(|&(_, limb, joint_parent)| if parent { joint_parent } else { limb })
+}
+
+/// Skate 3's helper bones (`helper_bone_stand_in`): each, its limb's bone and the joint's parent
+/// side.
+const HELPER_BONES: [(&str, &str, &str); 4] = [
+    ("LeftShoulderHlp", "LeftArm", "LeftShoulder"),
+    ("RightShoulderHlp", "RightArm", "RightShoulder"),
+    ("LeftUpLegHlp", "LeftUpLeg", "Hips"),
+    ("RightUpLegHlp", "RightUpLeg", "Hips"),
+];
+
+/// Whether a model bone is one of Skate 3's helper bones, which only a model made on Skate 3's rig
+/// names (Skate 2's has none).
+#[must_use]
+pub fn is_helper_bone(bone: &str) -> bool {
+    HELPER_BONES.iter().any(|(helper, _, _)| helper.eq_ignore_ascii_case(bone))
+}
+
 /// A linked Skate 3 clothing model's bone the skater's hierarchy lacks, reported once each, with
 /// the hierarchy's own the first time.
 pub fn note_unmatched_bone(bone: &str, hierarchy: &[String]) {
@@ -1811,6 +1850,10 @@ pub fn character_material_alias(class: u64, collection: u64) -> Option<u64> {
 /// unlinked or when Skate 3 has none.
 #[must_use]
 pub fn cloth_effect(path: &str) -> Option<Vec<u8>> {
+    // SKATE2_DIAGNOSTIC_S3_NO_CLOTH: Skate 3's clothing skins as plain models, with no cloth.
+    if std::env::var_os("SKATE2_DIAGNOSTIC_S3_NO_CLOTH").is_some() {
+        return None;
+    }
     linked()?.mounts.read_path(path).ok()
 }
 

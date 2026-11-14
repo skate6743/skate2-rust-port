@@ -49,6 +49,10 @@ const CAPPED: &str = "Capped";
 const UNCAPPED: &str = "Uncapped";
 /// The state `FrontEndState_ChallengeMap::ConfirmPurchaseCallback` (`0x826751f8`) sets.
 const UNLOCKED: &str = "Unlocked";
+/// The dam a progression script drains (`SetupDynamicHullState(.., "Drained")`).
+const DAM: &str = "ol_fa_svm_21_accumulation_megadam_locator";
+/// The skate stoppers progression scripts remove (`SetupDynamicHullState(.., "Uncapped")`).
+const SCRIPTED_UNCAPS: [&str; 2] = ["mikey_uncap", "dt_madridplaza_0"];
 
 /// The `challenge_global_data` attributes the manager reads.
 mod field {
@@ -531,6 +535,62 @@ pub fn purchase_property(world: &mut World, activity: usize) {
     signpost_progress::set_challenge_save_data(world, key, "PlayerOwns", 1);
     set_activity_state(world, activity, UNLOCKED, None);
     signpost::complete_challenge_by_key(world, key);
+}
+
+/// PC port addition (Max Out Save, `max_out.rs`): each dynamic-hull activity in the state the
+/// whole career leaves it in. Gates and the properties open: a `Locked` or `UnderConstruction`
+/// one `Unlocked` (the state a bought property takes), Slappy's `Unlock` (its script's state, the
+/// one the minimap tests), a `Closed` one `Open` and the GvR added (`AddedGvR`). The pools the
+/// player can have drained (`service_draining`'s) and the dam are `Drained`; the skate stoppers
+/// the player can have removed (`service_uncapping`'s) and the two the scripts remove are
+/// `Uncapped`. Any other activity keeps its state. `SKATE2_TRACE_MAX_OUT` logs each activity.
+pub(crate) fn max_out(world: &mut World) {
+    let trace = std::env::var_os("SKATE2_TRACE_MAX_OUT").is_some();
+    for activity in world.dynamic_hulls.all.clone() {
+        let key = world.activities.activities[activity].key;
+        let states: Vec<String> =
+            (0..mapping_count(world, activity)).filter_map(|index| mapping(world, activity, index)).map(|m| m.state).collect();
+        let has = |state: &str| states.iter().any(|known| known == state);
+        let state = if key == hash64("slappys") {
+            Some("Unlock")
+        } else if has("NoGvR") {
+            Some("AddedGvR")
+        } else if has("Closed") {
+            Some("Open")
+        } else if has("Locked") || has("UnderConstruction") {
+            Some(UNLOCKED)
+        } else if has(UNDRAINED) && (serviceable(world, key, "service_draining") || key == hash64(DAM)) {
+            Some(DRAINED)
+        } else if has(CAPPED) && (serviceable(world, key, "service_uncapping") || SCRIPTED_UNCAPS.iter().any(|&name| key == hash64(name))) {
+            Some(UNCAPPED)
+        } else {
+            None
+        };
+        if trace {
+            let was = world.dynamic_hulls.lookup_values.get(&key).and_then(|&value| states.iter().find(|s| hash_value32(s) == value));
+            eprintln!(
+                "max out: hull {} {} -> {} of {states:?}",
+                world.activities.activities[activity].name,
+                was.map_or("-", String::as_str),
+                state.unwrap_or("kept")
+            );
+        }
+        if let Some(state) = state {
+            world.dynamic_hulls.lookup_values.insert(key, hash_value32(state));
+        }
+    }
+}
+
+/// Whether the challenge is below `root` among the challenges and the player can pay for its
+/// service (`IsServiceableByUser`), as `GetNumPoolsInWorld` (`0x8289c890`) counts the pools.
+fn serviceable(world: &World, key: u64, root: &str) -> bool {
+    let root = hash64(root);
+    let mut parent = world.db.parent(class::CHALLENGES, key);
+    while let Some(value) = parent.filter(|&p| p != 0 && p != root) {
+        parent = world.db.parent(class::CHALLENGES, value);
+    }
+    parent == Some(root)
+        && world.db.attribute(class::CHALLENGES, key, hash64("IsServiceableByUser")).and_then(|a| a.bool(0)).unwrap_or(false)
 }
 
 /// `DynamicHull.SetupDynamicHullState(challenge, state)` (`0x82db41f8`): `SetDynamicHullState`

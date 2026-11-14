@@ -360,7 +360,7 @@ fn size_filter_tab(tab: &mut Clip, assets: &Assets, text: &str, padding: f32) ->
 
 /// `basic_slider`'s constructor: `SetSliderLength(300)`, whose geometry `update_scrollbar`
 /// lays out, and `SetSkin(mSkin)`.
-fn construct_slider(slider: &mut Clip, assets: &Assets) -> RenderResult<()> {
+pub(super) fn construct_slider(slider: &mut Clip, assets: &Assets) -> RenderResult<()> {
     let Some(skin) = slider.properties.get("mSkin").cloned() else { return Ok(()) };
     let bar = slider.named(&["mcScrollbar"])?;
     for path in [

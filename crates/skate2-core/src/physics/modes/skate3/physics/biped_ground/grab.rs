@@ -48,6 +48,22 @@ pub(crate) fn sync(state: &mut State, owner: &mut Owner, settings: BoardSettings
                 limits(settings.margin_444, settings.angle_452, settings.angle_436),
             );
             traced = (ready, Some(candidate.descriptor().id), state.flags_144_to_150[0]);
+            // SKATE2_TRACE_SKATE3_GRAB_FRAME: the best candidate's record as the decision tests it
+            // (endpoints, approach, the record's own frame) with the box it is tested in.
+            static CANDIDATE_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *CANDIDATE_TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_SKATE3_GRAB_FRAME").is_some()) {
+                eprintln!(
+                    "skate3 grab candidate: id={} qualified={} endpoints={:?} approach={:?} record_frame={:?} box_frame={:?} box_extents={:?} bone={:?}",
+                    candidate.descriptor().id,
+                    state.flags_144_to_150[0],
+                    candidate.endpoints(),
+                    candidate.vector(96),
+                    candidate.frame(),
+                    inner.frame,
+                    inner.extents,
+                    p.bone
+                );
+            }
             if state.flags_144_to_150[0] {
                 let key = candidate.descriptor();
                 state.counter_152 = key.kind;

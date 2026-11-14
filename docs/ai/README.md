@@ -104,6 +104,12 @@ coverage; later challenge/UI work is tracked in STATUS and October11 evidence.
 
 Ported, and run in the front end and in Free Skate:
 
+- PC port addition: Free Skate's options have an AI Skaters row (On or Off, on by default) above
+  MongoCorp Zones. Off, `ShouldPreventAmbientSkatersCurrently` also holds for that free skate
+  (`AmbientFrame::ambient_off`), so no ambient skater loads or spawns. The setting lasts while the
+  game runs, as the screen's other settings do, and binds only the free skate it starts: every
+  game start sets it again (`set_game_mode`, profile free skate only), and the front end's world
+  never takes it, so the main menu, the career, party play and online keep their skaters.
 - `AISkaterManager`'s ambient update (spawning, unspawning, model loading, banned usage,
   behaviours), `SkaterAssetManager`, `SkaterProfile`, `AIController` with `WanderBehavior` and
   `FollowPathMove`, `PathController` (`ai/path_controller.rs`), `PathManager` and the path data

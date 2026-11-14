@@ -200,6 +200,15 @@ impl Unlockables {
         true
     }
 
+    /// PC port addition (Max Out Save): `UnlockCharacterForFreeskate`'s unlock of `name` outside
+    /// its Lua call: the `characters_marquee` collection `StringToKey(name)`'s id string (layout
+    /// word 0).
+    pub(crate) fn unlock_freeskate_character(&mut self, db: &AttribDb, name: &str) {
+        if let Some(id) = db.layout_text(CHARACTERS_MARQUEE, hash64(name), 0).map(string_hash) {
+            self.unlock(category::CHARACTERS, id, false);
+        }
+    }
+
     /// `UnlockablesBackEnd::IsDebugCheatEnabled` (`0x8255ccd0`): `kBEUnlockAll`
     /// (default off) or `mUnlockAll`.
     #[must_use]

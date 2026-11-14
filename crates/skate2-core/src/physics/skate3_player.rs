@@ -643,7 +643,15 @@ impl Skate3Player {
                 let part = |name: &str| names.iter().position(|bone| bone.eq_ignore_ascii_case(name))
                     .and_then(|bone| self.skater.animation.packet.hierarchy.get(bone))
                     .map_or([0.0; 4], |local| compose_affine(&self.skater.animated_skeleton.roots.animation_to_world, local)[3]);
-                let root = self.output.effective_root_transform();
+                // Pushing::Update reads ProcessedPhysIn+192, GetEffectiveAnimToWorldTransform
+                // (0x82BE3650): the animation root with X and Z negated while Processed2476 bit 2
+                // is set, on or off the board.
+                let mut root = self.output.root_transform;
+                if processed.flags_2476 & 4 != 0 {
+                    for axis in [0, 2] {
+                        root[axis] = root[axis].map(|v| -v);
+                    }
+                }
                 let extra = &self.skater.animation_input.extra;
                 let inputs = pushing::Inputs {
                     in_state: self.skater.player_state.current() == skate3_core::player::state::PhysicalStateId::OffBoardPushing,
@@ -1677,6 +1685,7 @@ fn send_skitch_messages(world: &PhysicalAssemblyWorld, messages: &mut Vec<super:
                 stance: [packet.riding_fakie, packet.mirrored, packet.riding_switch, packet.regular_stance],
                 push_style: skater.player_state.push_style,
                 drop_in_sounds: skater.drop_in_sounds,
+                player_providing_input: skater.player_providing_input,
                 board_ground: physics.riding.ground.clone(),
                 wheel_lines: physics.riding.wheel_lines,
                 bone_contacts: contact.bones,

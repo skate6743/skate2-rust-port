@@ -65,6 +65,90 @@ pub(crate) fn is_locked(
     Ok(!unlocked(CLOTHING_SPONSOR, db.string(sponsor)?))
 }
 
+/// PC port addition (Max Out Save): every unlock (category 15) and sponsor unlock (category 16) a
+/// part Edit Skater offers waits for, each once, in catalog order.
+pub(crate) fn clothing_unlocks(db: &CacPartDb) -> Result<(Vec<String>, Vec<String>), CacPartError> {
+    let mut unlocks: Vec<String> = Vec::new();
+    let mut sponsors: Vec<String> = Vec::new();
+    for part in db.parts.iter().filter(|part| offered(part)) {
+        for (attribute, names) in [(UNLOCK, &mut unlocks), (SPONSOR_UNLOCK, &mut sponsors)] {
+            let value = part.attributes[attribute];
+            if value == u16::MAX {
+                continue;
+            }
+            let name = db.string(value)?;
+            if !names.iter().any(|known| known == name) {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    Ok((unlocks, sponsors))
+}
+
+/// The inventory's capacity: a record holds fewer owned parts than this (`CACRecord`'s 6000).
+const INVENTORY: usize = 6000;
+
+/// PC port addition (Max Out Save): every part the shop sells (one Edit Skater offers, with a
+/// cost, not a part used in game) and the record does not own joins its inventory, as a purchase
+/// adds a part (`AddPartToInventory`: component types from 4), while the inventory stays within
+/// its capacity: the skater's gender's parts and the ungendered ones first, then the other
+/// gender's (the editor can switch it). How many joined, and how many did not fit.
+/// `SKATE2_TRACE_MAX_OUT` logs each gender's parts.
+pub(crate) fn own_everything(db: &CacPartDb, record: &mut CacRecord) -> Result<(usize, usize), ProfileError> {
+    const GENDER: usize = 13;
+    let other_name = if record.data.is_male { "female" } else { "male" };
+    let other_gender = db.strings.iter().position(|s| s == other_name).and_then(|i| u16::try_from(i).ok());
+    let invalid = CacPartId::invalid();
+    let before: usize = record.owned_parts.iter().map(Vec::len).sum();
+    let mut owned = before;
+    let (mut added, mut missed) = (0, 0);
+    for other in [false, true] {
+        // (Skate 2's, Skate 3's) parts sold: already owned, joined, did not fit.
+        let mut counts = [[0usize; 3]; 2];
+        for (index, part) in db.parts.iter().enumerate() {
+            let slot = usize::from(part.slot);
+            if (other_gender == Some(part.attributes[GENDER])) != other
+                || !offered(part)
+                || part.slot < 4
+                || slot >= record.owned_parts.len()
+                || cost(part) <= 0
+                || matches!(part.used_in_game, 1..=254)
+                || id(part) == invalid
+            {
+                continue;
+            }
+            let game = usize::from(db.is_skate3(index));
+            if record_owns(record, id(part)) {
+                counts[game][0] += 1;
+            } else if owned + 1 >= INVENTORY {
+                counts[game][2] += 1;
+                missed += 1;
+            } else {
+                record.owned_parts[slot].push(id(part));
+                counts[game][1] += 1;
+                owned += 1;
+                added += 1;
+            }
+        }
+        if std::env::var_os("SKATE2_TRACE_MAX_OUT").is_some() {
+            let gender = if other { "other gender" } else { "skater's gender and ungendered" };
+            eprintln!("max out: {gender} parts sold (owned, joined, did not fit): Skate 2 {:?}, Skate 3 {:?}", counts[0], counts[1]);
+        }
+    }
+    if std::env::var_os("SKATE2_TRACE_MAX_OUT").is_some() {
+        eprintln!("max out: inventory {before} -> {owned} of {}", INVENTORY - 1);
+    }
+    record.rebuild_unused_owned_slots(invalid)?;
+    Ok((added, missed))
+}
+
+/// Whether Edit Skater offers the part: one without a DLC id (`DLCFilter::AcceptImpl`
+/// `0x82670190`, `EditSkaterFrontend`'s `available_parts`).
+fn offered(part: &CacPart) -> bool {
+    const DLC_IDS: usize = 7;
+    part.attributes[DLC_IDS] == u16::MAX
+}
+
 /// `NewFilter::AcceptImpl` (`0x82648e00`): the part's unlock (category 15) or sponsor unlock
 /// (category 16) is a new unlock.
 pub(crate) fn is_new(

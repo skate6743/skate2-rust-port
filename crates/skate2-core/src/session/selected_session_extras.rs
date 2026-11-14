@@ -5,7 +5,7 @@ use crate::{
     edit_skater_profile::{AudioProfile, EditSkaterProfileStore},
     ui::extras::{self, Action, Cheat, Page, TextInput},
 };
-use skate2_formats::skater_profile::ProfileData;
+use skate2_formats::{cac_parts::CacPartDb, skater_profile::ProfileData};
 
 fn error(e: impl std::fmt::Display) -> SelectedLiveError {
     SelectedLiveError::failed(SelectedLiveStage::PreupdateInput, format!("Extras: {e}"))
@@ -54,6 +54,82 @@ impl<T, C> SelectedLiveSession<T, C> {
                     };
                 }
             }
+            Action::MaxOut => {
+                let saved = self.max_out_save();
+                if let Some(extras) = self.main_menu.as_mut().and_then(|m| m.extras.as_mut()) {
+                    extras.state.page = match saved {
+                        Ok(()) => Page::MaxedOut,
+                        Err(e) => Page::SaveError(e.to_string()),
+                    };
+                }
+            }
+        }
+        Ok(())
+    }
+    /// PC port addition: Extras' Max Out Save. The profile's career, read as the career's start
+    /// reads it, is maxed out (`challenge::max_out`) and the created skater's inventory takes every
+    /// piece the shop sells; the career's savables and the record are written to SKATER.P in one
+    /// save. The profile's other savables, its new-profile flag and its story choices stay as
+    /// they are.
+    fn max_out_save(&mut self) -> Result<(), SelectedLiveError> {
+        use crate::challenge::{dynamic_hull, max_out, signpost_progress};
+        let db = self.movie_attrib_db()?;
+        let mounts = std::sync::Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts);
+        let mut system = career::profile_challenge_system(db, &mounts).map_err(error)?;
+        let path = EditSkaterProfileStore::default_path().map_err(error)?;
+        let mut store = EditSkaterProfileStore::open(path).map_err(error)?;
+        // Sk8ChallengeSystem::LoadData 0x825a2ed8, as the career's start reads it.
+        let hulls = store.load_leaf(dynamic_hull::SAVABLE, dynamic_hull::DATA).map_err(error)?;
+        system.world_mut().dynamic_hulls.load(career::leaf_tuples(&hulls));
+        // The catalog Edit Skater's shop sells from, with a linked Skate 3 data folder's clothing.
+        let catalog = CacPartDb::parse(&mounts.read_path(skate2_formats::cac_parts::DATABASE_PATH).map_err(error)?).map_err(error)?;
+        let skate3 = crate::skate3::linked().and_then(|data| data.clothing_for(&catalog));
+        let catalog = skate3.unwrap_or(catalog);
+        let (unlocks, sponsors) = crate::edit_skater_shop::clothing_unlocks(&catalog).map_err(error)?;
+        max_out::max_out(system.world_mut(), &max_out::Clothing { unlocks, sponsors });
+        let mut record = store.load_record().map_err(error)?;
+        let (owned, missed) = match record.as_mut() {
+            Some(record) => crate::edit_skater_shop::own_everything(&catalog, record).map_err(error)?,
+            None => (0, 0),
+        };
+        let world = system.world();
+        let leaves = signpost_progress::save(world);
+        let unlock_data = world.unlockables.save();
+        let hull_data = world.dynamic_hulls.save();
+        let data = match store.load_profile_data().map_err(error)? {
+            Some(data) => data,
+            None => ProfileData::reset(
+                &career::localized(&mounts, "ID_DEFAULT_PLAYER_NAME")?,
+                &career::localized(&mounts, "ID_DEFAULT_PLAYER_NICKNAME")?,
+            ),
+        };
+        let audio = AudioProfile {
+            settings: &self.audio.settings,
+            music_player: self.audio.manager.as_ref().map(|m| (&m.profile, m.catalogue())),
+        };
+        store
+            .save_memcard_and_record(
+                &data,
+                Some(&audio),
+                &[
+                    (unlockables::SAVABLE, &[], &unlock_data),
+                    (dynamic_hull::SAVABLE, &dynamic_hull::SAVABLES_BEFORE, &hull_data),
+                    (signpost_progress::SAVABLE, &signpost_progress::SAVABLES_BEFORE, &leaves),
+                ],
+                record.as_ref(),
+            )
+            .map_err(error)?;
+        eprintln!(
+            "Extras: savegame maxed out (cash {}, {} challenges completed, {} of {} unlock slots, {owned} parts joined the inventory, {missed} did not fit)",
+            signpost_progress::cash(world),
+            world.signpost.completed.len(),
+            world.unlockables.items().len(),
+            unlockables::CAPACITY,
+        );
+        // The return to the main menu dropped the last game's career; one still held would save
+        // its older career over this one.
+        if self.career.is_some() {
+            self.drop_career()?;
         }
         Ok(())
     }

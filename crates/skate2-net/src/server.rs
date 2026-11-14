@@ -24,12 +24,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// What a message asks that only the game host peer may: start the challenge, make the game
-/// private or public, kick a player, set the next challenge, or change challenge or location.
+/// private or public, kick a player, hand the game to another player, set the next challenge, or
+/// change challenge or location.
 fn host_only(message: &ClientMessage) -> Option<&'static str> {
     match message {
         ClientMessage::GameRequest { request: request::START_GAME, .. } => Some("start the challenge"),
         ClientMessage::GameRequest { request: request::CHANGE_PRIVATE_STATUS, .. } => Some("change the game's privacy"),
         ClientMessage::GameRequest { request: request::KICK_PLAYER, .. } => Some("kick a player"),
+        ClientMessage::GameRequest { request: request::MAKE_HOST, .. } => Some("hand the game to another player"),
         ClientMessage::ResetAttributes(_) => Some("set the next challenge"),
         ClientMessage::RequestChange { .. } => Some("change the challenge"),
         _ => None,
@@ -237,6 +239,11 @@ struct Game {
     id: u32,
     attributes: GameAttributes,
     members: Vec<Member>,
+    /// The game host peer (PC port: the server keeps it, where the original's was the first
+    /// member): the member who made the game, then each member the host hands it to; when the host
+    /// leaves, the first member in join order whose skater is in the game's world, else the first
+    /// member ([`Game::next_host`]).
+    host: Option<u64>,
     phase: GamePhase,
     session: u32,
     change: Option<(u8, u64, Instant)>,
@@ -253,7 +260,14 @@ struct Game {
 
 impl Game {
     fn host(&self) -> Option<u64> {
-        self.members.first().map(|member| member.user_id)
+        self.host.filter(|&host| self.member(host).is_some())
+    }
+
+    /// The member who becomes the host when the host leaves: the first in join order (the player
+    /// list's order) whose skater is in the game's world, as a player still on its way in cannot
+    /// yet use the hub, else the first.
+    fn next_host(&self) -> Option<u64> {
+        self.members.iter().find(|member| member.in_world).or_else(|| self.members.first()).map(|member| member.user_id)
     }
 
     /// The freeskate activity under way.
@@ -603,9 +617,10 @@ impl ServerCore {
             }
             return;
         };
-        // The game asks these only while the server's messages so far make it the first member,
-        // and the host changes only when the host leaves, after which its requests find it in no
-        // game: a member asking them while another member is the host is not running the game.
+        // The game asks these only while the server's messages so far make it the host, and stops
+        // the moment it asks to hand the game on; the host changes only by its own hand or when it
+        // leaves, after which its requests find it in no game: a member asking them while another
+        // member is the host is not running the game.
         if let Some(asked) = host_only(&message)
             && let Some(game) = self.game_of(id)
             && !self.is_host(game, user_id)
@@ -783,6 +798,7 @@ impl ServerCore {
                             ranked,
                         },
                         members: Vec::new(),
+                        host: None,
                         phase: GamePhase::LobbySkate,
                         session,
                         change: None,
@@ -896,6 +912,10 @@ impl ServerCore {
             self.send(id, &ServerMessage::PlayNowResult { result: play_now::FULL });
             return;
         };
+        // The player who makes the game is its host.
+        if game.host().is_none() {
+            game.host = Some(user_id);
+        }
         game.members.push(Member {
             connection: id,
             user_id,
@@ -918,6 +938,7 @@ impl ServerCore {
             players: game.players(),
             phase: game.phase_code(),
             participants: game.participants().to_vec(),
+            host: game.host().unwrap_or(user_id),
         };
         let recipes: Vec<(u64, Arc<Vec<u8>>)> =
             game.members.iter().filter_map(|member| Some((member.user_id, Arc::clone(member.recipe.as_ref()?)))).collect();
@@ -963,8 +984,19 @@ impl ServerCore {
             (self.log)(&format!("{name} left game {game_id}, which closed"));
             return;
         }
+        // The host's leave hands the game to the next host, whom every member hears of after the
+        // leave.
+        let new_host = (game.host == Some(user_id)).then(|| game.next_host()).flatten();
+        if let Some(host) = new_host {
+            game.host = Some(host);
+        }
+        let host_name = new_host.and_then(|host| game.member(host)).map(|member| member.name.clone());
         (self.log)(&format!("{name} left game {game_id} (reason {reason})"));
         self.broadcast(game_id, &ServerMessage::PlayerLeave { user_id, reason }, None);
+        if let Some(host) = new_host {
+            (self.log)(&format!("game {game_id}'s host is now {}", host_name.unwrap_or_default()));
+            self.broadcast(game_id, &ServerMessage::HostChanged { user_id: host }, None);
+        }
         self.remove_participant(game_id, user_id, now);
     }
 
@@ -1240,6 +1272,23 @@ impl ServerCore {
                 }
                 self.send(target, &ServerMessage::Kicked { reason: leave::KICKED_BY_HOST });
                 self.leave_game(target, leave::KICKED_BY_HOST, now);
+            }
+            // PC port addition: the host hands the game to another member, the host from now on
+            // for every member, in any phase. A member no longer in the game (gone as the request
+            // crossed its leave) leaves the host as it was, which the asker hears again: its game
+            // stopped acting as the host when it asked.
+            request::MAKE_HOST => {
+                let Some(game) = self.games.get_mut(&game_id) else { return };
+                let target = game.member(value).filter(|_| value != user_id).map(|member| member.name.clone());
+                let Some(name) = target else {
+                    if let Some(connection) = game.member(user_id).map(|member| member.connection) {
+                        self.send(connection, &ServerMessage::HostChanged { user_id });
+                    }
+                    return;
+                };
+                game.host = Some(value);
+                (self.log)(&format!("game {game_id}'s host handed it to {name}"));
+                self.broadcast(game_id, &ServerMessage::HostChanged { user_id: value }, None);
             }
             _ => {}
         }

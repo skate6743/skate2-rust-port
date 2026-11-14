@@ -17,8 +17,11 @@ only to a server of the same release.
   whatever started the game (a terminal, Steam) still has it.
 - **After the update,** a player's first launch of the new release, once the main menu is up
   with nothing over it, shows "Version 0.2.0": "Update Changelogs:" and each change in
-  `changelog.txt` under a dash, a blank line between them (as many as fit on the screen; past
-  that the last line says how many more), with OK, before any newer release is offered.
+  `changelog.txt` under a dash, a blank line between them, in 18 px text with each change's
+  further lines under its first word, with OK, before any newer release is offered. Up to 28
+  lines show at once; a longer list scrolls with the right stick (a line at once, then up to 18
+  lines a second the further it is pushed) or up and down, beside the game's own scroller
+  (`basic_slider`, as the skate.Profile and Music Player screens use it).
   `config.json` then names the release as seen (`changelog_seen`), so it shows once, whatever
   version the update came from and however the new release was put in place. A first install,
   which has no `config.json` before the game folder is picked, records it without showing it,

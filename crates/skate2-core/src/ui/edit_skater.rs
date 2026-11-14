@@ -163,6 +163,9 @@ pub enum EditSkaterOption {
     /// PC port: the Hair Pools rows.
     Skate2Hair = 105,
     Skate3Hair = 106,
+    /// PC port: a shirt's or pants' colour filter, the wear styles menu's first row when Apply
+    /// Color (Y, [`EditSkaterAction::ApplyColour`]) opens it on a part with no colour of its own.
+    WearStylesFilter = 107,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -761,6 +764,12 @@ impl EditSkaterOption {
                 submenu: None,
                 kind: "option",
             },
+            Self::WearStylesFilter => OptionDefinition {
+                title: "ID_CAC_WEARSTYLES_COLOUR",
+                description: "0",
+                submenu: None,
+                kind: "color",
+            },
             Self::FilterAll => OptionDefinition {
                 title: "ID_CAC_FILTER_ALL",
                 description: "0",
@@ -1037,6 +1046,8 @@ pub struct EditSkaterInput {
     pub select: bool,
     /// `AptMisc` (X).
     pub misc: bool,
+    /// PC port: `AptOption` (Y), a shirt's or pants' Apply Color.
+    pub option: bool,
     pub up: bool,
     pub down: bool,
     pub left: bool,
@@ -1067,6 +1078,9 @@ pub enum EditSkaterAction {
         forward: bool,
     },
     ActivateOption(EditSkaterOption),
+    /// PC port: Y (Apply Color) on a row of a shirt or pants list: its part is worn as
+    /// [`Self::SelectPart`] wears it, and its wear styles menu opens on its colour.
+    ApplyColour(usize),
     Finish,
     /// `PushState(20)`: the receipt (`FrontEndState_Receipt`) in mode 0.
     OpenReceipt,
@@ -1379,6 +1393,12 @@ impl EditSkaterController {
                     self.sounds.push("FE_SOUND_CORE_A_BUTTON");
                 }
                 out.push(EditSkaterAction::SelectPart(self.indices[m]));
+            } else if input.option
+                && menu == EditSkaterMenu::PartThumbnails
+                && self.category.is_some_and(colour_filter_category)
+            {
+                // PC port: Apply Color; its sound follows the shop's verdict, as A's does.
+                out.push(EditSkaterAction::ApplyColour(self.indices[m]));
             }
         } else {
             let n = if menu == EditSkaterMenu::Tattoos {
@@ -1524,6 +1544,8 @@ pub struct EditSkaterView {
     pub help_start: String,
     /// PC port: X's button help, `#` for none (the colour picker's Undo Changes).
     pub help_x: String,
+    /// PC port: Y's button help, `#` for none (a shirt's or pants' Apply Color).
+    pub help_y: String,
     /// PC port: the open colour picker.
     pub colour_picker: Option<ColourPickerView>,
     /// The `ID_CAC_NOT_ENOUGH_CASH` popup is up.
@@ -1588,6 +1610,11 @@ pub fn clothing_slot(option: EditSkaterOption) -> Option<u8> {
         O::Rings => 6,
         _ => return None,
     })
+}
+
+/// PC port: the clothing lists whose parts take Apply Color (Y): the shirts' and the pants'.
+pub fn colour_filter_category(option: EditSkaterOption) -> bool {
+    matches!(clothing_slot(option), Some(15 | 23))
 }
 
 /// UpdatePartsList82680c90 / GetParts8259d510. DLC availability is a caller fact,
@@ -1808,5 +1835,30 @@ impl EditSkaterOption {
             Self::Chin => Some(0xDD27EEB60DD0C9E0),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PC port: Y on a part of a shirts or pants list asks for Apply Color on that row; other
+    /// lists, and the other menus, take no Y.
+    #[test]
+    fn y_on_a_shirts_or_pants_part_applies_colour() {
+        use EditSkaterOption as O;
+        for (option, applies) in [(O::TShirts, true), (O::Hoodies, true), (O::Legs, true), (O::Shoes, false), (O::Hats, false)] {
+            let mut controller = EditSkaterController::default();
+            controller.open(false);
+            controller.category = Some(option);
+            controller.push(EditSkaterMenu::PartThumbnails);
+            controller.set_part_count(5, Some(4));
+            let actions = controller.update(EditSkaterInput { option: true, ..Default::default() });
+            assert_eq!(actions, if applies { vec![EditSkaterAction::ApplyColour(4)] } else { vec![] }, "{option:?}");
+        }
+        let mut controller = EditSkaterController::default();
+        controller.open(false);
+        controller.category = Some(O::TShirts);
+        assert!(controller.update(EditSkaterInput { option: true, ..Default::default() }).is_empty());
     }
 }

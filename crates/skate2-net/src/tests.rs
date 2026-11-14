@@ -317,6 +317,7 @@ fn a_guest_asking_what_only_the_host_may_is_dropped() {
         ClientMessage::GameRequest { request: request::START_GAME, value: 0 },
         ClientMessage::GameRequest { request: request::CHANGE_PRIVATE_STATUS, value: 1 },
         ClientMessage::GameRequest { request: request::KICK_PLAYER, value: 0 },
+        ClientMessage::GameRequest { request: request::MAKE_HOST, value: 0 },
         ClientMessage::ResetAttributes(attributes),
         ClientMessage::RequestChange { challenge_type: challenge::SKATE, challenge_key: 0x77 },
     ];
@@ -331,7 +332,10 @@ fn a_guest_asking_what_only_the_host_may_is_dropped() {
         let seen = net.messages(host);
         assert!(seen.iter().any(|seen| matches!(seen, ServerMessage::PlayerLeave { reason: leave::KICKED_FOR_HOST_REQUEST, .. })), "{message:?}");
         assert!(
-            !seen.iter().any(|seen| matches!(seen, ServerMessage::GameReset { .. } | ServerMessage::PrivacyChanged { .. } | ServerMessage::GameChange { .. } | ServerMessage::Kicked { .. })),
+            !seen.iter().any(|seen| matches!(
+                seen,
+                ServerMessage::GameReset { .. } | ServerMessage::PrivacyChanged { .. } | ServerMessage::GameChange { .. } | ServerMessage::Kicked { .. } | ServerMessage::HostChanged { .. }
+            )),
             "{message:?}: nothing it asked happened"
         );
     }
@@ -371,6 +375,94 @@ fn the_host_and_a_player_who_left_are_never_dropped_for_host_requests() {
     net.run(300);
     assert!(dropped_for_host_request(&net.events(first)));
     assert_eq!(net.server.players(), 2);
+}
+
+/// PC port addition: the host hands the game to another member; every member hears of it, a
+/// player joining later is told, the new host acts as the host and the old one no longer may.
+#[test]
+fn the_host_hands_the_game_to_another_member_who_alone_acts_as_its_host() {
+    let mut net = Net::new();
+    let players = lobby_with_ids(&mut net, &["First", "Second", "Third"], challenge::SKATE);
+    let [(first, first_id), (second, second_id), (third, third_id)] = players[..] else { panic!("three players") };
+    for client in [first, second, third] {
+        enter(&mut net, client);
+    }
+    for client in [first, second, third] {
+        net.events(client);
+    }
+    net.send(first, &ClientMessage::GameRequest { request: request::MAKE_HOST, value: second_id });
+    net.run(300);
+    for client in [first, second, third] {
+        assert!(net.messages(client).contains(&ServerMessage::HostChanged { user_id: second_id }), "every member hears of the new host");
+    }
+    // A player joining now is told who the host is.
+    let late = net.add("Late");
+    net.run(100);
+    net.events(late);
+    net.send(late, &play(PlayNowMode::Custom, false, None));
+    net.run(300);
+    assert!(net.messages(late).iter().any(|message| matches!(message, ServerMessage::GameJoined { host, players, .. } if *host == second_id && players[0].user_id == first_id)));
+    // The new host kicks a player as the host.
+    net.send(second, &ClientMessage::GameRequest { request: request::KICK_PLAYER, value: third_id });
+    net.run(300);
+    assert!(net.messages(third).iter().any(|message| matches!(message, ServerMessage::Kicked { reason: leave::KICKED_BY_HOST })));
+    assert!(!dropped_for_host_request(&net.events(second)));
+    // The old host asking what only the host may is no longer the host's.
+    net.send(first, &ClientMessage::GameRequest { request: request::START_GAME, value: 0 });
+    net.run(300);
+    assert!(dropped_for_host_request(&net.events(first)));
+    assert!(!net.messages(second).iter().any(|message| matches!(message, ServerMessage::GameReset { .. })), "no challenge started");
+}
+
+/// PC port addition: a host leaving hands the game to the first member in join order whose skater
+/// is in the game's world, which every member hears after the leave.
+#[test]
+fn the_host_leaving_hands_the_game_to_the_first_member_in_its_world() {
+    let mut net = Net::new();
+    let players = lobby_with_ids(&mut net, &["First", "Second", "Third"], challenge::SKATE);
+    let [(first, _), (second, second_id), (third, third_id)] = players[..] else { panic!("three players") };
+    // The second is still on its way into the world; the third is in it.
+    enter(&mut net, third);
+    net.events(second);
+    net.events(third);
+    net.send(first, &ClientMessage::LeaveGame);
+    net.run(300);
+    for client in [second, third] {
+        let seen = net.messages(client);
+        let leave = seen.iter().position(|message| matches!(message, ServerMessage::PlayerLeave { .. }));
+        let host = seen.iter().position(|message| *message == ServerMessage::HostChanged { user_id: third_id });
+        assert!(leave.is_some() && host > leave, "the leave, then the new host: {seen:?}");
+    }
+    net.send(third, &ClientMessage::GameRequest { request: request::MAKE_HOST, value: second_id });
+    net.run(300);
+    assert!(!dropped_for_host_request(&net.events(third)), "the new host may hand the game on");
+    assert!(net.messages(second).contains(&ServerMessage::HostChanged { user_id: second_id }));
+}
+
+/// PC port addition: a hand to a member that left as it crossed, or to the host itself, leaves the
+/// host as it was, and the host hears so; it is still the host.
+#[test]
+fn a_hand_to_no_other_member_leaves_the_host_as_it_was() {
+    let mut net = Net::new();
+    let players = lobby_with_ids(&mut net, &["First", "Second"], challenge::SKATE);
+    let [(first, first_id), (second, second_id)] = players[..] else { panic!("two players") };
+    net.send(second, &ClientMessage::LeaveGame);
+    net.run(100);
+    net.events(first);
+    for target in [second_id, first_id] {
+        net.send(first, &ClientMessage::GameRequest { request: request::MAKE_HOST, value: target });
+        net.run(300);
+        assert_eq!(
+            net.messages(first).iter().filter(|message| matches!(message, ServerMessage::HostChanged { .. })).cloned().collect::<Vec<_>>(),
+            [ServerMessage::HostChanged { user_id: first_id }],
+            "{target}"
+        );
+    }
+    net.send(first, &ClientMessage::GameRequest { request: request::CHANGE_PRIVATE_STATUS, value: 1 });
+    net.run(300);
+    let events = net.events(first);
+    assert!(!dropped_for_host_request(&events));
+    assert!(events.contains(&ClientEvent::Message(ServerMessage::PrivacyChanged { private: true })));
 }
 
 #[test]

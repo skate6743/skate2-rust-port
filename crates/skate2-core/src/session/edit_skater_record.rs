@@ -13,6 +13,13 @@ use std::sync::Arc;
 /// once a colour is picked, in its customizations alone: `colour_ids` and an outfit's colours
 /// keep Skate 2's twelve.
 pub(crate) const BOTTOM_COLOUR: usize = 12;
+/// PC port: Apply Color's colour filters (`edit_skater_colour_filter.rs`), of a shirt (the outer
+/// torso) and of pants with no colour of their own: customization colours bound to the garment each
+/// was picked for, as a zone's colour is bound to its part, whose base the cloth shader multiplies
+/// the garment's diffuse by. Neither is one of Skate 2's twelve zones, so `colour_ids` and an
+/// outfit's colours hold neither.
+pub(crate) const TOP_FILTER: usize = 13;
+pub(crate) const BOTTOM_FILTER: usize = 14;
 pub(crate) const MORPH_CLASS: u64 = 0x7f47_ca62_f410_0f41;
 pub(crate) const COLOUR_ZONE_CLASS: u64 = 0xae1f_950c_a0d1_adf2;
 pub(crate) const COLOUR_CLASS: u64 = 0x6d93_4d0e_38c9_5e19;
@@ -739,23 +746,29 @@ pub(crate) fn assemble_parts(
             }
         }
     }
-    let arm_for = |torso: &CacPart| -> Option<&CacPart> {
+    let arm_for = |torso: &CacPart, torso_slot: u8| -> Option<&CacPart> {
         if torso.attributes[ARM_REQUIRED] == MISSING {
             return None;
         }
-        db.parts_in_slot(0).find(|p| {
+        limb_for(db, 0, torso_slot, torso, |p| {
             p.attributes[GENDER] == torso.attributes[GENDER]
                 && p.attributes[ARM_TYPE] == torso.attributes[ARM_REQUIRED]
                 && p.attributes[SKIN_TONE] == skin
                 && p.attributes[SKIN_NORMAL] == normal
         })
     };
-    let arm = inner.and_then(arm_for).or_else(|| arm_for(outer));
+    let arm = inner.and_then(|p| arm_for(p, 22)).or_else(|| arm_for(outer, 23));
     ids[23] = id(alternate_skin(db, outer, skin, normal));
     ids[22] = inner
         .map(|p| id(alternate_skin(db, p, skin, normal)))
         .unwrap_or(invalid);
     ids[0] = arm.map(id).unwrap_or(invalid);
+    // Skate 3's `CASAssembler::Correct` (0x8253f648) then clears the jewellery under a torso whose
+    // `IsNecklaceRemoved` is set (0x82540430), a flag only a linked Skate 3 data folder's parts
+    // carry.
+    if [22, 23].into_iter().any(|slot| part(db, &ids, slot).is_some_and(|p| truth(p.necklace_removed))) {
+        ids[25] = invalid;
+    }
     if ids[21] != invalid {
         if let Some(arm) = part(db, &ids, 0) {
             if arm.attributes[WRIST] != index(db, "yes") {
@@ -771,7 +784,7 @@ pub(crate) fn assemble_parts(
             ids[17] = invalid;
         } else {
             // GetLegPartForPants82b67b58 does NOT compare normalIndex.
-            let leg = db.parts_in_slot(1).find(|p| {
+            let leg = limb_for(db, 1, 15, pants, |p| {
                 p.attributes[GENDER] == pants.attributes[GENDER]
                     && p.attributes[LEG_TYPE] == pants.attributes[LEG_REQUIRED]
                     && p.attributes[SKIN_TONE] == skin
@@ -844,6 +857,9 @@ pub(crate) fn assemble_parts(
             }
         }
     }
+    // PC port: a colour filter goes with its garment: one bound to another part than the one its
+    // slot wears is gone.
+    retain_worn_filters(&mut custom, &record.installed_parts);
     // CorrectStamps82585cd0 checks installed choices, not corrected display IDs.
     custom.stamps.retain(|stamp| {
         let slot = match stamp.key {
@@ -858,6 +874,94 @@ pub(crate) fn assemble_parts(
     Ok(ids)
 }
 
+/// Diagnostic (`SKATE2_DIAGNOSTIC_CAS_LIMBS`): every arm and leg part, and the arm and leg kinds
+/// the shirts and pants require, each with the database it came from.
+pub(crate) fn log_limbs(db: &CacPartDb) {
+    if std::env::var_os("SKATE2_DIAGNOSTIC_CAS_LIMBS").is_none() {
+        return;
+    }
+    let text = |p: &CacPart, attribute: usize| db.string(p.attributes[attribute]).unwrap_or("?").to_owned();
+    for slot in [0_u8, 1] {
+        for index in db.slot_range(slot) {
+            let p = &db.parts[index];
+            eprintln!(
+                "cas limbs: slot {slot} #{index} s3 {} gender {} type {} tone {} normal {} sock {} wrist {} model {} material {}",
+                db.is_skate3(index),
+                text(p, GENDER),
+                text(p, if slot == 0 { ARM_TYPE } else { LEG_TYPE }),
+                text(p, SKIN_TONE),
+                text(p, SKIN_NORMAL),
+                text(p, SOCK_REQUIRED),
+                text(p, WRIST),
+                text(p, MODEL_NAME),
+                text(p, MATERIAL_NAME),
+            );
+        }
+    }
+    for slot in [15_u8, 22, 23] {
+        let mut kinds = std::collections::BTreeMap::new();
+        for index in db.slot_range(slot) {
+            let p = &db.parts[index];
+            let need = text(p, if slot == 15 { LEG_REQUIRED } else { ARM_REQUIRED });
+            *kinds.entry((db.is_skate3(index), text(p, GENDER), need)).or_insert(0) += 1;
+        }
+        for ((skate3, gender, need), count) in kinds {
+            eprintln!("cas limbs: slot {slot} s3 {skate3} gender {gender} requires {need}: {count}");
+        }
+    }
+    for slot in [22_u8, 23] {
+        let necklace_off: std::collections::BTreeSet<String> =
+            db.slot_range(slot).map(|index| &db.parts[index]).filter(|p| truth(p.necklace_removed)).map(|p| text(p, MODEL_NAME)).collect();
+        eprintln!("cas limbs: slot {slot} takes the necklace off under {} models: {necklace_off:?}", necklace_off.len());
+    }
+}
+
+/// The part slot whose garment colour filter `key` is for.
+pub(crate) fn filter_part_slot(key: usize) -> Option<usize> {
+    match key {
+        TOP_FILTER => Some(23),
+        BOTTOM_FILTER => Some(15),
+        _ => None,
+    }
+}
+/// The colour filter of a part slot's garments.
+pub(crate) fn part_filter(slot: u8) -> Option<usize> {
+    match slot {
+        23 => Some(TOP_FILTER),
+        15 => Some(BOTTOM_FILTER),
+        _ => None,
+    }
+}
+/// Colour filter `key`'s colour: its base and the garment it is bound to.
+pub(crate) fn filter(custom: &CharacterCustomizations, key: usize) -> Option<&Colour> {
+    custom.colours.iter().find(|colour| usize::try_from(colour.key).ok() == Some(key))
+}
+/// Puts colour filter `key` on `target` with `base` (no highlight: the cloth shader reads none), or
+/// takes it off with `None`.
+pub(crate) fn set_filter(custom: &mut CharacterCustomizations, key: usize, base: Option<[u32; 3]>, target: CacPartId) {
+    custom.colours.retain(|colour| usize::try_from(colour.key).ok() != Some(key));
+    if let Some(base) = base {
+        custom.colour_capacity = custom.colour_capacity.max(BOTTOM_FILTER as u32 + 1);
+        custom.colours.push(Colour {
+            key: key as i32,
+            base_rgb_bits: base,
+            highlight_rgb_bits: [0; 3],
+            model_id: target.model,
+            material_id: target.material,
+        });
+    }
+}
+/// Takes off each colour filter bound to another part than the one its slot wears; true when one
+/// went.
+pub(crate) fn retain_worn_filters(custom: &mut CharacterCustomizations, installed: &[CacPartId; 26]) -> bool {
+    let before = custom.colours.len();
+    custom.colours.retain(|colour| {
+        usize::try_from(colour.key).ok().and_then(filter_part_slot).is_none_or(|slot| {
+            installed[slot] == CacPartId { model: colour.model_id, material: colour.material_id }
+        })
+    });
+    custom.colours.len() != before
+}
 /// The bottom zone's colour, added the first time one is picked; the caller sets its colour and
 /// binds it to the worn legs.
 pub(crate) fn ensure_bottom_colour(custom: &mut CharacterCustomizations) {
@@ -867,6 +971,26 @@ pub(crate) fn ensure_bottom_colour(custom: &mut CharacterCustomizations) {
         custom.colours.push(Colour { key, base_rgb_bits: [0; 3], highlight_rgb_bits: [0; 3], model_id: 0, material_id: 0 });
     }
 }
+/// The first arm or leg part of `slot` that `matches` takes (`GetArmPartForTorso`,
+/// `GetLegPartForPants`). PC port: for a garment of `garment_slot` that a linked Skate 3 data
+/// folder's clothing joined (`Skate3Data::clothing_for`), Skate 3's own arms or legs come first:
+/// Skate 2's, the first of each kind, do not meet Skate 3's clothes (a female shirt's sleeves).
+/// Skate 2's stay the fallback, and Skate 2's clothes keep theirs.
+fn limb_for<'a>(
+    db: &'a CacPartDb,
+    slot: u8,
+    garment_slot: u8,
+    garment: &CacPart,
+    matches: impl Fn(&CacPart) -> bool,
+) -> Option<&'a CacPart> {
+    // SKATE2_DIAGNOSTIC_SKATE2_LIMBS: every garment takes the first that fits, Skate 2's first.
+    let skate3_first = std::env::var_os("SKATE2_DIAGNOSTIC_SKATE2_LIMBS").is_none();
+    (skate3_first && db.is_skate3_part(garment_slot, garment.model_id, garment.material_id))
+        .then(|| db.skate3_parts_in_slot(slot).find(|p| matches(p)))
+        .flatten()
+        .or_else(|| db.parts_in_slot(slot).find(|p| matches(p)))
+}
+
 fn apply_colour(custom: &mut CharacterCustomizations, key: i32, target: CacPartId) {
     if let Some(c) = custom.colours.iter_mut().find(|c| c.key == key) {
         c.model_id = target.model;
@@ -934,5 +1058,31 @@ mod tests {
         let zone = vault.instance(COLOUR_ZONE_CLASS, 10);
         assert_eq!(default_colour(&vault, &zone).unwrap().collection_key(), Some(key));
         assert!(default_colour(&vault, &vault.instance(COLOUR_ZONE_CLASS, 99)).is_err());
+    }
+
+    /// PC port: Apply Color's filter is one per garment slot, bound to the garment it was put on:
+    /// a slot wearing another part leaves it behind, a zone's colour stays, and `None` takes it off.
+    #[test]
+    fn a_colour_filter_goes_with_its_garment() {
+        let tee = CacPartId { model: 1, material: 2 };
+        let other = CacPartId { model: 3, material: 4 };
+        let zone = Colour { key: 9, base_rgb_bits: [5; 3], highlight_rgb_bits: [5; 3], model_id: 7, material_id: 8 };
+        let mut custom = CharacterCustomizations { colour_capacity: 12, colours: vec![zone.clone()], ..Default::default() };
+        set_filter(&mut custom, TOP_FILTER, Some([1, 2, 3]), tee);
+        set_filter(&mut custom, TOP_FILTER, Some([4, 5, 6]), tee);
+        assert_eq!(custom.colours.len(), 2, "one filter a slot");
+        assert_eq!(filter(&custom, TOP_FILTER).map(|c| (c.base_rgb_bits, c.highlight_rgb_bits)), Some(([4, 5, 6], [0; 3])));
+        assert!(custom.colour_capacity as usize > BOTTOM_FILTER);
+        let mut installed = [CacPartId::invalid(); 26];
+        installed[23] = tee;
+        assert!(!retain_worn_filters(&mut custom, &installed), "the tee is worn");
+        installed[23] = other;
+        assert!(retain_worn_filters(&mut custom, &installed), "another shirt is worn");
+        assert_eq!(custom.colours, vec![zone], "the zone's colour stays bound as it was");
+        set_filter(&mut custom, BOTTOM_FILTER, Some([7; 3]), other);
+        set_filter(&mut custom, BOTTOM_FILTER, None, other);
+        assert!(filter(&custom, BOTTOM_FILTER).is_none());
+        assert_eq!((part_filter(23), part_filter(15), part_filter(5)), (Some(TOP_FILTER), Some(BOTTOM_FILTER), None));
+        assert_eq!((filter_part_slot(TOP_FILTER), filter_part_slot(BOTTOM_FILTER), filter_part_slot(9)), (Some(23), Some(15), None));
     }
 }

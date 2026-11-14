@@ -533,6 +533,12 @@ review yet.
 - **Widescreen.** The original only renders 16:9. Other window shapes widen
   the horizontal (wider window) or vertical (narrower) field around the same
   16:9 view, keeping pixels square; 16:9 stays bit-exact.
+- **UI in other window shapes.** The 1280x720 UI stage stays whole and centred. Backdrops,
+  dimmers and the letterbox's bars and film strips reach the window's edges, and a narrower
+  window moves the bars to its top and bottom. A UI draw lying wholly beyond the stage is left
+  out, as the original's screen edge hides it. These are what APT parks off screen while unused:
+  the sign-up prompt, the trick score's multiplier ring, and the replay editor's spare buttons
+  and Pro Edit Menu. 16:9 is unchanged (`docs/evidence/offstage-ui-2026-11-14.md`).
 - **Video screens.** The main target is not drawn at 1152x640. It is the window-size
   scene's central 16:9 view (the original's view), box-filtered to 1152x640 with four
   bilinear taps a texel.

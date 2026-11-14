@@ -413,6 +413,8 @@ pub struct GameplayOutput {
     /// PhysOut_Intents +0x3D and +0x3E (Update5 82DB7DA4, 82DB7DB8): a drop-in's tail locking on
     /// the edge and letting go (the DropInLock and DropInRelease attributes), for its sounds.
     pub drop_in_sounds: [bool; 2],
+    /// PhysOut_Intents `mIsPlayerProvidingInput` (Update5), which the audio's away time reads.
+    pub player_providing_input: bool,
     pub board_ground: skate3_core::physics::board_ground::BoardGroundState,
     pub wheel_lines: skate3_core::physics::board_ground::WheelLineState,
     pub bone_contacts: [skate3_core::physics::skeleton_body::BoneContact; 24],

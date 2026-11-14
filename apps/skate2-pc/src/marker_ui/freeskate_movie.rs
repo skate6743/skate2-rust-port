@@ -1,6 +1,8 @@
 //! Original main/freeskate_options APT (`FrontEndState_FreeSkateOption`, screen 66), fingerprint
 //! e7de5095: highlight_selector rows for the character, location and security and
-//! highlight_slider rows for traffic and pedestrians. It drives the front end's letterbox.
+//! highlight_slider rows for traffic and pedestrians. It drives the front end's letterbox. PC
+//! port: an AI Skaters row above security, and with a linked Skate 3 data folder a District row
+//! above the character.
 use super::{assets::Assets, clips::{Child, Clip}, edit_skater_movie, letterbox::LetterBox, map_movie};
 use crate::gpu_renderer::RenderResult;
 use skate2_core::ui::{
@@ -10,10 +12,19 @@ use skate2_core::ui::{
 
 pub(super) const ASSET: usize = 48;
 /// PC port: the District row a linked Skate 3 data folder adds (`freeskate_option::Area`), a copy of
-/// the character selector one row above where the timeline places that row; the native rows keep
-/// their own placements, so the last one stays clear of the front end's stairs.
+/// the character selector a row above it (`AI_SELECT` lays the rows out).
 const AREA_SELECT: &str = "mAreaSelect";
 const AREA_TITLE: &str = "#District";
+/// PC port: the AI Skaters row (`freeskate_option::Row::AiSkaters`), a copy of the security
+/// selector in security's place, security a row lower. The screen stands in the front end's 3D
+/// scene, whose stairs hide a row lower than `RISE` under security's own place and whose title band
+/// hides one above the District row's: the timeline's rows (`Clip::layout_offset` on their
+/// placements) and the copies rise by `RISE`, or with the District row, which keeps its place, every
+/// gap under it narrows alike down to that same bottom.
+const AI_SELECT: &str = "mAiSkatersSelect";
+const AI_TITLE: &str = "#AI Skaters";
+/// How far the rows rise without the District row, which sets the lowest row's place.
+const RISE: f32 = 34.;
 /// The placed controls in `kState_*` order, their titles and kinds.
 const ROWS: [(&str, &str, &str); 5] = [
     ("mCharacterSelect", "ID_FREESKATEOPTION_CHARACTER_TITLE", "selector"),
@@ -34,6 +45,9 @@ pub(super) struct FreeskateMovie {
     /// The traffic and pedestrian sliders' `mCurrentValue`.
     values: [i32; 2],
     intro_complete: bool,
+    /// PC port: the spacing AI Skaters keeps above security and the District row above the
+    /// character selector, as `add_pc_rows` laid the rows out.
+    pc_gap: f32,
 }
 
 impl FreeskateMovie {
@@ -41,7 +55,7 @@ impl FreeskateMovie {
         let mut root = Clip::new(assets, ASSET, 0)?;
         root.playback.stop();
         root.visible = false;
-        Ok(Self { root, sounds: Vec::new(), audio: false, open: false, values: [0; 2], intro_complete: false })
+        Ok(Self { root, sounds: Vec::new(), audio: false, open: false, values: [0; 2], intro_complete: false, pc_gap: 0. })
     }
 
     /// The intro's `ScreenManager.IntroComplete` since the last call.
@@ -83,51 +97,72 @@ impl FreeskateMovie {
         )?;
         self.audio = false;
         self.values = [snapshot.traffic, snapshot.pedestrians];
-        if snapshot.area.is_some() {
-            self.add_area_row()?;
-        }
+        self.add_pc_rows(snapshot.area.is_some())?;
         self.update_selection(assets, snapshot)?;
         self.audio = true;
         Ok(())
     }
 
-    /// PC port: the Area row, a copy of the character selector, placed by [`Self::follow_area_row`].
-    fn add_area_row(&mut self) -> RenderResult<()> {
-        let named = |child: &Child, name: &str| child.entry.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name));
-        if self.root.children.values().any(|child| named(child, AREA_SELECT)) {
-            return Ok(());
+    /// PC port: the AI Skaters row, a copy of the security selector, and with `area` the Area row,
+    /// a copy of the character selector, both placed by [`Self::follow_pc_rows`]; the timeline's
+    /// rows take their places among them (`AI_SELECT`). A row is the timeline's spacing of its
+    /// character and location selectors.
+    fn add_pc_rows(&mut self, area: bool) -> RenderResult<()> {
+        let natives = ROWS
+            .iter()
+            .map(|(name, _, _)| {
+                let child = self.root.children.values().find(|child| named(child, name))?;
+                Some(child.entry.matrix.ty - child.clip.layout_offset[1])
+            })
+            .collect::<Option<Vec<f32>>>()
+            .ok_or("free skate rows absent")?;
+        let pitch = natives[1] - natives[0];
+        let security = natives[4];
+        let bottom = security + pitch - RISE;
+        let top = natives[0] - pitch;
+        let scale = if area { (bottom - top) / (security + pitch - top) } else { 1. };
+        let place = |y: f32| if area { top + (y - top) * scale } else { y - RISE };
+        for (index, (name, _, _)) in ROWS.iter().enumerate() {
+            let native = natives[index];
+            let shift = place(if index + 1 == ROWS.len() { native + pitch } else { native }) - native;
+            let child = self.root.children.values_mut().find(|child| named(child, name)).ok_or("free skate row absent")?;
+            child.entry.matrix.ty += shift - child.clip.layout_offset[1];
+            child.clip.layout_offset[1] = shift;
         }
-        let mut area = self.root.children.values().find(|child| named(child, ROWS[0].0)).cloned().ok_or("mCharacterSelect absent")?;
-        area.entry.name = Some(AREA_SELECT.to_owned());
-        area.clip.layout_offset = [0.0; 2];
-        let depth = self.root.children.keys().next_back().copied().unwrap_or(0) + 1;
-        self.root.children.insert(depth, area);
-        self.follow_area_row()
+        self.pc_gap = pitch * scale;
+        let copies = [(AI_SELECT, ROWS[4].0), (AREA_SELECT, ROWS[0].0)];
+        for (copy, source) in copies.into_iter().take(if area { 2 } else { 1 }) {
+            if self.root.children.values().any(|child| named(child, copy)) {
+                continue;
+            }
+            let mut row = self.root.children.values().find(|child| named(child, source)).cloned().ok_or("free skate row absent")?;
+            row.entry.name = Some(copy.to_owned());
+            row.clip.layout_offset = [0.0; 2];
+            let depth = self.root.children.keys().next_back().copied().unwrap_or(0) + 1;
+            self.root.children.insert(depth, row);
+        }
+        self.follow_pc_rows()
     }
 
-    /// PC port: the Area row stands one row above where the timeline places the character
-    /// selector, with its fade (it is no timeline's own); a row is the spacing between the
-    /// timeline's character and location rows. The native rows keep their own placements.
-    fn follow_area_row(&mut self) -> RenderResult<()> {
-        let named = |child: &Child, name: &str| child.entry.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name));
-        if !self.root.children.values().any(|child| named(child, AREA_SELECT)) {
+    /// PC port: AI Skaters stands `pc_gap` above security and the Area row as far above the
+    /// character selector, where the timeline places them now, with their fades (neither row is a
+    /// timeline's own).
+    fn follow_pc_rows(&mut self) -> RenderResult<()> {
+        let pitch = self.pc_gap;
+        if pitch == 0. {
             return Ok(());
         }
-        let placed = |name: &str| {
-            self.root.children.values().find(|child| named(child, name)).map(|child| {
-                let mut entry = child.entry.clone();
-                entry.matrix.ty -= child.clip.layout_offset[1];
-                entry
-            })
-        };
-        let (Some(character), Some(location)) = (placed(ROWS[0].0), placed(ROWS[1].0)) else { return Ok(()) };
-        let row = location.matrix.ty - character.matrix.ty;
-        for child in self.root.children.values_mut() {
-            if named(child, AREA_SELECT) {
-                let name = child.entry.name.take();
-                child.entry = character.clone();
-                child.entry.matrix.ty -= row;
-                child.entry.name = name;
+        for (copy, source) in [(AI_SELECT, ROWS[4].0), (AREA_SELECT, ROWS[0].0)] {
+            let Some(entry) = self.root.children.values().find(|child| named(child, source)).map(|child| child.entry.clone()) else {
+                continue;
+            };
+            for child in self.root.children.values_mut() {
+                if named(child, copy) {
+                    let name = child.entry.name.take();
+                    child.entry = entry.clone();
+                    child.entry.matrix.ty -= pitch;
+                    child.entry.name = name;
+                }
             }
         }
         Ok(())
@@ -151,6 +186,12 @@ impl FreeskateMovie {
         Ok(Some(EditSkaterRow { kind: "selector".into(), title: assets.localize(AREA_TITLE)?, subtitle: assets.localize(area)?, ..Default::default() }))
     }
 
+    /// PC port: the AI Skaters row's title and setting, as security's reads.
+    fn ai_row(assets: &Assets, snapshot: &Snapshot) -> RenderResult<EditSkaterRow> {
+        let subtitle = assets.localize(if snapshot.ai_skaters { "ID_COMMON_ON" } else { "ID_COMMON_OFF" })?;
+        Ok(EditSkaterRow { kind: "selector".into(), title: assets.localize(AI_TITLE)?, subtitle, ..Default::default() })
+    }
+
     /// `UpdateSelection` 000615: every row `unselected`, then `GetSelection`'s `selected` (the
     /// Area row's, when it is selected).
     fn update_selection(&mut self, assets: &Assets, snapshot: &Snapshot) -> RenderResult<()> {
@@ -159,6 +200,9 @@ impl FreeskateMovie {
             let control = self.root.named(&[ROWS[index].0])?;
             edit_skater_movie::highlight(control, assets, &row, !snapshot.area_selected && snapshot.selection as usize == index)?;
         }
+        let row = Self::ai_row(assets, snapshot)?;
+        let selected = !snapshot.area_selected && snapshot.selection == Row::AiSkaters;
+        edit_skater_movie::highlight(self.root.named(&[AI_SELECT])?, assets, &row, selected)?;
         if let Some(row) = Self::area_row(assets, snapshot)? {
             edit_skater_movie::highlight(self.root.named(&[AREA_SELECT])?, assets, &row, snapshot.area_selected)?;
         }
@@ -175,6 +219,15 @@ impl FreeskateMovie {
             if let Some(row) = Self::area_row(assets, snapshot)? {
                 edit_skater_movie::selector_subtitle(self.root.named(&[AREA_SELECT])?, assets, &row.subtitle)?;
             }
+            return Ok(());
+        }
+        // PC port: the AI Skaters row's refresh, as RefreshSecurity's.
+        if state == Row::AiSkaters as u32 {
+            if self.audio {
+                self.sounds.push(if snapshot.ai_skaters { "FE_SOUND_CORE_NAV_RIGHT" } else { "FE_SOUND_CORE_NAV_LEFT" });
+            }
+            let row = Self::ai_row(assets, snapshot)?;
+            edit_skater_movie::selector_subtitle(self.root.named(&[AI_SELECT])?, assets, &row.subtitle)?;
             return Ok(());
         }
         let Some(index) = [Row::Character, Row::Location, Row::Traffic, Row::Pedestrians, Row::Security]
@@ -225,7 +278,7 @@ impl FreeskateMovie {
             return Ok(());
         }
         self.root.tick(assets)?;
-        self.follow_area_row()?;
+        self.follow_pc_rows()?;
         let mut calls = Vec::new();
         self.root.take_calls(&mut calls);
         for call in calls {
@@ -247,6 +300,11 @@ impl FreeskateMovie {
         }
         Ok(())
     }
+}
+
+/// Whether the child is the instance `name` names.
+fn named(child: &Child, name: &str) -> bool {
+    child.entry.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name))
 }
 
 /// The traffic and pedestrian labels: under 1 none, under 3 low, up to `medium` medium, above

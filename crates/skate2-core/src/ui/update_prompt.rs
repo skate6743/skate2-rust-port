@@ -68,21 +68,14 @@ impl UpdatePrompt {
     }
 }
 
-/// The most body lines the popup takes. sk8popup centres its panel on its core (configure_popup):
-/// with the core 128 tall at panel y 35, the bottom bar's 32 under it, one 31.4 option row and
-/// 22 px lines, 23 lines keep the panel's bottom at y 706 of 720.
-const CHANGELOG_LINES: usize = 23;
-
-/// Characters to a body line when counting an entry's wrapped lines: a 590 px line of 22 px
-/// Helvetica holds about 53 of a sentence's, so this errs towards more lines.
-const LINE_CHARACTERS: usize = 45;
-
 /// The release's changes, shown once over the main menu at a player's first launch of the release
 /// (the app's `config.json` records it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Changelog {
     pub version: String,
     pub entries: Vec<String>,
+    /// The first body line the popup shows: a changelog longer than the popup scrolls.
+    pub scroll: usize,
 }
 
 impl Changelog {
@@ -102,29 +95,69 @@ impl Changelog {
             .filter(|line| !line.is_empty())
             .map(plain)
             .collect();
-        Self { version: version.to_owned(), entries }
+        Self { version: version.to_owned(), entries, scroll: 0 }
     }
 
-    /// "Update Changelogs:" and each entry under a dash, a blank line before each. Entries that
-    /// would run the popup past the screen's bottom are counted on a last line instead.
+    /// "Update Changelogs:" and each entry under a dash, a blank line before each. The popup
+    /// shows the lines that fit and scrolls through the rest.
     fn text(&self) -> String {
-        // An entry's blank line and its own lines as the popup wraps them, about.
-        let lines: Vec<usize> = self.entries.iter().map(|entry| 1 + (entry.chars().count() + 2).div_ceil(LINE_CHARACTERS)).collect();
-        let total = |count: usize| 1 + lines[..count].iter().sum::<usize>();
-        let shown = if total(self.entries.len()) <= CHANGELOG_LINES {
-            self.entries.len()
-        } else {
-            (0..self.entries.len()).rev().find(|&count| total(count) + 2 <= CHANGELOG_LINES).unwrap_or(0)
-        };
         let mut text = String::from("#Update Changelogs:");
-        for entry in &self.entries[..shown] {
+        for entry in &self.entries {
             text.push_str("\n\n- ");
             text.push_str(entry);
         }
-        if shown < self.entries.len() {
-            text.push_str(&format!("\n\n- and {} more", self.entries.len() - shown));
-        }
         text
+    }
+}
+
+/// PC: how a long changelog scrolls. Up and down move it a line each; the right stick moves it a
+/// line as soon as it leaves its dead zone, then keeps it going, faster the further it is pushed,
+/// up to [`ChangelogScroll::LINES_PER_SECOND`].
+#[derive(Clone, Debug, Default)]
+pub struct ChangelogScroll {
+    /// The last line the body can start at, from the popup's layout; `None` until it is laid out.
+    pub limit: Option<usize>,
+    direction: i8,
+    owed: f32,
+}
+
+impl ChangelogScroll {
+    const DEAD_ZONE: f32 = 0.3;
+    pub const LINES_PER_SECOND: f32 = 18.0;
+
+    /// Moves `changelog` by a frame's input: `stick` is the right stick's up (-1 to 1) and
+    /// `step` an up (-1) or down (1) press.
+    pub fn update(&mut self, changelog: &mut Changelog, stick: f32, step: i8, dt: f32) {
+        let travel = ((stick.abs() - Self::DEAD_ZONE) / (1.0 - Self::DEAD_ZONE)).clamp(0.0, 1.0);
+        let direction: i8 = if travel <= 0.0 {
+            0
+        } else if stick > 0.0 {
+            -1
+        } else {
+            1
+        };
+        let mut lines = isize::from(step);
+        if direction == 0 {
+            self.owed = 0.0;
+        } else if direction == self.direction {
+            self.owed = travel.mul_add(Self::LINES_PER_SECOND * dt, self.owed);
+            let whole = self.owed.floor();
+            self.owed -= whole;
+            lines += isize::from(direction) * whole as isize;
+        } else {
+            self.owed = 0.0;
+            lines += isize::from(direction);
+        }
+        self.direction = direction;
+        changelog.scroll = changelog.scroll.saturating_add_signed(lines).min(self.limit.unwrap_or(0));
+    }
+
+    /// The layout's last starting line; the changelog's scroll is kept within it.
+    pub fn set_limit(&mut self, changelog: Option<&mut Changelog>, limit: Option<usize>) {
+        self.limit = limit;
+        if let Some(changelog) = changelog {
+            changelog.scroll = changelog.scroll.min(limit.unwrap_or(0));
+        }
     }
 }
 
@@ -164,16 +197,35 @@ mod tests {
     }
 
     #[test]
-    fn a_long_changelog_ends_with_how_many_more() {
-        let file: String = (1..=15).map(|n| format!("Change {n}\n")).collect();
-        let (_, text, ..) = UpdatePrompt::Changelog(Changelog::parse("0.3.0", &file)).dialog();
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), CHANGELOG_LINES);
-        assert_eq!(lines[CHANGELOG_LINES - 3], "- Change 10");
-        assert_eq!(lines[CHANGELOG_LINES - 1], "- and 5 more");
-        let long = format!("{}\n", "word ".repeat(20).trim_end());
-        let (_, text, ..) = UpdatePrompt::Changelog(Changelog::parse("0.3.0", &long.repeat(6))).dialog();
-        assert_eq!(text.matches("\n\n- word").count(), 5, "an entry the popup wraps counts its lines");
-        assert!(text.ends_with("\n\n- and 1 more"));
+    fn a_long_changelog_lists_every_entry_and_scrolls_within_its_layout() {
+        let file: String = (1..=40).map(|n| format!("Change {n}\n")).collect();
+        let mut changelog = Changelog::parse("0.3.0", &file);
+        let (_, text, ..) = UpdatePrompt::Changelog(changelog.clone()).dialog();
+        assert_eq!(text.matches("\n\n- Change ").count(), 40, "every entry, none left out");
+        assert!(text.ends_with("\n\n- Change 40"));
+        let frame = 1.0 / 60.0;
+        let mut scroll = ChangelogScroll::default();
+        scroll.update(&mut changelog, 0.0, 1, frame);
+        assert_eq!(changelog.scroll, 0, "nothing moves before the popup is laid out");
+        scroll.set_limit(Some(&mut changelog), Some(50));
+        scroll.update(&mut changelog, -1.0, 0, frame);
+        assert_eq!(changelog.scroll, 1, "the stick moves a line at once");
+        for _ in 0..60 {
+            scroll.update(&mut changelog, -1.0, 0, frame);
+        }
+        assert!((18..=19).contains(&changelog.scroll), "then about 18 lines a second: {}", changelog.scroll);
+        let held = changelog.scroll;
+        scroll.update(&mut changelog, 0.0, -1, frame);
+        assert_eq!(changelog.scroll, held - 1, "up moves a line back");
+        scroll.update(&mut changelog, 0.2, 0, frame);
+        assert_eq!(changelog.scroll, held - 1, "inside the dead zone nothing moves");
+        scroll.update(&mut changelog, 1.0, 0, frame);
+        assert_eq!(changelog.scroll, held - 2, "the stick up moves back a line at once");
+        for _ in 0..600 {
+            scroll.update(&mut changelog, -1.0, 0, frame);
+        }
+        assert_eq!(changelog.scroll, 50, "never past the layout's last line");
+        scroll.set_limit(Some(&mut changelog), Some(10));
+        assert_eq!(changelog.scroll, 10, "a shorter layout pulls it back");
     }
 }

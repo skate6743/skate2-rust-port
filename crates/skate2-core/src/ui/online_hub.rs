@@ -116,6 +116,8 @@ pub struct Lobby {
 
 /// The player menu's item in place of View Gamercard (PC port addition).
 pub const SPECTATE: &str = "Spectate";
+/// The host's player menu item that hands the game to the player (PC port addition).
+pub const MAKE_HOST: &str = "Make Host";
 
 /// What an item does when selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +138,8 @@ enum Target {
     SendFriendInvite,
     /// The player menu's Spectate (PC port addition).
     Spectate,
+    /// The host's player menu's Make Host (PC port addition).
+    MakeHost,
     KickPlayer,
     PublicFreeskate,
     CustomFreeskate,
@@ -194,6 +198,8 @@ pub struct KickPopup {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Popup {
     Kick(KickPopup),
+    /// Make Host's confirmation, as Kick Player's (PC port addition): Yes or No, Yes first.
+    MakeHost(KickPopup),
     /// `OnlineBackEnd::OpenLoadingPopup` 0x825665e8 while matchmaking searches: popup 38,
     /// `ID_ONLINE_MATCHING_SKATERS` with no options, not cancellable.
     Matching,
@@ -229,6 +235,8 @@ pub enum Action {
     /// The player menu's Spectate (PC port addition): the console watches the player's skater,
     /// then Exit.
     Spectate(u64),
+    /// Make Host, confirmed (PC port addition): the game goes to the player, then Exit.
+    MakeHost(u64),
     /// `GoToFreeskateActivityCIC` 0x82661a98: FE state 67 over the hub, to propose the activity.
     ActivitySignUp(u64),
     /// `GoToFreeSkateHere` 0x8267bee8: a public free skate where the skater is
@@ -540,8 +548,8 @@ impl Controller {
 
     /// `Setup{Host,Client}PlayerTemplate`: the player's name; Send Friend Request (Xbox LIVE's,
     /// which the port has not, so off); Spectate in place of View Gamercard (PC port addition);
-    /// the host's Kick Player in an unranked game, which the original offers only with no
-    /// challenge on and the port during one too (PC port addition).
+    /// the host's Make Host (PC port addition) and Kick Player in an unranked game, which the
+    /// original offers only with no challenge on and the port during one too (PC port addition).
     fn setup_player_menu(&mut self) {
         let name = self.peer.and_then(|peer| self.peer_name(peer)).map(str::to_owned);
         let spectate = self.peer.is_some_and(|peer| self.can_spectate(peer));
@@ -550,6 +558,7 @@ impl Controller {
             Item { title: Title::Literal(SPECTATE.to_owned()), enabled: spectate, target: Target::Spectate },
         ];
         if self.lobby.host && !self.lobby.ranked && name.is_some() {
+            items.push(Item { title: Title::Literal(MAKE_HOST.to_owned()), enabled: true, target: Target::MakeHost });
             items.push(Item { title: Title::Hal("ID_ONLINE_HUB_KICK_PLAYER"), enabled: true, target: Target::KickPlayer });
         }
         let selected = items.iter().position(|item| item.enabled).unwrap_or(0);
@@ -629,23 +638,8 @@ impl Controller {
             return Action::None;
         }
         match self.popup.take() {
-            Some(Popup::Kick(mut popup)) => {
-                // sk8popup's menu_picker: two options, wrapping, not cancellable.
-                if input.up {
-                    popup.selected = (popup.selected + 1) % 2;
-                    self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_NAV_UP"));
-                }
-                if input.down {
-                    popup.selected = (popup.selected + 1) % 2;
-                    self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_NAV_DOWN"));
-                }
-                if !input.select {
-                    self.popup = Some(Popup::Kick(popup));
-                    return Action::None;
-                }
-                self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_A_BUTTON"));
-                return if popup.selected == 0 { Action::Kick(popup.user_id) } else { Action::None };
-            }
+            Some(Popup::Kick(popup)) => return self.confirm(popup, Popup::Kick, Action::Kick, input),
+            Some(Popup::MakeHost(popup)) => return self.confirm(popup, Popup::MakeHost, Action::MakeHost, input),
             // The searching popup takes no input: the search ends in a game or a notice.
             Some(popup) => {
                 self.popup = Some(popup);
@@ -693,6 +687,25 @@ impl Controller {
         self.select(item.target)
     }
 
+    /// A player's Yes or No popup (`GoToKickPlayer` 0x826722e8's, and Make Host's): sk8popup's
+    /// menu_picker, two options, wrapping, not cancellable; Yes acts on the player.
+    fn confirm(&mut self, mut popup: KickPopup, shown: fn(KickPopup) -> Popup, act: fn(u64) -> Action, input: PauseMenuInput) -> Action {
+        if input.up {
+            popup.selected = (popup.selected + 1) % 2;
+            self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_NAV_UP"));
+        }
+        if input.down {
+            popup.selected = (popup.selected + 1) % 2;
+            self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_NAV_DOWN"));
+        }
+        if !input.select {
+            self.popup = Some(shown(popup));
+            return Action::None;
+        }
+        self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_A_BUTTON"));
+        if popup.selected == 0 { act(popup.user_id) } else { Action::None }
+    }
+
     /// `OnMenuSelect` 0x82688570: a submenu's push, or the item's function.
     fn select(&mut self, target: Target) -> Action {
         match target {
@@ -726,6 +739,13 @@ impl Controller {
                 // FrontEndState_Popup::OnEnter sounds core_popup.
                 self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_POPUP"));
                 self.popup = Some(Popup::Kick(KickPopup { user_id, name, selected: 0 }));
+                Action::None
+            }
+            Target::MakeHost => {
+                let Some(user_id) = self.peer else { return Action::None };
+                let name = self.peer_name(user_id).unwrap_or_default().to_owned();
+                self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_POPUP"));
+                self.popup = Some(Popup::MakeHost(KickPopup { user_id, name, selected: 0 }));
                 Action::None
             }
             Target::PublicFreeskate => Action::PublicFreeskate,
@@ -864,6 +884,15 @@ mod tests {
         assert_eq!(snapshot.stack[2].id, PLAYER);
         assert_eq!(snapshot.stack[2].title, Title::Literal("Skater0".into()));
         assert_eq!(snapshot.stack[2].selected, 2);
+        assert_eq!(snapshot.stack[2].items[2], (Title::Literal(MAKE_HOST.into()), true), "Make Host, the first of the host's items");
+        hub.update(press(|input| input.select = true));
+        assert!(matches!(hub.popup(), Some(Popup::MakeHost(KickPopup { user_id: 2, .. }))));
+        hub.update(press(|input| input.down = true));
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::None, "No hands nothing on");
+        assert_eq!(hub.popup(), None);
+        hub.update(press(|input| input.select = true));
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::MakeHost(2));
+        hub.update(press(|input| input.down = true));
         hub.update(press(|input| input.select = true));
         assert!(matches!(hub.popup(), Some(Popup::Kick(KickPopup { user_id: 2, .. }))));
         assert_eq!(hub.update(press(|input| input.select = true)), Action::Kick(2));
@@ -871,6 +900,18 @@ mod tests {
         hub.update(press(|input| input.cancel = true));
         assert_eq!(hub.snapshot().stack.len(), 1);
         assert_eq!(hub.update(press(|input| input.cancel = true)), Action::Exit);
+    }
+
+    /// PC port addition: Make Host is the host's alone.
+    #[test]
+    fn only_the_host_s_player_menu_hands_the_game_on() {
+        for host in [true, false] {
+            let mut hub = Controller::open(lobby(host, 1));
+            hub.select(Target::Peer(2));
+            let menu = hub.snapshot().stack.last().cloned().expect("the player's menu");
+            assert_eq!(menu.id, PLAYER);
+            assert_eq!(menu.items.contains(&(Title::Literal(MAKE_HOST.into()), true)), host, "host {host}");
+        }
     }
 
     #[test]

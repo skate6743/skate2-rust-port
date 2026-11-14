@@ -33,6 +33,9 @@ pub struct CacPart {
     pub logoable: u8,
     pub skinned: u8,
     pub used_in_game: u8,
+    /// PC port: Skate 3's `IsNecklaceRemoved` (its part record, after `IsLogoable`); 0 for Skate
+    /// 2's parts, which have no such flag.
+    pub necklace_removed: u8,
     pub attributes: [u16; 43],
 }
 /// PC port: Skate 3's part record (table version 9): the model, material and cost as Skate 2's,
@@ -78,6 +81,7 @@ fn skate3_part(b: &[u8]) -> CacPart {
         logoable: b[105],
         skinned: b[107],
         used_in_game: b[109],
+        necklace_removed: b[106],
         attributes: std::array::from_fn(|i| index(if i < 40 { i } else { i + 1 })),
     }
 }
@@ -132,7 +136,7 @@ impl CacPartDb {
                 CacPart { model_id:u64::from_be_bytes(b[..8].try_into().unwrap()),
                 material_id:u64::from_be_bytes(b[8..16].try_into().unwrap()), cost:u32::from_be_bytes(b[16..20].try_into().unwrap()),
                 slot:b[20], colourizable:b[21], default:b[22], default_wear_style:b[23],layered:b[24],
-                logoable:b[25],skinned:b[26],used_in_game:b[27],
+                logoable:b[25],skinned:b[26],used_in_game:b[27],necklace_removed:0,
                 attributes:std::array::from_fn(|i|u16::from_be_bytes([b[28+i*2],b[29+i*2]])) } });
         }
         let mut result = Self {master, parts, strings, ranges, skate3: std::array::from_fn(|_|0..0)};
@@ -268,6 +272,19 @@ impl CacPartDb {
     #[must_use]
     pub fn is_skate3(&self, index: usize) -> bool {
         self.skate3.iter().any(|range| range.contains(&index))
+    }
+
+    /// PC port: the parts of `slot` that [`CacPartDb::with_skate3`] joined, in their order.
+    pub fn skate3_parts_in_slot(&self, slot: u8) -> impl Iterator<Item = &CacPart> {
+        let range = self.skate3.get(usize::from(slot)).cloned().unwrap_or(0..0);
+        self.parts[range].iter()
+    }
+
+    /// PC port: whether the part of `slot` with this model and material is one
+    /// [`CacPartDb::with_skate3`] joined (a part Skate 2 holds as well stays Skate 2's).
+    #[must_use]
+    pub fn is_skate3_part(&self, slot: u8, model: u64, material: u64) -> bool {
+        self.skate3_parts_in_slot(slot).any(|part| part.model_id == model && part.material_id == material)
     }
 
     /// Original runtime data corrections, CACDBPartContainer::HackFixData82b6c048.

@@ -123,6 +123,24 @@ pub(crate) fn sync_grab(skater: &mut Skate3ControllerState) {
             matching_id_2952: p.actor_query_2952 as i32,
         },
     };
+    // SKATE2_TRACE_SKATE3_GRAB_FRAME: each tick the grab intent holds (the first 900), the grab
+    // box's frame (ProcessedPhysIn+192, the animation-to-world turned by the mirror bit, 2476 bit
+    // 2), the animation-to-world forward it comes from and the position.
+    static GRAB_FRAME_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if p.flags_2476 & 0x40_0000 != 0
+        && *GRAB_FRAME_TRACE.get_or_init(|| std::env::var_os("SKATE2_TRACE_SKATE3_GRAB_FRAME").is_some())
+    {
+        static LINES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if LINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 900 {
+            eprintln!(
+                "skate3 grab frame: mirror={} forward={:?} anim_forward={:?} position={:?}",
+                p.flags_2476 & 4 != 0,
+                input.frame[2],
+                skater.animated_skeleton.roots.animation_to_world[2],
+                input.position
+            );
+        }
+    }
     super::grab::sync(
         &mut skater.biped_ground.ground,
         &mut skater.offboard_grab,

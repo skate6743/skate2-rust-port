@@ -616,6 +616,9 @@ pub(crate) struct AmbientFrame<'a> {
     pub(crate) in_front_end: bool,
     /// `sGameInfo.gameMode == GM_PartyPlay`.
     pub(crate) party_play: bool,
+    /// PC port: a profile free skate whose AI Skaters setting is off
+    /// (`ui::freeskate_option::Settings::ai_skaters`).
+    pub(crate) ambient_off: bool,
     /// `GetCameraReferenceMatrix` 0x824ba008: the presented camera in the front end, the game
     /// camera otherwise.
     pub(crate) camera: [V4; 4],
@@ -1045,11 +1048,13 @@ impl AiSkaterManager {
         Ok(commands)
     }
 
-    /// `ShouldPreventAmbientSkatersCurrently` 0x824b97b8.
+    /// `ShouldPreventAmbientSkatersCurrently` 0x824b97b8. PC port: also a free skate whose AI
+    /// Skaters setting is off, whose ambient skaters then neither load nor spawn.
     fn should_prevent_ambient_skaters_currently(&self, frame: &AmbientFrame<'_>) -> bool {
         !self.allow_ambient_skater_spawn
             || !cvars::ENABLE_AMBIENT_SKATERS
             || (frame.party_play && cvars::BAN_AMBIENT_SKATERS_IN_PARTY_PLAY)
+            || frame.ambient_off
             || self.in_an_ai_based_challenge
             || self.player_type_count(player_type::AI_CHALLENGE) != 0
     }

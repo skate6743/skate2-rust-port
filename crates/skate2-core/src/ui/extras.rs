@@ -20,6 +20,19 @@ pub const MOVIES: [u64; 5] = [
     0xfce8_a97a_f24d_f012,
 ];
 pub const CREDITS_MOVIE: u64 = 0x0bdb_6ab1_cb80_3a1b;
+/// PC port addition: Max Out Save, the menu's last row (`selected_session_extras.rs`).
+pub const MAX_OUT: &str = "#Max Out Save";
+/// Its confirmation, the progression popup's (default No).
+pub const MAX_OUT_QUESTION: &str = "#Are you sure you want to max out this savegame? This action unlocks everything in storyline and can't be undone unless you have a backup save.";
+/// What shows once the save holds it.
+pub const MAX_OUT_DONE: &str = "#Save maxed out!";
+
+/// The menu's rows (`state.count` of them): the original's, the advanced replay tutorial only with
+/// the film pack, then Max Out Save (PC port addition).
+#[must_use]
+pub fn labels(count: usize) -> Vec<&'static str> {
+    LABELS[..count.saturating_sub(1).min(LABELS.len())].iter().copied().chain([MAX_OUT]).collect()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cheat {
@@ -71,6 +84,10 @@ pub enum Page {
     SaveError(String),
     Movie,
     Credits,
+    /// PC port addition: Max Out Save's confirmation, Yes or No highlighted.
+    ConfirmMaxOut { yes: bool },
+    /// PC port addition: the save holds the maxed-out career.
+    MaxedOut,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
@@ -85,6 +102,8 @@ pub enum Action {
     Movie(u64),
     Credits,
     Cheat(Cheat),
+    /// PC port addition: Max Out Save, confirmed.
+    MaxOut,
 }
 
 pub struct Controller {
@@ -94,13 +113,14 @@ pub struct Controller {
     sounds: Vec<&'static str>,
 }
 impl Controller {
-    /// GetNumOptions82643090: the advanced replay tutorial requires REPLAY/filmpackmovie.
+    /// GetNumOptions82643090: the advanced replay tutorial requires REPLAY/filmpackmovie. PC
+    /// port: Max Out Save after the original's rows.
     pub fn new(film_pack: bool) -> Self {
         Self {
             state: Snapshot {
                 page: Page::Menu,
                 selected: 0,
-                count: 6 + usize::from(film_pack),
+                count: 7 + usize::from(film_pack),
             },
             intro_complete: false,
             pending: Action::None,
@@ -176,10 +196,27 @@ impl Controller {
                     self.text_input(TextInput::Accept);
                 }
             }
-            Page::Result(_) | Page::SaveError(_) => {
+            Page::Result(_) | Page::SaveError(_) | Page::MaxedOut => {
                 if input.select {
                     self.sounds.push("FE_SOUND_CORE_A_BUTTON");
                     self.state.page = Page::Menu;
+                }
+            }
+            // The progression popup's picker: Up and Down move between Yes and No, A answers, and
+            // B answers No.
+            Page::ConfirmMaxOut { yes } => {
+                if input.up || input.down {
+                    self.sounds.push(if input.up { "FE_SOUND_CORE_NAV_UP" } else { "FE_SOUND_CORE_NAV_DOWN" });
+                    self.state.page = Page::ConfirmMaxOut { yes: !yes };
+                } else if input.cancel {
+                    self.sounds.push("FE_SOUND_CORE_B_BUTTON");
+                    self.state.page = Page::Menu;
+                } else if input.select {
+                    self.sounds.push("FE_SOUND_CORE_A_BUTTON");
+                    self.state.page = Page::Menu;
+                    if yes {
+                        return Action::MaxOut;
+                    }
                 }
             }
             Page::Movie | Page::Credits => {}
@@ -210,6 +247,10 @@ impl Controller {
                             self.state.page = Page::Credits;
                             return Action::Credits;
                         }
+                        i if i + 1 == self.state.count => {
+                            self.sounds.push("FE_SOUND_CORE_POPUP");
+                            self.state.page = Page::ConfirmMaxOut { yes: false };
+                        }
                         i => {
                             self.state.page = Page::Movie;
                             return Action::Movie(MOVIES[i - 2]);
@@ -219,5 +260,42 @@ impl Controller {
             }
         }
         Action::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(set: impl FnOnce(&mut PauseMenuInput)) -> PauseMenuInput {
+        let mut input = PauseMenuInput::default();
+        set(&mut input);
+        input
+    }
+
+    /// PC port addition: Max Out Save is the last row, with or without the film pack's row; it asks
+    /// first, No highlighted, and only Yes answers it.
+    #[test]
+    fn max_out_save_asks_first_with_no_highlighted() {
+        assert_eq!(labels(7), [LABELS[0], LABELS[1], LABELS[2], LABELS[3], LABELS[4], LABELS[5], MAX_OUT]);
+        assert_eq!(labels(8).last(), Some(&MAX_OUT));
+        assert_eq!(labels(8)[6], LABELS[6]);
+        let mut extras = Controller::new(false);
+        extras.intro_complete = true;
+        extras.state.selected = extras.state.count - 1;
+        assert_eq!(extras.update(press(|input| input.select = true), true), Action::None);
+        assert_eq!(extras.state.page, Page::ConfirmMaxOut { yes: false });
+        assert_eq!(extras.update(press(|input| input.select = true), true), Action::None, "No leaves the save");
+        assert_eq!(extras.state.page, Page::Menu);
+        extras.update(press(|input| input.select = true), true);
+        extras.update(press(|input| input.cancel = true), true);
+        assert_eq!(extras.state.page, Page::Menu, "B answers No");
+        extras.update(press(|input| input.select = true), true);
+        extras.update(press(|input| input.up = true), true);
+        assert_eq!(extras.state.page, Page::ConfirmMaxOut { yes: true });
+        assert_eq!(extras.update(press(|input| input.select = true), true), Action::MaxOut);
+        assert_eq!(extras.state.page, Page::Menu);
+        extras.state.selected = extras.state.count - 2;
+        assert!(matches!(extras.update(press(|input| input.select = true), true), Action::Movie(_)), "the row before is a video");
     }
 }

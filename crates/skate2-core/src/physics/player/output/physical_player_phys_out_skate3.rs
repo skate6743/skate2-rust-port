@@ -281,6 +281,9 @@ impl PhysicalPlayerPhysOut {
         state.physics_requested_teleport = flag(69);
         if let Some(intents) = self.concrete.intents.as_deref_mut() {
             [intents.skate3_drop_in_lock, intents.skate3_drop_in_release] = facts.drop_in_sounds;
+            // The audio's away time (`AudioSystem::UpdatePresentationData`) restarts while the
+            // player gives input; Skate 3's own NoInput decides it, as Update5 publishes it.
+            intents.is_player_providing_input = facts.player_providing_input;
         }
         let animation = self.concrete.animation.as_deref_mut().expect("constructed");
         animation.is_generally_pushing = flag(56);

@@ -320,6 +320,24 @@ impl CharacterMaterialAdmission {
                         );
                     }
                 }
+                // SKATE2_DIAGNOSTIC_CAS_HIDE=<component>[:<effect>],...: those meshes are not
+                // drawn. Set at all, every part's meshes are listed with their effects.
+                if let Ok(hide) = std::env::var("SKATE2_DIAGNOSTIC_CAS_HIDE") {
+                    let component = &scene.components[part.component_index];
+                    let hidden = hide.split(',').any(|rule| match rule.split_once(':') {
+                        Some((name, only)) => name.eq_ignore_ascii_case(&component.name) && only == effect,
+                        None => rule.eq_ignore_ascii_case(&component.name),
+                    });
+                    eprintln!(
+                        "cas hide: {} model {:#018x} mesh {mesh_index} {effect}{}",
+                        component.name,
+                        component.models[part.model_index].asset_id,
+                        if hidden { " (hidden)" } else { "" },
+                    );
+                    if hidden {
+                        continue;
+                    }
+                }
                 entries.push(Entry {
                     part: part_index,
                     mesh: mesh_index,

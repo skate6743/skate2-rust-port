@@ -173,7 +173,7 @@ impl EditSkaterMovie {
         buttons(
             self.root.named(&["mDone", "mButtonhelp", "mButtonmenu"])?,
             assets,
-            &[("B", &view.help_b), ("A", &view.help_a), ("X", &view.help_x)],
+            &[("B", &view.help_b), ("A", &view.help_a), ("X", &view.help_x), ("Y", &view.help_y)],
             "Marker_streak", 24., 0xffff_ffec,
         )?;
         buttons(
@@ -690,7 +690,7 @@ mod tests {
             title: "Edit Skater".into(), rows: vec![EditSkaterRow { kind: "option".into(),
                 title: "Body Mods".into(), ..Default::default() }, slider_row],
             selected: 0, window_start: 0, wallet: 0, help_a: "Select".into(),
-            help_b: "Back".into(), help_start: "Finished".into(), help_x: String::new(),
+            help_b: "Back".into(), help_start: "Finished".into(), help_x: String::new(), help_y: String::new(),
             colour_picker: None, cash_popup: false, receipt: None };
         for visible in [true, false, true] {
             view.visible = visible;
@@ -1215,6 +1215,82 @@ pub(super) fn action(clip: &mut Clip, offset: usize) -> RenderResult<()> {
 /// native gPopupTemplate. Reused by CAC and StartHub, never duplicate geometry.
 pub(super) fn configure_popup(popup:&mut Clip,assets:&Assets,selection:usize,
     title:&str,description:&str,options:&[&str],cancellable:bool)->RenderResult<()> {
+    layout_popup(popup,assets,selection,title,description,options,cancellable,None).map(drop)
+}
+
+/// PC: the body text of a popup holding a long text (the changelog), a little smaller than the
+/// popup's own 22.
+const SCROLLING_TEXT_HEIGHT: f32 = 18.0;
+/// The most body lines such a popup shows: 28 of 18 px keep it within the 506 px body that 23
+/// lines of 22 px reach, the panel's bottom at y 706 of 720.
+const SCROLLING_LINES: usize = 28;
+/// The body's width given up to the scroller at its right.
+const SCROLLER_ROOM: f32 = 34.0;
+/// The scroller's place right of the narrowed body: its bar (about 30 wide, 3 in) midway
+/// between the text and the core's right edge.
+const SCROLLER_GAP: f32 = 12.0;
+/// `basic_slider`'s vertical slider (`mVerticalBar` and `mcScrollbar`, the bar 35 below its top)
+/// and the skin the screens' scrollers take.
+const SLIDER_ASSET: usize = 10;
+const VERTICAL_SLIDER: u32 = 53;
+const SCROLLBAR_TOP: f32 = 35.0;
+const SCROLLER_SKIN: &str = "Yellow_Glow";
+
+/// PC: sk8popup holding a long text: [`SCROLLING_TEXT_HEIGHT`] lines, left aligned with each
+/// "- " entry's further lines under its words, at most [`SCROLLING_LINES`] of them from `first`,
+/// and while more remain the game's own scroller (`basic_slider`, as the screens' `mScroller`s
+/// show it) at the body's right. Returns the last line the body can start at.
+pub(super) fn configure_scrolling_popup(popup:&mut Clip,assets:&Assets,selection:usize,
+    title:&str,description:&str,options:&[&str],cancellable:bool,first:usize)->RenderResult<usize> {
+    layout_popup(popup,assets,selection,title,description,options,cancellable,Some(first))
+}
+
+/// sk8popup's body lines: each paragraph's words to a line while they fit `width`.
+fn wrap_words(description: &str, width: f32, advance: impl Fn(&str) -> f32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for paragraph in description.split('\n') {
+        for word in paragraph.split_whitespace() {
+            let candidate = if line.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{line} {word}")
+            };
+            if !line.is_empty() && advance(&candidate) > width {
+                lines.push(std::mem::take(&mut line));
+                line.push_str(word);
+            } else {
+                line = candidate;
+            }
+        }
+        lines.push(std::mem::take(&mut line));
+    }
+    lines
+}
+
+/// PC: [`wrap_words`] for a list: a paragraph starting "- " has its further lines under its first
+/// word, indented by spaces about as wide as the dash and its space.
+fn wrap_hanging(description: &str, width: f32, advance: impl Fn(&str) -> f32) -> Vec<String> {
+    let space = advance(" ").max(1.0);
+    let indent = " ".repeat((advance("- ") / space).round().max(1.0) as usize);
+    let mut lines = Vec::new();
+    for paragraph in description.split('\n') {
+        let Some(rest) = paragraph.strip_prefix("- ") else {
+            lines.extend(wrap_words(paragraph, width, &advance));
+            continue;
+        };
+        for (index, line) in wrap_words(rest, width - advance(&indent), &advance).into_iter().enumerate() {
+            lines.push(if index == 0 { format!("- {line}") } else { format!("{indent}{line}") });
+        }
+    }
+    lines
+}
+
+/// sk8popup's Refresh with the body `configure_popup` or `configure_scrolling_popup` lays out;
+/// the last line the body can start at.
+#[allow(clippy::too_many_arguments)]
+fn layout_popup(popup:&mut Clip,assets:&Assets,selection:usize,
+    title:&str,description:&str,options:&[&str],cancellable:bool,first:Option<usize>)->RenderResult<usize> {
         let panel = popup.named(&["mcPanel"])?;
         text(
             panel.named(&["titleText"])?,
@@ -1224,15 +1300,17 @@ pub(super) fn configure_popup(popup:&mut Clip,assets:&Assets,selection:usize,
         let width = core.right - core.left;
         let original_height = core.bottom - core.top;
         let mut body = Clip::new(assets, 25, 21)?;
+        let scrolling = first.is_some();
+        let text_height = if scrolling { SCROLLING_TEXT_HEIGHT } else { 22.0 };
         for (k, v) in [
             ("text_font", "Helvetica LT Std"),
-            ("text_height", "22"),
-            ("text_alignment", "2"),
+            ("text_alignment", if scrolling { "0" } else { "2" }),
             ("text_left", "0"),
             ("text_top", "0"),
         ] {
             body.properties.insert(k.into(), v.into());
         }
+        body.properties.insert("text_height".into(), text_height.to_string());
         body.properties
             .insert("text_colour".into(), (0xff000000u32 | 12046808).to_string());
         body.properties
@@ -1249,32 +1327,44 @@ pub(super) fn configure_popup(popup:&mut Clip,assets:&Assets,selection:usize,
         let body_text = if menu_only { String::new() } else { localized };
         // SkateAptString 0x82a70b28 breaks a multiline field at '^' as at a newline.
         let description = body_text.replace('^', "\n");
-        let advance = |s: &str| {
+        let advance_at = |s: &str, size: f32| {
             s.encode_utf16()
                 .filter_map(|c| font.metrics.mapped_glyph(c))
-                .map(|g| g.advance * font.scale[0] * 22.0)
+                .map(|g| g.advance * font.scale[0] * size)
                 .sum::<f32>()
         };
-        let mut lines: Vec<String> = Vec::new();
-        let mut line = String::new();
-        for paragraph in description.split('\n') {
-            for word in paragraph.split_whitespace() {
-                let candidate = if line.is_empty() {
-                    word.to_owned()
-                } else {
-                    format!("{line} {word}")
-                };
-                if !line.is_empty() && advance(&candidate) > width - 50.0 {
-                    lines.push(std::mem::take(&mut line));
-                    line.push_str(word);
-                } else {
-                    line = candidate;
-                }
+        let advance = |s: &str| advance_at(s, 22.0);
+        let mut text_width = width - 50.0;
+        let lines = if scrolling {
+            let body_advance = |s: &str| advance_at(s, text_height);
+            let lines = wrap_hanging(&description, text_width, body_advance);
+            if lines.len() > SCROLLING_LINES {
+                text_width -= SCROLLER_ROOM;
+                wrap_hanging(&description, text_width, body_advance)
+            } else {
+                lines
             }
-            lines.push(std::mem::take(&mut line));
-        }
-        text(&mut body, &lines.join("\n"));
+        } else {
+            wrap_words(&description, text_width, advance)
+        };
+        // PC: a long text shows SCROLLING_LINES of its lines from `first`, beside the scroller.
+        let shown = if scrolling { lines.len().min(SCROLLING_LINES) } else { lines.len() };
+        let limit = lines.len() - shown;
+        let start = first.unwrap_or(0).min(limit);
+        body.properties.insert("text_width".into(), text_width.to_string());
+        text(&mut body, &lines[start..start + shown].join("\n"));
         attach(panel, 20001, body, 0.0, 30.0);
+        if limit > 0 {
+            // basic_slider's constructor (SetSkin(mSkin)), SetSliderLength over the shown lines,
+            // SetNumberOfItems and SetValue.
+            let mut scroller = Clip::new(assets, SLIDER_ASSET, VERTICAL_SLIDER)?;
+            scroller.properties.insert("mSkin".into(), SCROLLER_SKIN.into());
+            super::skate_profile_movie::construct_slider(&mut scroller, assets)?;
+            super::map_movie::update_scrollbar(&mut scroller, assets, lines.len(), shown, start, shown as f32 * text_height)?;
+            attach(panel, 20002, scroller, text_width + SCROLLER_GAP, 30.0 - SCROLLBAR_TOP);
+        } else {
+            panel.children.remove(&20002);
+        }
         let labels = options.iter().map(|option| assets.localize(option)).collect::<Result<Vec<_>, _>>()?;
         let picker = panel.named(&["mMenuPicker", "mMenuPicker"])?;
         let height = bounds(picker.named(&["dummy0"])?, assets)?.ok_or("popup picker bounds")?;
@@ -1309,7 +1399,7 @@ pub(super) fn configure_popup(popup:&mut Clip,assets:&Assets,selection:usize,
         indicator.entry.matrix.ty = selection as f32 * height;
         indicator.clip.visible = !labels.is_empty();
         let menu_height = height * labels.len() as f32;
-        let body_height = if menu_only { 0.0 } else { lines.len() as f32 * 22.0 };
+        let body_height = if menu_only { 0.0 } else { shown as f32 * text_height };
         let scale = ((body_height + menu_height + 20.0) / original_height).max(1.0);
         child(panel, "mCore")?.entry.matrix.d = scale;
         let bottom_y = child(panel, "mCore")?.entry.matrix.ty + original_height * scale;
@@ -1333,5 +1423,5 @@ pub(super) fn configure_popup(popup:&mut Clip,assets:&Assets,selection:usize,
             "Marker_streak", 24., 0xffff_ffec,
         )?;
         child(popup, "mcPanel")?.entry.matrix.ty = 360.0 - original_height * scale / 2.0;
-        Ok(())
+        Ok(limit)
 }

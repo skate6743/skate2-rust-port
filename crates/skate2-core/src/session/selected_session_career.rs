@@ -1912,12 +1912,14 @@ impl<T, C> SelectedLiveSession<T, C> {
         let saved = [leaf(signpost_progress::DATA)?, leaf(signpost_progress::POSITION)?, leaf(signpost_progress::MESSAGES)?];
         signpost_progress::load(career.system.world_mut(), leaf_tuples(&saved[0]), leaf_tuples(&saved[1]), leaf_tuples(&saved[2]));
         if std::env::var_os("SKATE2_TRACE_CAREER").is_some() {
-            let signpost = &career.system.world().signpost;
+            let world = career.system.world();
             eprintln!(
-                "career: SignPost {} ({} completed, {} available)",
+                "career: SignPost {} ({} completed, {} available, cash {}, {} unlocks)",
                 if saved[0].is_some() { "loaded" } else { "fresh" },
-                signpost.completed.len(),
-                signpost.available.len()
+                world.signpost.completed.len(),
+                world.signpost.available.len(),
+                signpost_progress::cash(world),
+                world.unlockables.items().len()
             );
         }
         // ProfileBackEnd::mSettings, loaded with the profile, holds mSubtitles.

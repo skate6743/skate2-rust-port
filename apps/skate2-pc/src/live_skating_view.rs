@@ -237,6 +237,10 @@ impl LiveSkatingView {
     pub(crate) fn take_dlc_intro(&mut self) -> bool {
         self.marker_ui.as_mut().is_some_and(crate::marker_ui::MarkerUi::take_dlc_intro)
     }
+    /// PC: the changelog popup's last starting line, from its layout, while it shows.
+    pub(crate) fn changelog_scroll_limit(&self) -> Option<usize> {
+        self.marker_ui.as_ref().and_then(crate::marker_ui::MarkerUi::changelog_scroll_limit)
+    }
     /// PC: a link mounted downloadable content, whose language databases' strings join the
     /// screens' (`StateDLCFlow::LoadDLCLanguageDB`).
     pub(crate) fn add_dlc_strings(&mut self) {

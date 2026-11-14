@@ -105,8 +105,14 @@ pub(super) struct OnlineGame {
     pub(super) id: u32,
     pub(super) local_slot: u8,
     pub(super) attributes: GameAttributes,
-    /// In join order; the first is the game host peer.
+    /// In join order, the player list's.
     pub(super) players: Vec<OnlinePlayer>,
+    /// The game host peer as the server last said (`GameJoined`, `HostChanged`; PC port: the
+    /// server keeps it, where the original's was the first player).
+    host: Option<u64>,
+    /// PC port addition: the local host asked the server to hand the game to this player
+    /// (`online_make_host`); the console acts as the host no more until the server names the host.
+    handing_to: Option<u64>,
     pub(super) phase: Phase,
     /// The members playing the challenge in progress, as the server last said: a player waiting
     /// in its pre-game lobby watches them as ghosts (PC port addition).
@@ -135,8 +141,9 @@ pub(super) struct OnlineGame {
 }
 
 impl OnlineGame {
+    /// The game host peer: the server's, or the player this console's hand is going to.
     fn host(&self) -> Option<u64> {
-        self.players.first().map(|player| player.user_id)
+        self.handing_to.or(self.host)
     }
 
     fn name(&self, user_id: u64) -> String {
@@ -166,6 +173,9 @@ pub(super) struct Online {
     /// `SKATE2_DIAGNOSTIC_ONLINE_START`: completed ticks in lobby skate before the host starts
     /// the game's challenge.
     diagnostic_lobby_ticks: u32,
+    /// `SKATE2_DIAGNOSTIC_ONLINE_MAKE_HOST`: completed ticks in lobby skate before the host hands
+    /// the game to the next player.
+    diagnostic_host_ticks: u32,
     /// `SKATE2_DIAGNOSTIC_ONLINE_FRAME_DUMP`: the local frames sent, written raw.
     frame_dump: Option<std::io::BufWriter<std::fs::File>>,
     /// The online screen over the Online options.
@@ -764,7 +774,9 @@ impl<T, C> SelectedLiveSession<T, C> {
                 }
             }
             ServerMessage::Lobbies(lobbies) => self.online_lobbies(&lobbies)?,
-            ServerMessage::GameJoined { game, slot, attributes, players, phase, participants } => self.online_game_joined(game, slot, attributes, players, phase, participants)?,
+            ServerMessage::GameJoined { game, slot, attributes, players, phase, participants, host } => {
+                self.online_game_joined(game, slot, attributes, players, phase, participants, host)?;
+            }
             ServerMessage::GameAttributes(attributes) => {
                 if !self.online_challenge_known(&attributes)? {
                     return self.online_lacks_challenge(&attributes);
@@ -814,14 +826,16 @@ impl<T, C> SelectedLiveSession<T, C> {
             }
             ServerMessage::Chat { user_id, text } => self.online_chat(user_id, &text),
             ServerMessage::ChallengeLeave { user_id } => self.online_challenge_leave(user_id)?,
+            ServerMessage::HostChanged { user_id } => self.online_host_changed(user_id),
             message => trace(format_args!("unhandled {message:?}")),
         }
         Ok(())
     }
 
-    /// `OnEvent(OE_GameJoined)` and `SetupGame` 0x82778530: the game's players, then the game's
-    /// location once the front end's fade covers.
-    fn online_game_joined(&mut self, id: u32, slot: u8, attributes: GameAttributes, players: Vec<PlayerInfo>, phase: Phase, participants: Vec<u64>) -> Result<(), SelectedLiveError> {
+    /// `OnEvent(OE_GameJoined)` and `SetupGame` 0x82778530: the game's players and host, then the
+    /// game's location once the front end's fade covers.
+    #[expect(clippy::too_many_arguments, reason = "GameJoined's fields")]
+    fn online_game_joined(&mut self, id: u32, slot: u8, attributes: GameAttributes, players: Vec<PlayerInfo>, phase: Phase, participants: Vec<u64>, host: u64) -> Result<(), SelectedLiveError> {
         trace(format_args!("joined game {id} in slot {slot}: {attributes:?}, {} players, {phase:?}", players.len()));
         if !self.online_challenge_known(&attributes)? {
             return self.online_lacks_challenge(&attributes);
@@ -844,6 +858,8 @@ impl<T, C> SelectedLiveSession<T, C> {
             local_slot: slot,
             attributes,
             players: players.into_iter().map(|player| OnlinePlayer { user_id: player.user_id, slot: player.slot, name: player.name }).collect(),
+            host: Some(host),
+            handing_to: None,
             phase,
             participants,
             remotes,
@@ -1184,34 +1200,72 @@ impl<T, C> SelectedLiveSession<T, C> {
     }
 
     /// `HandlePlayerLeave` 0x8276aa70 and `OnlineEventLog::OnEvent(OE_PlayerLeave)`: the skater
-    /// goes, the log names who left, and the host may change. The original takes no join while a
-    /// challenge runs, so a round's players never hear of a member waiting in the pre-game lobby:
-    /// that member's leave is not logged to them.
+    /// goes and the log names who left. The original takes no join while a challenge runs, so a
+    /// round's players never hear of a member waiting in the pre-game lobby: that member's leave is
+    /// not logged to them. A host's leave is followed by the server's `HostChanged`.
     fn online_player_leave(&mut self, user_id: u64, reason: u8) {
         let apart = self.online_apart_from_round(user_id);
         self.online_round_player_left(user_id);
         let Some(game) = self.online.game.as_mut() else { return };
         let name = game.name(user_id);
         trace(format_args!("{name} left (reason {reason})"));
-        let host_before = game.host();
         game.players.retain(|player| player.user_id != user_id);
         game.participants.retain(|&participant| participant != user_id);
         game.remotes.remove(&user_id);
         game.recipes.remove(&user_id);
         game.announced.retain(|&announced| announced != user_id);
         self.online.lobby_hud_dirty = true;
-        let host_after = game.host();
-        let host_name = host_after.map(|host| game.name(host));
-        if game.entered {
-            if !apart {
-                self.online.event_log.add(EventText::named("ID_ONLINE_EVENT_LEAVE", &name));
-            }
-            if host_before != host_after
-                && let Some(host) = host_name
-            {
-                self.online.event_log.add(EventText::named("ID_ONLINE_EVENT_HOST_CHANGE", &host));
-            }
+        if game.entered && !apart {
+            self.online.event_log.add(EventText::named("ID_ONLINE_EVENT_LEAVE", &name));
         }
+    }
+
+    /// `HostChanged` (PC port addition): the game's host as the server keeps it, after the host
+    /// handed the game on or left it; the log names a new host as the original's host change
+    /// (`ID_ONLINE_EVENT_HOST_CHANGE`). A hand this console asked for ends here, given or not.
+    fn online_host_changed(&mut self, user_id: u64) {
+        let Some(game) = self.online.game.as_mut() else { return };
+        let before = game.host;
+        game.host = Some(user_id);
+        game.handing_to = None;
+        let name = game.name(user_id);
+        trace(format_args!("{name} is the host"));
+        if before != Some(user_id) && game.entered {
+            self.online.event_log.add(EventText::named("ID_ONLINE_EVENT_HOST_CHANGE", &name));
+        }
+    }
+
+    /// PC port addition: the host hands the game to another player (`request::MAKE_HOST`). The
+    /// console stops acting as the host at once: once the server has the hand, it takes no host's
+    /// request from this console. The server's `HostChanged` then names the host, this console
+    /// again when the player had left.
+    pub fn online_make_host(&mut self, user_id: u64) {
+        let local = self.online.user_id;
+        let Some(game) = self.online.game.as_mut() else { return };
+        if local.is_none() || game.host() != local || Some(user_id) == local || !game.players.iter().any(|player| player.user_id == user_id) {
+            return;
+        }
+        trace(format_args!("handing the game to {}", game.name(user_id)));
+        game.handing_to = Some(user_id);
+        self.online.send(ClientMessage::GameRequest { request: request::MAKE_HOST, value: user_id });
+    }
+
+    /// `SKATE2_DIAGNOSTIC_ONLINE_MAKE_HOST=<ticks>`: after that many lobby ticks with every other
+    /// player's skater showing, the host hands the game to the first other player in its list.
+    fn online_diagnostic_make_host(&mut self) {
+        let Some(ticks) = std::env::var("SKATE2_DIAGNOSTIC_ONLINE_MAKE_HOST").ok().and_then(|ticks| ticks.parse::<u32>().ok()) else { return };
+        let Some(game) = self.online.game.as_ref() else { return };
+        if self.online.round.is_some() || game.players.len() < 2 || !game.remotes.values().all(RemoteSkater::visible) {
+            return;
+        }
+        self.online.diagnostic_host_ticks += 1;
+        if self.online.diagnostic_host_ticks != ticks {
+            return;
+        }
+        let local = self.online.user_id;
+        let Some(target) = game.players.iter().map(|player| player.user_id).find(|&user_id| Some(user_id) != local) else { return };
+        trace(format_args!("diagnostic hands the game on"));
+        self.online_make_host(target);
     }
 
     /// `StateOnlineRecipe::LoadingRemoteRecipe` 0x8276fb40: a player's look, built once the
@@ -1340,6 +1394,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             return Ok(());
         }
         self.online_diagnostic_start();
+        self.online_diagnostic_make_host();
         self.online_diagnostic_activity();
         if self.online.game.is_none() {
             return Ok(());

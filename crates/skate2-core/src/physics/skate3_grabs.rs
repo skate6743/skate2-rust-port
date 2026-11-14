@@ -208,6 +208,31 @@ impl HostGrabs {
                     .try_living_world_grab_part(&object.body)
                     .map_err(|e| format!("source grab DMO Part: {e:?}"))?;
                 let velocity = part.and_then(|p| p.velocity).unwrap_or(object.velocity);
+                // SKATE2_TRACE_SKATE3_GRAB_OBJECT=<id>: that DMO's grab frame (its target transform)
+                // and its transform's position, each time either moves over a millimetre.
+                static TRACED_OBJECT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+                if *TRACED_OBJECT.get_or_init(|| {
+                    std::env::var("SKATE2_TRACE_SKATE3_GRAB_OBJECT").ok().and_then(|v| v.trim().parse::<u32>().ok())
+                }) == Some(id)
+                {
+                    static LAST: std::sync::Mutex<Option<[f32; 19]>> = std::sync::Mutex::new(None);
+                    let mut now = [0.0; 19];
+                    now[..16].copy_from_slice(&object.target_transform);
+                    now[16..].copy_from_slice(&object.transform[12..15]);
+                    if let Ok(mut last) = LAST.lock()
+                        && last.is_none_or(|last| last.iter().zip(&now).any(|(a, b)| (a - b).abs() > 0.001))
+                    {
+                        *last = Some(now);
+                        eprintln!(
+                            "skate3 grab object: id={id} static={} target_x={:?} target_z={:?} target_at={:?} transform_at={:?}",
+                            object.is_static(),
+                            &now[0..3],
+                            &now[8..11],
+                            &now[12..15],
+                            &now[16..19]
+                        );
+                    }
+                }
                 let assembly = self.assembly(&object.body, part)?;
                 let mut splines = Vec::new();
                 if feed_dmos && !object.is_static() {

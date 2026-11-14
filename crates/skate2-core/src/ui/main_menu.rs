@@ -298,6 +298,8 @@ pub struct Controller {
     /// PC: the release's changes, shown once the menu stands idle at the first start after an
     /// update.
     pub changelog: Option<super::update_prompt::Changelog>,
+    /// PC: the changelog popup's scrolling (the right stick, up and down).
+    pub changelog_scroll: super::update_prompt::ChangelogScroll,
     /// `FE_SOUND_*` globals the menu_picker's script played for this input.
     sounds: Vec<&'static str>,
 }
@@ -325,6 +327,7 @@ impl Controller {
             update_prompt: None,
             update_declined: None,
             changelog: None,
+            changelog_scroll: Default::default(),
             sounds: Vec::new(),
         }
     }
@@ -341,6 +344,15 @@ impl Controller {
             && self.nickname_prompt.is_none()
             && self.skate_reel.is_none()
             && self.dlc.is_none()
+    }
+    /// PC: the changelog popup's last starting line, as its layout found it (`None` while it is
+    /// not laid out); the scroll stays within it.
+    pub fn set_changelog_scroll_limit(&mut self, limit: Option<usize>) {
+        let changelog = match self.update_prompt.as_mut() {
+            Some(super::update_prompt::UpdatePrompt::Changelog(changelog)) => Some(changelog),
+            _ => None,
+        };
+        self.changelog_scroll.set_limit(changelog, limit);
     }
     /// PC: the app's updater as it stands: a newer release is offered once the menu is idle
     /// (`FrontEndState_Popup::OnEnter` 0x826583d0 sounds `core_popup`), and the update's progress,
@@ -455,6 +467,7 @@ impl Controller {
             && let Some(changelog) = self.changelog.take()
         {
             self.update_prompt = Some(super::update_prompt::UpdatePrompt::Changelog(changelog));
+            self.changelog_scroll = Default::default();
             self.sounds.push("FE_SOUND_CORE_POPUP");
             return Selection::None;
         }
@@ -483,7 +496,12 @@ impl Controller {
                     self.sounds.push("FE_SOUND_CORE_A_BUTTON");
                     self.update_prompt = None;
                 }
-                UpdatePrompt::Failed { .. } | UpdatePrompt::Downloading { .. } | UpdatePrompt::Installed { .. } | UpdatePrompt::Changelog(_) => {}
+                // PC: a changelog longer than the popup scrolls.
+                UpdatePrompt::Changelog(changelog) => {
+                    let step = i8::from(input.down) - i8::from(input.up);
+                    self.changelog_scroll.update(changelog, input.right_stick[1], step, dt);
+                }
+                UpdatePrompt::Failed { .. } | UpdatePrompt::Downloading { .. } | UpdatePrompt::Installed { .. } => {}
             }
             return Selection::None;
         }
@@ -726,6 +744,10 @@ mod tests {
             assert_eq!(press(&mut menu, input), Selection::None);
         }
         assert!(matches!(menu.update_prompt, Some(UpdatePrompt::Changelog(_))), "only A closes it");
+        menu.set_changelog_scroll_limit(Some(3));
+        let stick_down = PauseMenuInput { right_stick: [0.0, -1.0], ..Default::default() };
+        assert_eq!(press(&mut menu, stick_down), Selection::None);
+        assert!(matches!(&menu.update_prompt, Some(UpdatePrompt::Changelog(changelog)) if changelog.scroll == 1), "the right stick scrolls");
         assert_eq!(press(&mut menu, select()), Selection::None);
         assert_eq!((menu.update_prompt.clone(), menu.changelog.clone()), (None, None), "shown once");
         menu.set_update_status(&available, "0.2.5");

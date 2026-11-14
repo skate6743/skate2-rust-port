@@ -35,6 +35,7 @@ pub mod lua;
 pub mod map_icons;
 pub mod mission;
 pub mod mission_audio;
+pub mod max_out;
 mod natives;
 pub mod objective_data;
 mod objective_groups;

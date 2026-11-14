@@ -4,7 +4,7 @@ use super::{
     progression_popup::ProgressionPopup,
 };
 use crate::gpu_renderer::RenderResult;
-use skate2_core::ui::extras::{LABELS, Page, Snapshot};
+use skate2_core::ui::extras::{MAX_OUT, MAX_OUT_DONE, MAX_OUT_QUESTION, Page, Snapshot, labels};
 pub(super) const ASSET: usize = 85;
 pub(super) struct ExtrasMovie {
     pub root: Clip,
@@ -93,19 +93,23 @@ impl ExtrasMovie {
             Page::SaveError(message) => {
                 Some(("#Could not save".to_owned(), format!("#{message}"), 0))
             }
+            // PC port addition: Max Out Save's yes/no (the progression popup's, No highlighted
+            // first) and its result.
+            Page::ConfirmMaxOut { yes } => Some((MAX_OUT.to_owned(), MAX_OUT_QUESTION.to_owned(), usize::from(!*yes))),
+            Page::MaxedOut => Some((MAX_OUT.to_owned(), MAX_OUT_DONE.to_owned(), 0)),
             _ => None,
         });
-        let options = vec![
-            if state.is_some_and(|s| matches!(s.page, Page::Code { .. })) {
-                "#Enter: Submit    Esc: Cancel".into()
-            } else {
-                "ID_COMMON_OK".into()
-            },
-        ];
+        let options: Vec<String> = if state.is_some_and(|s| matches!(s.page, Page::ConfirmMaxOut { .. })) {
+            vec!["ID_COMMON_YES".into(), "ID_COMMON_NO".into()]
+        } else if state.is_some_and(|s| matches!(s.page, Page::Code { .. })) {
+            vec!["#Enter: Submit    Esc: Cancel".into()]
+        } else {
+            vec!["ID_COMMON_OK".into()]
+        };
         let had_dialog = self.shown.as_ref().is_some_and(|s| {
             matches!(
                 s.page,
-                Page::Code { .. } | Page::Result(_) | Page::SaveError(_)
+                Page::Code { .. } | Page::Result(_) | Page::SaveError(_) | Page::ConfirmMaxOut { .. } | Page::MaxedOut
             )
         });
         if dialog.is_some() && !had_dialog {
@@ -144,7 +148,7 @@ impl ExtrasMovie {
         self.callbacks(assets, letterbox)
     }
     fn update_picker(&mut self, assets: &Assets, state: &Snapshot) -> RenderResult<()> {
-        let labels = LABELS[..state.count]
+        let labels = labels(state.count)
             .iter()
             .map(|label| assets.localize(label))
             .collect::<RenderResult<Vec<_>>>()?;

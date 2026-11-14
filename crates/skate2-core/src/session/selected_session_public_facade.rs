@@ -3067,12 +3067,14 @@ impl<T, C> SelectedLiveSession<T, C> {
             let recipe = self.inner.player.as_ref().expect("ready player").selected.owners.services.settings.try_character(0).ok();
             let living_world_recipes = Arc::clone(&self.inner.player.as_ref().expect("ready player").selected.owners.living_world_recipes);
             let party_play = self.party_play.game.is_some();
+            let ai_skaters_off = self.freeskate.ai_skaters_off;
             let ai = self.inner.ai.as_mut().expect("checked session AI");
             ai.camera = std::array::from_fn(|row| {
                 let column = camera.columns()[row];
                 [column.xyz[0], column.xyz[1], column.xyz[2], column.w.unwrap_or(0.0)]
             });
             ai.party_play = party_play;
+            ai.ambient_off = ai_skaters_off;
             let mut in_use: Vec<u64> = recipe.into_iter().collect();
             if let Ok(runtime) = living_world_recipes.lock() {
                 in_use.extend(ai.recipes_used_by_living_world(|name| runtime.recipes.is_tracked(name)));
@@ -3860,6 +3862,12 @@ impl<T, C> SelectedLiveSession<T, C> {
             menu.leaving = true;
             self.exit_to_desktop = true;
             self.frontend_fade.cover();
+        }
+    }
+    /// PC: the changelog popup's last starting line from its layout, for its scrolling.
+    pub fn set_changelog_scroll_limit(&mut self, limit: Option<usize>) {
+        if let Some(menu) = self.main_menu.as_mut() {
+            menu.set_changelog_scroll_limit(limit);
         }
     }
     /// PC: what the main menu asked of the app's updater since the last call.

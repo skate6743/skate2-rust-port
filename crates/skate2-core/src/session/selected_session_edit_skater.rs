@@ -234,6 +234,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                         back: input.cancel,
                         select: input.select,
                         misc: input.misc,
+                        option: input.option,
                         up: input.up,
                         down: input.down,
                         left: input.left,

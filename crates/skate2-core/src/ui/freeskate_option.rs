@@ -1,6 +1,7 @@
 //! `Sk8::FE::FrontEndState_FreeSkateOption` (FE state 40, screen 66 `main/freeskate_options.swf`):
 //! the skater, location, traffic, pedestrian and security choices of a profile free skate, with
-//! the `FECharacterManager` / `FELocationManager` lists it steps through.
+//! the `FECharacterManager` / `FELocationManager` lists it steps through. PC port: an AI Skaters
+//! row above security turns the free skate's ambient AI skaters off.
 use super::pause_menu::PauseMenuInput;
 use crate::challenge::{
     attrib_db::AttribDb,
@@ -188,10 +189,20 @@ pub enum Row {
     Traffic = 2,
     Pedestrians = 3,
     Security = 4,
+    /// PC port: the AI Skaters row, which no native state numbers.
+    AiSkaters = 5,
 }
 
 impl Row {
-    const ALL: [Self; 5] = [Self::Character, Self::Location, Self::Traffic, Self::Pedestrians, Self::Security];
+    /// The rows from the top: PC port, AI Skaters stands between Pedestrians and Security.
+    const ORDER: [Self; 6] = [Self::Character, Self::Location, Self::Traffic, Self::Pedestrians, Self::AiSkaters, Self::Security];
+
+    /// The row below, or above; past either end the rows wrap.
+    fn step(self, down: bool) -> Self {
+        let count = Self::ORDER.len();
+        let at = Self::ORDER.iter().position(|&row| row == self).unwrap_or(0);
+        Self::ORDER[if down { (at + 1) % count } else { (at + count - 1) % count }]
+    }
 }
 
 /// `FrontEndManager::SetScreenState`: the movie's `SetState` refreshes one row, or with 999
@@ -215,12 +226,14 @@ pub struct Settings {
     pub traffic: f32,
     pub pedestrians: f32,
     pub security: bool,
+    /// PC port: the free skate's ambient AI skaters (`AISkaterManager`); off, none spawn.
+    pub ai_skaters: bool,
 }
 
 impl Default for Settings {
-    /// The `GameInfo` constructor's 1.0 densities with security on.
+    /// The `GameInfo` constructor's 1.0 densities with security on; PC port, AI skaters on.
     fn default() -> Self {
-        Self { traffic: 1.0, pedestrians: 1.0, security: true }
+        Self { traffic: 1.0, pedestrians: 1.0, security: true, ai_skaters: true }
     }
 }
 
@@ -256,6 +269,8 @@ pub struct Snapshot {
     pub pedestrians: i32,
     /// `sMethod_GetSecuritySetting` 0x82623490.
     pub security: bool,
+    /// PC port: the AI Skaters row's setting.
+    pub ai_skaters: bool,
     /// The location image the secondary quad shows (`mbSecondaryQuadActive`).
     pub image: Option<String>,
     /// PC port: the Area row's choice, when the row is shown, and whether it is selected (the
@@ -370,6 +385,7 @@ impl Controller {
             traffic: bars(self.settings.traffic),
             pedestrians: bars(self.settings.pedestrians),
             security: self.settings.security,
+            ai_skaters: self.settings.ai_skaters,
             image: self.image.clone(),
             area: self.areas.get(self.area).map(|area| area.label.clone()),
             area_selected: self.area_selected,
@@ -447,7 +463,8 @@ impl Controller {
     }
 
     /// `ReceiveInput` 0x82670fc8: Down/Up (keycodes 13/12) move between the rows, Right/Left
-    /// (15/14) change the row's value, A (2) and B (3) wait for the first character.
+    /// (15/14) change the row's value, A (2) and B (3) wait for the first character. PC port: the
+    /// AI Skaters row stands between Pedestrians and Security, and toggles as Security does.
     pub fn update(&mut self, input: PauseMenuInput) -> Action {
         if self.blocked {
             return Action::None;
@@ -462,7 +479,7 @@ impl Controller {
             } else if areas && self.row == Row::Character {
                 self.area_selected = true;
             } else {
-                self.row = Row::ALL[(self.row as usize + 4) % 5];
+                self.row = self.row.step(false);
             }
             self.screen_states.push(SELECTION_STATE);
         }
@@ -474,7 +491,7 @@ impl Controller {
             } else if areas && self.row == Row::Security {
                 self.area_selected = true;
             } else {
-                self.row = Row::ALL[(self.row as usize + 1) % 5];
+                self.row = self.row.step(true);
             }
             self.screen_states.push(SELECTION_STATE);
         }
@@ -505,6 +522,10 @@ impl Controller {
                 Row::Security => {
                     self.settings.security = !self.settings.security;
                     self.screen_states.push(Row::Security as u32);
+                }
+                Row::AiSkaters => {
+                    self.settings.ai_skaters = !self.settings.ai_skaters;
+                    self.screen_states.push(Row::AiSkaters as u32);
                 }
             }
         }
@@ -608,6 +629,34 @@ mod tests {
         // Without a linked Skate 3 data folder, a single area adds no row.
         let single = controller().with_areas(vec![Area { label: "#San Vanelona".into(), locations: vec![location(1, "A")] }]);
         assert_eq!(single.snapshot().area, None);
+    }
+
+    /// PC port: AI Skaters sits between Pedestrians and Security, toggles both ways, and the game
+    /// starts with its setting.
+    #[test]
+    fn the_ai_skaters_row_sits_above_security_and_toggles() {
+        let mut c = controller();
+        c.intro_done();
+        for _ in 0..4 {
+            c.update(PauseMenuInput { down: true, ..Default::default() });
+        }
+        assert_eq!(c.snapshot().selection, Row::AiSkaters);
+        c.update(PauseMenuInput { down: true, ..Default::default() });
+        assert_eq!(c.snapshot().selection, Row::Security);
+        c.update(PauseMenuInput { up: true, ..Default::default() });
+        assert_eq!(c.snapshot().selection, Row::AiSkaters);
+        assert!(c.snapshot().ai_skaters);
+        c.take_screen_states();
+        c.update(PauseMenuInput { right: true, ..Default::default() });
+        assert!(!c.snapshot().ai_skaters);
+        assert_eq!(c.take_screen_states(), [Row::AiSkaters as u32]);
+        assert!(c.snapshot().security, "security keeps its own setting");
+        c.update(PauseMenuInput { left: true, ..Default::default() });
+        assert!(c.snapshot().ai_skaters);
+        c.update(PauseMenuInput { left: true, ..Default::default() });
+        let Action::EnterGame(game) = c.update(PauseMenuInput { select: true, ..Default::default() }) else { panic!() };
+        assert!(!game.settings.ai_skaters);
+        assert!(Settings::default().ai_skaters, "AI skaters are on until turned off");
     }
 
     #[test]

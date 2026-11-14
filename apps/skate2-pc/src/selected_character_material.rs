@@ -77,6 +77,9 @@ pub(crate) fn create_objects(
         if family == CharacterShaderFamily::LivingWorld {
             renderer.bind_living_world_lighting(&mut object, &texture, &cas_inputs(&view, environment, frame, irradiance, camera)?)?;
         } else if let Some(mode) = crate::gpu_renderer::character::cas::mode(view.effect) {
+            if std::env::var_os("SKATE2_DIAGNOSTIC_CAS_TEXTURES").is_some() {
+                log_cas_textures(&view);
+            }
             // PC port: a linked Skate 3 data folder's clothing can leave a map out
             // (`character_material_admission`): a flat normal (the CAS programs read its alpha
             // and green), no decal or dirt, and skin's tattoo layer white.
@@ -150,6 +153,49 @@ pub(crate) fn update_object(
     renderer.set_character_fog(object, frame)?;
     Ok(())
 }
+/// Diagnostic (`SKATE2_DIAGNOSTIC_CAS_TEXTURES`): a CAS material's maps, each with its format, size
+/// and the mean of its largest level's alpha and alpha squared (DXT5 decoded, opaque for DXT1).
+fn log_cas_textures(view: &skate2_core::character::material_admission::CharacterMaterialView<'_>) {
+    fn describe(texture: Option<&skate2_core::texture::NativeTexture>) -> String {
+        let Some(texture) = texture else { return "none".into() };
+        let alphas: Vec<f64> = texture.linear_levels.iter().find(|level| level.level == 0).map_or_else(Vec::new, |level| {
+            match texture.pixel_format {
+                skate2_formats::material::PIXEL_FORMAT_DXT5 | skate2_formats::material::PIXEL_FORMAT_LIN_DXT5 => {
+                    level.data.chunks_exact(16).flat_map(dxt5_alphas).collect()
+                }
+                skate2_formats::material::PIXEL_FORMAT_A8R8G8B8 => level.data.chunks_exact(4).map(|texel| f64::from(texel[3]) / 255.).collect(),
+                _ => vec![1.0],
+            }
+        });
+        let count = alphas.len().max(1) as f64;
+        let mean = alphas.iter().sum::<f64>() / count;
+        let squares = alphas.iter().map(|alpha| alpha * alpha).sum::<f64>() / count;
+        format!("{} {:#x} {}x{} alpha {mean:.3} squared {squares:.4}", texture.name, texture.pixel_format, texture.width, texture.height)
+    }
+    /// A DXT5 block's sixteen alphas (0 to 1).
+    fn dxt5_alphas(block: &[u8]) -> [f64; 16] {
+        let (a0, a1) = (f64::from(block[0]), f64::from(block[1]));
+        let palette = if a0 > a1 {
+            [a0, a1, (6. * a0 + a1) / 7., (5. * a0 + 2. * a1) / 7., (4. * a0 + 3. * a1) / 7., (3. * a0 + 4. * a1) / 7., (2. * a0 + 5. * a1) / 7., (a0 + 6. * a1) / 7.]
+        } else {
+            [a0, a1, (4. * a0 + a1) / 5., (3. * a0 + 2. * a1) / 5., (2. * a0 + 3. * a1) / 5., (a0 + 4. * a1) / 5., 0., 255.]
+        };
+        let bits = u64::from_le_bytes([block[2], block[3], block[4], block[5], block[6], block[7], 0, 0]);
+        std::array::from_fn(|texel| palette[((bits >> (3 * texel)) & 7) as usize] / 255.)
+    }
+    eprintln!(
+        "cas textures: {} material {:#018x}/{:#018x} diffuse [{}] normal [{}] alpha [{}] decal [{}] decal2 [{}]",
+        view.effect,
+        view.material_key.0,
+        view.material_key.1,
+        describe(Some(view.texture)),
+        describe(view.normal),
+        describe(view.alpha),
+        describe(view.decal),
+        describe(view.decal2),
+    );
+}
+
 fn family(effect: &str) -> RenderResult<CharacterShaderFamily> {
     match effect {
         "defaultcharacter" | "cacstamp_cloth" | "cacstamp_skin" | "cacstamp_face"
@@ -220,8 +266,28 @@ fn cas_custom(
         view.colours[1],
         view.tattoos[0],
         view.tattoos[1],
-        [mode, 0., 0., 0.],
+        [mode, 0., skin_specular_mask(view, mode), 0.],
     ]
+}
+
+/// The specular mask `cacstamp_skin` reads from its diffuse's alpha (squared), as Skate 2's skin
+/// textures hold it on average (`SKATE2_DIAGNOSTIC_CAS_TEXTURES`'s mean of alpha squared over its
+/// arms' and legs' diffuse maps).
+const SKATE2_SKIN_SPECULAR_MASK: f32 = 0.038;
+
+/// PC port: the specular mask a skin material takes in place of its diffuse's alpha, or 0 for its
+/// own. A linked Skate 3 data folder's arms and legs (`crate::skate3`) keep no mask in their
+/// diffuse (DXT1, opaque), which Skate 2's program reads as the whole highlight on every texel:
+/// they take Skate 2's skin's, so they shine as Skate 2's arms and legs do.
+fn skin_specular_mask(view: &skate2_core::character::material_admission::CharacterMaterialView<'_>, mode: f32) -> f32 {
+    use skate2_formats::material::{PIXEL_FORMAT_DXT1, PIXEL_FORMAT_R5G6B5};
+    let skin = mode == 1.;
+    // SKATE2_DIAGNOSTIC_SKIN_MASK_OFF: every skin takes its mask from its diffuse alpha, for
+    // comparison.
+    if std::env::var_os("SKATE2_DIAGNOSTIC_SKIN_MASK_OFF").is_some() {
+        return 0.;
+    }
+    if skin && matches!(view.texture.pixel_format, PIXEL_FORMAT_DXT1 | PIXEL_FORMAT_R5G6B5) { SKATE2_SKIN_SPECULAR_MASK } else { 0. }
 }
 fn cas_inputs(
     view: &skate2_core::character::material_admission::CharacterMaterialView<'_>,
