@@ -196,6 +196,43 @@ fn known_air_transition_order_matches_the_tu3_tree() {
 }
 
 #[test]
+fn v10_known_air_skips_both_tu3_dismount_wipeout_gates() {
+    let v10 = || StateSelector {
+        v10_known_air: true,
+        ..StateSelector::default()
+    };
+    //TU3 82D8B5B0: OB_Air inside 0.05 s of the predicted collision bails; 1.0 dismounts.
+    let mut frame = input(200);
+    frame.processed.flags_2476 = 0x80;
+    frame.processed.trajectory_collision_time_2772 = 0.04;
+    assert_eq!(
+        calculate(&mut StateSelector::default(), State::KnownAir, &frame),
+        State::WipeoutGround
+    );
+    assert_eq!(
+        calculate(&mut v10(), State::KnownAir, &frame),
+        State::BipedAir
+    );
+    //TU3 82D8B69C: a touchdown with OB_Unmounting, OB_Dismount or last tick's OB_Dismount
+    //bails; 1.0 lands into PhysicsGround (the bounce).
+    for flags in [0x4_0000, 0x2_0000, 0x1_0000] {
+        let mut frame = input(200);
+        frame.processed.wheel_contact_count_2556 = 1;
+        frame.processed.state_timer_2664 = 0.5;
+        frame.processed.trajectory_collision_time_2772 = 1.0;
+        frame.processed.flags_2480 = flags;
+        assert_eq!(
+            calculate(&mut StateSelector::default(), State::KnownAir, &frame),
+            State::WipeoutGround
+        );
+        assert_eq!(
+            calculate(&mut v10(), State::KnownAir, &frame),
+            State::PhysicsGround
+        );
+    }
+}
+
+#[test]
 fn physics_air_collision_resolves_before_the_grind_candidate_path() {
     let mut selector = StateSelector {
         post_grind_jump_counter: 11,

@@ -68,7 +68,9 @@ impl StateSelector {
         if p.has_2480(0x200_0000) {
             return PhysicalStateId::FootPlant;
         }
-        if p.trajectory_collision_time_2772 < TRAJECTORY_WIPEOUT_SECONDS
+        //TU3 82D8B5B0..B5DC; absent from 1.0 82D5FF10.
+        if !self.v10_known_air
+            && p.trajectory_collision_time_2772 < TRAJECTORY_WIPEOUT_SECONDS
             && (p.has_2476(0x80) || p.has_2476(0x8000))
         {
             return PhysicalStateId::WipeoutGround;
@@ -115,7 +117,11 @@ impl StateSelector {
         if p.has_2472(4) {
             return PhysicalStateId::PhysicsAir;
         }
-        if p.has_2480(0x40000) || p.has_2480(0x20000) || p.has_2480(0x10000) {
+        //TU3 82D8B69C..B6BC (OB_Unmounting, OB_Dismount, last tick's OB_Dismount); absent
+        //from 1.0, which lands into PhysicsGround with the board still kicked out.
+        if !self.v10_known_air
+            && (p.has_2480(0x40000) || p.has_2480(0x20000) || p.has_2480(0x10000))
+        {
             return PhysicalStateId::WipeoutGround;
         }
         if !p.has_2472(0x8000) && !p.has_2472(0x4000) {

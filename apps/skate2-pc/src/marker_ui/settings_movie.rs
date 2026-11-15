@@ -449,6 +449,7 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
             Row::Weather => state.modes.weather.label(),
             Row::PuddlePhysics => on_off(state.modes.puddle_physics),
             Row::OnlineSpeed => on_off(state.modes.online_speed),
+            Row::ShuvBounce => on_off(state.modes.shuv_bounce),
             Row::Msaa => match state.values.msaa {
                 skate2_core::ui::options::Msaa::Off => "ID_COMMON_OFF",
                 skate2_core::ui::options::Msaa::X2 => "2x",
@@ -851,7 +852,8 @@ mod tests {
     }
 
     /// PC port: the Online Settings page's titles, Show Ghost Players in pregame lobby among them,
-    /// in glyphs their font has and within their fields.
+    /// and Physics Settings' under Skate 3 physics, 3 Shuv Bounce among them, in glyphs their font
+    /// has and within their fields.
     #[test]
     #[ignore = "requires external SKATE2_GAME_ROOT"]
     fn online_settings_titles_fit_their_fields() {
@@ -866,28 +868,35 @@ mod tests {
         movie.update(&assets, Snapshot { page: Page::Options, ..Default::default() }, None).unwrap();
         movie.link(&assets, None).unwrap();
         tick(&mut movie, &mut main, &assets, 90);
-        let state = Snapshot { page: Page::Online, show_lobby_chat: true, show_ghost_players: true, ..Default::default() };
-        movie.update(&assets, state, None).unwrap();
-        tick(&mut movie, &mut main, &assets, 30);
-        for (index, row) in state.rows().iter().enumerate() {
-            let field = movie.root.named(&[&format!("mItem{index}"), "mTitle", "TEXTLABEL"]).unwrap();
-            let title = mapped(field, &assets);
-            assert_eq!(title, row.title());
-            let skate2_formats::apt::Character::Text(text) = field.definition(&assets).unwrap() else {
-                panic!("{title}: not text");
-            };
-            let Some(skate2_formats::apt::Character::Font { name, .. }) =
-                assets.movies[field.asset].movie.characters[text.font_id as usize].as_ref()
-            else {
-                panic!("{title}: font absent");
-            };
-            let font = assets.apt_font(name).unwrap();
-            let width: f32 = title
-                .encode_utf16()
-                .map(|unit| font.metrics.mapped_glyph(unit).map_or(0., |glyph| glyph.advance * font.scale[0] * text.height))
-                .sum();
-            let room = text.bounds.right - text.bounds.left;
-            assert!(width <= room, "{title}: {width} wide in a field {room} wide");
+        let online = Snapshot { page: Page::Online, show_lobby_chat: true, show_ghost_players: true, ..Default::default() };
+        let skate3 = skate2_core::ui::gameplay_modes::PcGameplayModes {
+            physics: skate2_core::ui::gameplay_modes::PhysicsMode::Skate3,
+            ..Default::default()
+        };
+        let physics = Snapshot { page: Page::Physics, skate3_linked: true, modes: skate3, ..Default::default() };
+        for state in [online, physics] {
+            movie.update(&assets, state, None).unwrap();
+            tick(&mut movie, &mut main, &assets, 30);
+            for (index, row) in state.rows().iter().enumerate() {
+                let field = movie.root.named(&[&format!("mItem{index}"), "mTitle", "TEXTLABEL"]).unwrap();
+                let title = mapped(field, &assets);
+                assert_eq!(title, row.title());
+                let skate2_formats::apt::Character::Text(text) = field.definition(&assets).unwrap() else {
+                    panic!("{title}: not text");
+                };
+                let Some(skate2_formats::apt::Character::Font { name, .. }) =
+                    assets.movies[field.asset].movie.characters[text.font_id as usize].as_ref()
+                else {
+                    panic!("{title}: font absent");
+                };
+                let font = assets.apt_font(name).unwrap();
+                let width: f32 = title
+                    .encode_utf16()
+                    .map(|unit| font.metrics.mapped_glyph(unit).map_or(0., |glyph| glyph.advance * font.scale[0] * text.height))
+                    .sum();
+                let room = text.bounds.right - text.bounds.left;
+                assert!(width <= room, "{title}: {width} wide in a field {room} wide");
+            }
         }
     }
 
