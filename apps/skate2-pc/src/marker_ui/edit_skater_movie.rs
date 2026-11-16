@@ -691,7 +691,7 @@ mod tests {
                 title: "Body Mods".into(), ..Default::default() }, slider_row],
             selected: 0, window_start: 0, wallet: 0, help_a: "Select".into(),
             help_b: "Back".into(), help_start: "Finished".into(), help_x: String::new(), help_y: String::new(),
-            colour_picker: None, cash_popup: false, receipt: None };
+            grip_view: false, colour_picker: None, cash_popup: false, receipt: None };
         for visible in [true, false, true] {
             view.visible = visible;
             movie.update(&assets, &view).unwrap();

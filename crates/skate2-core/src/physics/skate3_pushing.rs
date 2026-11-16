@@ -142,6 +142,15 @@ impl Pushing {
         self.active && self.core.as_ref().is_some_and(|core| core.grab_object == Some(true))
     }
 
+    /// The state's mDelayUntilRepushable (Pushing+0x4A4), which its FillPhysOut (`0x82d470e4`)
+    /// stores as the Ground record's +0x128: the repush delay an emergency exit read, else 0.
+    pub(super) fn delay_until_repushable(&self) -> f32 {
+        if !self.active {
+            return 0.0;
+        }
+        self.core.as_ref().and_then(|core| core.delay_until_repushable).unwrap_or(0.0)
+    }
+
     /// [`Self::tick`], logging the first failure and moving no objects after it, so pushing
     /// can never stop the skater's own physics.
     pub(super) fn tick_or_disable(

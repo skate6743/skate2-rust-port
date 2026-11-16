@@ -109,8 +109,12 @@ pub(crate) fn create_objects(
             )?;
         } else {
             let normal=renderer.upload_native_texture(view.normal.ok_or("character normal channel absent")?)?;
-            renderer.bind_character_surface(&mut object, &view.geometry.geometry, &normal, alpha.as_ref(),
-                &cas_inputs(&view, environment, frame, irradiance, camera)?)?;
+            let inputs = cas_inputs(&view, environment, frame, irradiance, camera)?;
+            renderer.bind_character_surface(&mut object, &view.geometry.geometry, &normal, alpha.as_ref(), &inputs)?;
+            // PC port: a deck's griptape colour (`surface_custom`).
+            if view.grip.is_some() {
+                renderer.update_character_surface_constants(&object, &inputs, surface_custom(&view))?;
+            }
         }
         renderer.set_character_fog(&object, frame)?;
         output.push((binding, object));
@@ -147,8 +151,8 @@ pub(crate) fn update_object(
             cas_custom(&view, mode),
         )?;
     } else {
-        renderer.update_character_stamp(object,
-            &cas_inputs(&view, environment, frame, irradiance, camera)?)?;
+        renderer.update_character_surface_constants(object,
+            &cas_inputs(&view, environment, frame, irradiance, camera)?, surface_custom(&view))?;
     }
     renderer.set_character_fog(object, frame)?;
     Ok(())
@@ -261,13 +265,30 @@ fn cas_custom(
     view: &skate2_core::character::material_admission::CharacterMaterialView<'_>,
     mode: f32,
 ) -> [[f32; 4]; 5] {
+    // PC port: the cloth and shift programs read no tattoo rows; a deck's griptape colour takes
+    // their place (`grip_rows`).
+    let [third, fourth] = if mode == 0. || mode == 3. { grip_rows(view) } else { view.tattoos };
     [
         view.colours[0],
         view.colours[1],
-        view.tattoos[0],
-        view.tattoos[1],
+        third,
+        fourth,
         [mode, 0., skin_specular_mask(view, mode), 0.],
     ]
+}
+
+/// PC port: Edit Griptape's colour as two custom rows: what the diffuse squared is multiplied by
+/// over the deck's top face, its fourth lane set, then the rectangle of the first texture
+/// coordinate set that holds that face. Both zero on any other mesh and on a deck with none.
+fn grip_rows(view: &skate2_core::character::material_admission::CharacterMaterialView<'_>) -> [[f32; 4]; 2] {
+    view.grip.map_or([[0.; 4]; 2], |(gain, rectangle)| [[gain[0], gain[1], gain[2], 1.], rectangle])
+}
+
+/// PC port: the custom rows of a character surface (`defaultcharacter`), which reads a deck's
+/// griptape colour from them and nothing else.
+fn surface_custom(view: &skate2_core::character::material_admission::CharacterMaterialView<'_>) -> [[f32; 4]; 5] {
+    let [third, fourth] = grip_rows(view);
+    [[0.; 4], [0.; 4], third, fourth, [0.; 4]]
 }
 
 /// The specular mask `cacstamp_skin` reads from its diffuse's alpha (squared), as Skate 2's skin

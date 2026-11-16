@@ -207,6 +207,7 @@ impl EditSkaterPresentationAttributes {
         delta: &[skate2_formats::andale::AndaleSqt],
         body: &EditSkaterBody,
         palette: &mut crate::character::palette::CharacterPalette,
+        grip_view: bool,
     ) -> EditSkaterResult<[f32; 16]> {
         use crate::actor_animation_construction::initialization::body_dispatch::tree_commands::numeric::add_sqt;
         if bind.len() != hierarchy.bone_names.len() || delta.len() != bind.len() {
@@ -217,11 +218,11 @@ impl EditSkaterPresentationAttributes {
             .zip(bind)
             .map(|(a, b)| add_sqt(*a, *b, true))
             .collect();
-        self.publish_local_pose(hierarchy,bind,pose,body,palette)
+        self.publish_local_pose(hierarchy,bind,pose,body,palette,grip_view)
     }
     fn publish_local_pose(&self,hierarchy:&skate2_formats::andale::AndaleHierarchy,
         bind:&[skate2_formats::andale::AndaleSqt],mut pose:Vec<skate2_formats::andale::AndaleSqt>,
-        body:&EditSkaterBody,palette:&mut crate::character::palette::CharacterPalette)->EditSkaterResult<[f32;16]> {
+        body:&EditSkaterBody,palette:&mut crate::character::palette::CharacterPalette,grip_view:bool)->EditSkaterResult<[f32;16]> {
         use crate::{actor_face_playback::presentation::{move_root,twist::try_twist_channels},
             animation::{AnimationSkeleton,LocalPose,apply_inverse_bind},reckoning_numeric::HostReckoningNumeric,
             reckoning_sin_cos::HostReckoningSinCosNumeric};
@@ -262,6 +263,9 @@ impl EditSkaterPresentationAttributes {
         let global = skeleton.global_matrices(&LocalPose::from_andale(&pose))?;
         let mut matrices =
             apply_inverse_bind(&global, &palette.skinning().hierarchy_inverse_bind_pose)?;
+        if grip_view {
+            turn_board(hierarchy, palette, &mut matrices);
+        }
         let root = move_root::multiply(
             move_root::multiply(body.local_to_world()?, matrices[trajectory]),
             saved_hips,
@@ -270,6 +274,60 @@ impl EditSkaterPresentationAttributes {
         palette.update_bone_transforms(&matrices)?;
         palette.pack_for_upload(root)?;
         Ok(root)
+    }
+}
+
+/// PC port: Edit Griptape's view of the board. Every bone from `skateboard_root` down takes half
+/// a turn about the board's long axis (z in its meshes' bind space) through the middle of the
+/// deck, trucks and wheels as they are drawn, so the board rests where it did with its top face
+/// out. The bones' matrices take a vertex as the character programs skin it (`skin_world`): at
+/// twice its stored position, 0.8 higher.
+fn turn_board(
+    hierarchy: &skate2_formats::andale::AndaleHierarchy,
+    palette: &crate::character::palette::CharacterPalette,
+    matrices: &mut [crate::animation::AnimationMatrix],
+) {
+    use skate2_formats::cac_parts::SLOT_NAMES;
+    /// What `skin_world` adds to twice a stored position's height.
+    const SKINNED_HEIGHT: f32 = 0.8;
+    let Some(root) = hierarchy.bone_names.iter().position(|bone| bone.eq_ignore_ascii_case("skateboard_root")) else { return };
+    let scene = palette.scene();
+    let (mut least, mut greatest) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+    for part in &palette.skinning().parts {
+        let component = &scene.components[part.component_index];
+        if !SLOT_NAMES[11..=13].iter().any(|name| component.name.eq_ignore_ascii_case(name)) {
+            continue;
+        }
+        let lod = &component.models[part.model_index].lods[part.lod_index];
+        let drawn = lod.arena.instances.iter().find_map(|instance| instance.render_model).and_then(|model| lod.arena.models.get(model));
+        for mesh in drawn.into_iter().flat_map(|model| &model.meshes).filter_map(|mesh| lod.arena.meshes.get(mesh.mesh_index)) {
+            for position in &mesh.geometry.positions {
+                for lane in 0..2 {
+                    least[lane] = least[lane].min(position[lane]);
+                    greatest[lane] = greatest[lane].max(position[lane]);
+                }
+            }
+        }
+    }
+    if least[0] > greatest[0] {
+        return;
+    }
+    // The middle as skinned is the stored least plus greatest (twice their mean), 0.8 higher in
+    // y. A skinned (x, y, z) goes to (twice the middle's x - x, twice its y - y, z); the turn's
+    // columns in turn, as `multiply_matrices` reads them.
+    let middle = [least[0] + greatest[0], least[1] + greatest[1] + SKINNED_HEIGHT];
+    let turn = [-1., 0., 0., 0., 0., -1., 0., 0., 0., 0., 1., 0., 2. * middle[0], 2. * middle[1], 0., 1.];
+    for bone in 0..matrices.len().min(hierarchy.parents.len()) {
+        let mut ancestor = Some(bone);
+        for _ in 0..hierarchy.parents.len() {
+            if ancestor.is_none_or(|ancestor| ancestor == root) {
+                break;
+            }
+            ancestor = ancestor.and_then(|ancestor| usize::try_from(hierarchy.parents[ancestor]).ok()).filter(|ancestor| *ancestor < hierarchy.parents.len());
+        }
+        if ancestor == Some(root) {
+            matrices[bone] = crate::animation::multiply_matrices(matrices[bone], turn);
+        }
     }
 }
 
@@ -353,6 +411,8 @@ pub struct EditSkaterAnimation {
     active_gesture: Option<usize>,
     time: f32,
     previous: f32,
+    /// PC port: Edit Griptape's view, the board turned its top face out (`turn_board`).
+    board_grip_view: bool,
     #[cfg(feature="skate3-runtime")]
     skate3_preview:Option<(u32,crate::skate3_gesture_playback::Playback)>,
     #[cfg(feature="skate3-runtime")]
@@ -390,6 +450,7 @@ impl EditSkaterAnimation {
             active_gesture: None,
             time: 0.0,
             previous: 0.0,
+            board_grip_view: false,
             #[cfg(feature="skate3-runtime")]
             skate3_preview:None,
             #[cfg(feature="skate3-runtime")]
@@ -397,6 +458,11 @@ impl EditSkaterAnimation {
             #[cfg(feature="skate3-runtime")]
             skate3_preview_hands:None,
         })
+    }
+
+    /// PC port: whether the board shows its top face (Edit Griptape's menu).
+    pub fn set_board_grip_view(&mut self, on: bool) {
+        self.board_grip_view = on;
     }
 
     pub fn set_skate3_gesture_preview(&mut self,id:Option<u32>)->EditSkaterResult<()> {
@@ -471,6 +537,7 @@ impl EditSkaterAnimation {
             },
         };
         let previous_gesture = self.active_gesture;
+        let grip_view = self.board_grip_view;
         if body.gesture {
             let name = if self.male {
                 body.animation.clone()
@@ -687,10 +754,10 @@ impl EditSkaterAnimation {
                 for &(source,target) in &self.skate3_preview_map {pose[target]=body[source];}
             }
             if let Some(hands)=&self.skate3_preview_hands {hands.apply(runtime,&mut pose)?;}
-            attributes.publish_local_pose(&database.hierarchy,bind,pose,body,palette)?
-        }else{attributes.publish_pose(&database.hierarchy,bind,&delta,body,palette)?};
+            attributes.publish_local_pose(&database.hierarchy,bind,pose,body,palette,grip_view)?
+        }else{attributes.publish_pose(&database.hierarchy,bind,&delta,body,palette,grip_view)?};
         #[cfg(not(feature="skate3-runtime"))]
-        let root=attributes.publish_pose(&database.hierarchy,bind,&delta,body,palette)?;
+        let root=attributes.publish_pose(&database.hierarchy,bind,&delta,body,palette,grip_view)?;
         self.previous = self.time;
         Ok(root)
     }

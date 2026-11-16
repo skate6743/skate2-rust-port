@@ -611,10 +611,12 @@ fn big_black_timer_refresh(world:&mut World){
 }
 
 /// The countdown timer's time rounded up to whole seconds (`cChallengeTimerManager::GetTime`).
+/// The challenge's own time, online too: the count runs to the tick that lets the skater go,
+/// which this console reaches when it runs that tick, however far its own play is ahead.
 fn countdown_seconds(world: &mut World) -> i32 {
     let id = countdown_data(world).map_or(0, |d| d.timer_id);
     #[expect(clippy::cast_possible_truncation, reason = "the native (int) conversion")]
-    let seconds = world.timers.display_time(id).ceil() as i32;
+    let seconds = world.timers.time(id).ceil() as i32;
     seconds
 }
 

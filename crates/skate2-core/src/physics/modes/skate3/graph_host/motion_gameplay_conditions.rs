@@ -57,9 +57,10 @@ pub struct GameplayConditions {
     pub wheel_contact: bool,
     /// Collision3472 (trucks) OR3475 (deck), excluding wheels.
     pub trucks_or_deck_contact: bool,
-    /// StateGraph's moving-object state publication. TU3 camera and motion
-    /// consumers use state 502 for the moving-object riding branch.
-    pub moving_object: bool,
+    /// OffBoard +256, +260 and +264: the speed of what the walking skater stands on and its
+    /// acceleration along the skater's X and Z. IsStandingOnMovingObject 82BA5B80 and
+    /// UpdateStandingOnCar 82BBB660 (the OnCar stand) read them.
+    pub support_motion: [f32; 3],
     pub tricks_blocked_on_stairs: bool,
 }
 

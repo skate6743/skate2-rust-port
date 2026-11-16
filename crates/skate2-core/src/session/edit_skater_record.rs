@@ -20,6 +20,10 @@ pub(crate) const BOTTOM_COLOUR: usize = 12;
 /// outfit's colours hold neither.
 pub(crate) const TOP_FILTER: usize = 13;
 pub(crate) const BOTTOM_FILTER: usize = 14;
+/// PC port: Edit Griptape's colour (`edit_skater_colour_filter.rs`): a customization colour bound,
+/// as a colour filter is, to the deck it was picked for, which the deck's program lays over its
+/// top face alone (`crate::character::grip_surface`).
+pub(crate) const GRIP_FILTER: usize = crate::character::grip_surface::COLOUR_KEY as usize;
 pub(crate) const MORPH_CLASS: u64 = 0x7f47_ca62_f410_0f41;
 pub(crate) const COLOUR_ZONE_CLASS: u64 = 0xae1f_950c_a0d1_adf2;
 pub(crate) const COLOUR_CLASS: u64 = 0x6d93_4d0e_38c9_5e19;
@@ -79,6 +83,26 @@ fn group(p: &CacPart) -> u16 {
     } else {
         p.attributes[WEAR_GROUP]
     }
+}
+
+/// PC port (`crate::skate3::tattoos`): a slot's parts of a gender, one for each model, those of
+/// `material` (the same skin) first.
+pub(crate) fn limb_models(db: &CacPartDb, slot: u8, is_male: bool, material: u64) -> Vec<CacPartId> {
+    let gender = index(db, if is_male { "male" } else { "female" });
+    let mut parts: Vec<&CacPart> = db.parts_in_slot(slot).filter(|p| p.attributes[GENDER] == gender).collect();
+    parts.sort_by_key(|p| p.material_id != material);
+    let mut models = Vec::new();
+    parts
+        .into_iter()
+        .filter(|p| {
+            let first = !models.contains(&p.model_id);
+            if first {
+                models.push(p.model_id);
+            }
+            first
+        })
+        .map(id)
+        .collect()
 }
 
 /// GetDefaultPartID82b68f78: first matching gender/default, then first
@@ -916,19 +940,21 @@ pub(crate) fn log_limbs(db: &CacPartDb) {
     }
 }
 
-/// The part slot whose garment colour filter `key` is for.
+/// The part slot whose garment colour filter, or deck griptape colour, `key` is for.
 pub(crate) fn filter_part_slot(key: usize) -> Option<usize> {
     match key {
         TOP_FILTER => Some(23),
         BOTTOM_FILTER => Some(15),
+        GRIP_FILTER => Some(11),
         _ => None,
     }
 }
-/// The colour filter of a part slot's garments.
+/// The colour filter of a part slot's garments, or the griptape colour of its decks.
 pub(crate) fn part_filter(slot: u8) -> Option<usize> {
     match slot {
         23 => Some(TOP_FILTER),
         15 => Some(BOTTOM_FILTER),
+        11 => Some(GRIP_FILTER),
         _ => None,
     }
 }
@@ -941,7 +967,7 @@ pub(crate) fn filter(custom: &CharacterCustomizations, key: usize) -> Option<&Co
 pub(crate) fn set_filter(custom: &mut CharacterCustomizations, key: usize, base: Option<[u32; 3]>, target: CacPartId) {
     custom.colours.retain(|colour| usize::try_from(colour.key).ok() != Some(key));
     if let Some(base) = base {
-        custom.colour_capacity = custom.colour_capacity.max(BOTTOM_FILTER as u32 + 1);
+        custom.colour_capacity = custom.colour_capacity.max(BOTTOM_FILTER.max(key) as u32 + 1);
         custom.colours.push(Colour {
             key: key as i32,
             base_rgb_bits: base,
@@ -949,6 +975,22 @@ pub(crate) fn set_filter(custom: &mut CharacterCustomizations, key: usize, base:
             model_id: target.model,
             material_id: target.material,
         });
+    }
+}
+/// Binds colour filter `key` to `to` when it is bound to `from`, the part `to` is worn in place
+/// of as the same garment or deck; true when it was.
+pub(crate) fn rebind_filter(custom: &mut CharacterCustomizations, key: usize, from: CacPartId, to: CacPartId) -> bool {
+    let bound = custom
+        .colours
+        .iter_mut()
+        .find(|colour| usize::try_from(colour.key).ok() == Some(key) && CacPartId { model: colour.model_id, material: colour.material_id } == from);
+    match bound {
+        Some(colour) => {
+            colour.model_id = to.model;
+            colour.material_id = to.material;
+            true
+        }
+        None => false,
     }
 }
 /// Takes off each colour filter bound to another part than the one its slot wears; true when one
@@ -1084,5 +1126,19 @@ mod tests {
         assert!(filter(&custom, BOTTOM_FILTER).is_none());
         assert_eq!((part_filter(23), part_filter(15), part_filter(5)), (Some(TOP_FILTER), Some(BOTTOM_FILTER), None));
         assert_eq!((filter_part_slot(TOP_FILTER), filter_part_slot(BOTTOM_FILTER), filter_part_slot(9)), (Some(23), Some(15), None));
+        // The griptape's colour is the deck's, kept as a garment's filter is and moved with the
+        // deck's own colour.
+        assert_eq!((GRIP_FILTER, part_filter(11), filter_part_slot(GRIP_FILTER)), (15, Some(GRIP_FILTER), Some(11)));
+        let deck = CacPartId { model: 20, material: 21 };
+        let painted = CacPartId { model: 20, material: 22 };
+        set_filter(&mut custom, GRIP_FILTER, Some([9; 3]), deck);
+        assert_eq!(custom.colour_capacity as usize, GRIP_FILTER + 1);
+        assert!(!rebind_filter(&mut custom, GRIP_FILTER, painted, deck), "bound to the deck already");
+        assert!(rebind_filter(&mut custom, GRIP_FILTER, deck, painted));
+        installed[11] = painted;
+        assert!(!retain_worn_filters(&mut custom, &installed), "the deck is worn in its new colour");
+        installed[11] = deck;
+        assert!(retain_worn_filters(&mut custom, &installed), "another deck is worn");
+        assert!(filter(&custom, GRIP_FILTER).is_none());
     }
 }

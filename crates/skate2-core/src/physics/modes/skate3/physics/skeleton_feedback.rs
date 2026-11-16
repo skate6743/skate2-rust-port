@@ -75,7 +75,17 @@ pub(super) fn publish(
     collision.force_response_200 = skater.collision_feedback.wipeout_times[1];
     collision.surface_height_208 = skater.collision_feedback.material_12_height;
     collision.flag_214 = u8::from(skater.collision_feedback.flags.material_6);
+    // SkeletonCollision Fill 82BD6154..6160: +215 is the partial ragdoll (drive weight under 1,
+    // SkeletonCollision+4071) and +216 the body impaled on a fence (+4076). Update1
+    // 82DB4290..42B0 makes them Processed2484 bits 26 and 22: Pushing times the first (82D44AB8)
+    // and lets go after 0.4 s, the wipeout's recovery teleports on the second (82D3E9A8).
+    collision.flag_215 = u8::from(skater.collision_feedback.flags.recovering);
+    collision.flag_216 = u8::from(skater.collision_feedback.flags.impaled);
     collision.flag_217 = u8::from(skater.collision_feedback.flags.material_12);
+    // Skeleton::FillPhysOut 82BE226C..2278: Collision+3478 is SkeletonCollision+4070, this
+    // tick's compliant contact. Update1 82DB4C10 turns it into the next tick's Processed2468
+    // bit 15, which takes KnownAir to PhysicsAir (82D8B70C) and bails a Christ Air.
+    collision.flag_3478 = u8::from(skater.collision_feedback.flags.compliant);
     skater.skeleton_collision.finish_contact_frame();
     skater.pose_errors.targets = skater.skeleton_input.extra_target_positions;
     skater.pose_errors.update(
@@ -163,8 +173,12 @@ fn collect(physics: &Skate3PhysicsState, skater: &Skate3ControllerState) -> (Vec
             let CollisionBody::Attached(index) = other else { continue };
             let Some((_, solid)) = physics.world_proxies.solids.iter().find(|(i, _)| *i == index) else { continue };
             let sign = if side_a { -1.0 } else { 1.0 };
-            host_contacts.push(HostContact { id: solid.id, board, normal: std::array::from_fn(|i| f32::from_bits(spy[i]) * sign),
-                point: std::array::from_fn(|i| f32::from_bits(spy[12 + i])) });
+            let contact = HostContact { id: solid.id, board, normal: std::array::from_fn(|i| f32::from_bits(spy[i]) * sign),
+                point: std::array::from_fn(|i| f32::from_bits(spy[12 + i])) };
+            // PC port: the rows of a solve that left no usable numbers stay out of the host's list.
+            if contact.normal.iter().chain(&contact.point).all(|value| value.is_finite()) {
+                host_contacts.push(contact);
+            }
         }
         //82768418 rejects the same logical Body and equal nonnull Body+32
         //owners. Board82C067F4 and Skeleton82BE4620 both store this actor.

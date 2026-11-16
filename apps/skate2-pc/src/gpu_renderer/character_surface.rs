@@ -44,7 +44,11 @@ pub(super) const SHADER:&str=r"
 }
 fn surface_colour(input:Output,hair:bool,hair_ropa:bool)->vec4<f32>{
     let sample=textureSample(diffuse,normal_sampler,input.uv.xy);
-    let colour=sample*sample;
+    var colour=sample*sample;
+    // PC port: Edit Griptape's colour over a deck's top face, as `cas_colour` lays it.
+    if stamp.custom[2].w>0. && all(input.uv.xy>=stamp.custom[3].xy) && all(input.uv.xy<=stamp.custom[3].zw) {
+        colour=vec4<f32>(colour.xyz*stamp.custom[2].xyz,colour.a);
+    }
     let packed=textureSample(normal_map,normal_sampler,input.uv.xy);
     let xy=packed.ag*2.-vec2<f32>(1.);
     let z=sqrt(abs(1.-dot(xy,xy)));

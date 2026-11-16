@@ -132,12 +132,16 @@ pub(crate) const SKATE_CHECK_PLAYERS: u64 = 0x330B_4986_37FF_1BE1;
 pub(crate) const SKATE_PLAYER_DISCONNECTED: u64 = 0xB8C3_74BC_3202_9AF5;
 pub(crate) const ONE_UP_CHECK_PLAYERS: u64 = 0x5D77_72E7_46ED_13EC;
 pub(crate) const ONE_UP_PLAYER_DISCONNECTED: u64 = 0x784E_E510_5BA6_A161;
+/// Skate 3's own 1-Up graph's `end_run` `timerexpired` (its `D6052B5C5FF8304A`), under the key a
+/// linked Skate 3 data folder's graph joins with (`skate3/1up/d6052b5c5ff8304a`).
+pub(crate) const SKATE3_ONE_UP_END_RUN_TIMER: u64 = 0x8279_8540_E62D_81B7;
 
 /// PC port: the handlers every game runs through `h_fix_<key>` of [`FIXES_SOURCE`], each with
-/// the other shipped handler its wrapper calls.
-pub(crate) const FIXED_HANDLERS: [(u64, u64); 2] = [
+/// the other shipped handler its wrapper calls (itself where it calls no other).
+pub(crate) const FIXED_HANDLERS: [(u64, u64); 3] = [
     (SKATE_CHECK_PLAYERS, SKATE_PLAYER_DISCONNECTED),
     (ONE_UP_CHECK_PLAYERS, ONE_UP_PLAYER_DISCONNECTED),
+    (SKATE3_ONE_UP_END_RUN_TIMER, SKATE3_ONE_UP_END_RUN_TIMER),
 ];
 
 /// PC port: corrections that wrap a shipped handler.
@@ -153,6 +157,13 @@ pub(crate) const FIXED_HANDLERS: [(u64, u64); 2] = [
 /// `cMsgPlayerDisconnected` came before `setup_skate` built the list, when the `global`
 /// handler had no list to mark, is marked now through that handler, so the rounds leave them
 /// out as after a later leave.
+///
+/// PC port (user request): Skate 3's 1-Up shows a failed run's letter for three seconds
+/// (`ShowLettersTimerID`), then, while the round still has two players or more, holds another
+/// three under a central message: "Failed to 1-Up. You're out for this round!" to the player
+/// (`CentralMessageHALIDDidNotBeatHighScore`), "... is out for the Round." to the others. The
+/// letter says as much, so that message is left out and the next run starts after the second
+/// the handler waits when it has nothing to show. An elimination's message and wait stay.
 pub(crate) const FIXES_SOURCE: &str = r#"
 local function CheckPlayers(handler, playerDisconnected, self, message, vars)
     local skaters = vars.SkatersList
@@ -182,6 +193,36 @@ end
 
 function h_fix_5D7772E746ED13EC(self, message, vars)
     CheckPlayers(h_5D7772E746ED13EC, h_784EE5105BA6A161, self, message, vars)
+end
+
+function h_fix_82798540E62D81B7(self, message, vars)
+    if message.TimerID ~= vars.ShowLettersTimerID then
+        h_82798540E62D81B7(self, message, vars)
+        return
+    end
+    local showCentralMessage = HUD2.ShowCentralMessage
+    local addTimer = ChallengeTimer.AddHUDCountdownTimer
+    local failed = self.CentralMessageHALIDDidNotBeatHighScore
+    local skipped = false
+    HUD2.ShowCentralMessage = function(halID, colour, name)
+        if halID == failed or halID == "ID_CHALLENGE_CENTRAL_MESSAGE_1UP_OTHER_OUTFORROUND" then
+            skipped = true
+        else
+            showCentralMessage(halID, colour, name)
+        end
+    end
+    ChallengeTimer.AddHUDCountdownTimer = function(seconds)
+        if skipped then
+            seconds = 1
+        end
+        return addTimer(seconds)
+    end
+    local ok, problem = pcall(h_82798540E62D81B7, self, message, vars)
+    HUD2.ShowCentralMessage = showCentralMessage
+    ChallengeTimer.AddHUDCountdownTimer = addTimer
+    if not ok then
+        error(problem)
+    end
 end
 "#;
 
@@ -391,6 +432,77 @@ mod tests {
         assert_eq!(skate3_countdown(true, true, false), (None, false, true), "and so does a locked-out countdown");
         assert_eq!(skate3_countdown(false, false, true), (Some("challenge_finished".into()), false, false), "a battle's last run never faded");
         assert_eq!(skate3_countdown(false, false, false), (None, true, false));
+    }
+
+    /// Skate 3's 1-Up `end_run` timer over a stand-in for its handler (the letter timer's expiry
+    /// shows the elimination, or with the round still on the failed run's message, and waits
+    /// three seconds, else one; the end-of-run timer starts the next run): what the wrapper lets
+    /// show, the seconds it waits and the state changed to.
+    fn skate3_one_up_end_run(timer: i32, eliminated: bool, round_over: bool, local: bool) -> (Option<String>, Option<f32>, Option<String>) {
+        use super::super::lua::{Lua, Value};
+        let mut lua = Lua::<()>::new();
+        let stubs = format!(
+            "HUD2 = {{ ShowCentralMessage = function(halID, colour, name) shown = halID end }}
+             ChallengeTimer = {{ AddHUDCountdownTimer = function(seconds) waited = seconds return 50 end }}
+             function ChangeState(state) changed = state end
+             function h_{SKATE3_ONE_UP_END_RUN_TIMER:016X}(self, message, vars)
+                 if message.TimerID == vars.ShowLettersTimerID then
+                     local delayTime = 1
+                     if {eliminated} then
+                         HUD2.ShowCentralMessage('ID_CHALLENGE_CENTRAL_MESSAGE_1UP_ELIMINATED', 0, 'name')
+                         delayTime = 3
+                     elseif not {round_over} then
+                         if {local} then
+                             HUD2.ShowCentralMessage(self.CentralMessageHALIDDidNotBeatHighScore)
+                         else
+                             HUD2.ShowCentralMessage('ID_CHALLENGE_CENTRAL_MESSAGE_1UP_OTHER_OUTFORROUND', 2, 'name')
+                         end
+                         delayTime = 3
+                     end
+                     vars.EndRunTimerID = ChallengeTimer.AddHUDCountdownTimer(delayTime)
+                 elseif message.TimerID == vars.EndRunTimerID then
+                     ChangeState('setup_run')
+                 end
+             end
+             data = {{ CentralMessageHALIDDidNotBeatHighScore = 'ID_CHALLENGE_CENTRAL_MESSAGE_1UP_SCOREDLOW' }}
+             vars = {{ ShowLettersTimerID = 7, EndRunTimerID = 9 }}
+             message = {{ TimerID = {timer} }}"
+        );
+        let setup = lua.load_source(stubs.as_bytes(), "stubs").expect("stubs compile");
+        lua.call(&mut (), &setup, &[]).expect("stubs run");
+        let main = lua.load_source(FIXES_SOURCE.as_bytes(), "script_fixes").expect("source compiles");
+        lua.call(&mut (), &main, &[]).expect("wrappers define themselves");
+        let wrapper = lua.get_global(&format!("h_fix_{SKATE3_ONE_UP_END_RUN_TIMER:016X}"));
+        let args = [lua.get_global("data"), lua.get_global("message"), lua.get_global("vars")];
+        lua.call(&mut (), &wrapper, &args).expect("wrapper runs");
+        let text = |lua: &Lua<()>, name: &str| match lua.get_global(name) {
+            Value::Nil => None,
+            value => Some(lua.display(&value)),
+        };
+        let waited = if let Value::Number(seconds) = lua.get_global("waited") { Some(seconds) } else { None };
+        let result = (text(&lua, "shown"), waited, text(&lua, "changed"));
+        // The natives are the game's own again.
+        let check = lua
+            .load_source(b"shown = nil HUD2.ShowCentralMessage('ID_CHALLENGE_CENTRAL_MESSAGE_1UP_OTHER_OUTFORROUND') ChallengeTimer.AddHUDCountdownTimer(3)", "check")
+            .expect("check compiles");
+        lua.call(&mut (), &check, &[]).expect("check runs");
+        assert_eq!(text(&lua, "shown").as_deref(), Some("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_OTHER_OUTFORROUND"));
+        assert!(matches!(lua.get_global("waited"), Value::Number(seconds) if seconds == 3.0));
+        result
+    }
+
+    #[test]
+    fn a_failed_skate3_1up_run_goes_on_after_its_letter() {
+        assert_eq!(SKATE3_ONE_UP_END_RUN_TIMER, super::super::keys::hash64("skate3/1up/d6052b5c5ff8304a"));
+        assert_eq!(skate3_one_up_end_run(7, false, false, true), (None, Some(1.0), None), "no message to the player who failed, and a second's wait");
+        assert_eq!(skate3_one_up_end_run(7, false, false, false), (None, Some(1.0), None), "nor to the others");
+        assert_eq!(skate3_one_up_end_run(7, false, true, true), (None, Some(1.0), None), "a round that is over had none");
+        assert_eq!(
+            skate3_one_up_end_run(7, true, false, true),
+            (Some("ID_CHALLENGE_CENTRAL_MESSAGE_1UP_ELIMINATED".into()), Some(3.0), None),
+            "an elimination keeps its message and its three seconds"
+        );
+        assert_eq!(skate3_one_up_end_run(9, false, false, true), (None, None, Some("setup_run".into())), "the end-of-run timer is the handler's own");
     }
 
     /// Skate 3's split trigger rule over a stand-in for Skate 2's trigger entry (which records

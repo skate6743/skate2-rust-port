@@ -407,6 +407,13 @@ impl RidingOutputs {
         Ok(())
     }
 
+    ///Skateboard::UpdatePostPhysics 82C0225C..230C: a board it resets skips 82C07D20, and
+    ///ProcessOutput 82C02A80 publishes the rates the reset left.
+    pub fn finish_post_physics_reset(&mut self, board: &BoardRuntime, processed_flags_2468: u32) {
+        self.motion =
+            BoardMotionOutput::from_board(board, self.reckoning.ground_normal, processed_flags_2468);
+    }
+
     pub fn graph_speeds(&self) -> SpeedInputs {
         SpeedInputs {
             speed: self.motion.ground_speed,

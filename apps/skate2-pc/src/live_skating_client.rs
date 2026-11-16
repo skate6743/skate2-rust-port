@@ -2311,11 +2311,12 @@ impl LiveSkatingClient {
                         }).unwrap_or(0);
                     }
                 }
-                // SKATE2_DIAGNOSTIC_OPTIONS_PAGE=physics|weather|display|display_left: after the presses
-                // that open Options, the rows by name down to Physics Settings, Gameplay Settings'
-                // Weather Settings or Display Settings' Brightness; there one right on the first row, or
-                // the Brightness knob a step right (left) each press to the end of its range, then back
-                // out of Options, and the page's rows and values logged.
+                // SKATE2_DIAGNOSTIC_OPTIONS_PAGE=physics|weather|display|display_left|control: after the
+                // presses that open Options, the rows by name down to Physics Settings, Gameplay Settings'
+                // Weather Settings, Display Settings' Brightness or Control Settings' Trigger Threshold;
+                // there one right on the first row (the Trigger Threshold's knob), or the Brightness knob
+                // a step right (left) each press to the end of its range, then back out of Options, and
+                // the page's rows and values logged.
                 if matches!(demo,ControlsDemo::MainMenu) && tick > 600 && tick % 30 == 0
                     && let Ok(target) = std::env::var("SKATE2_DIAGNOSTIC_OPTIONS_PAGE")
                 {
@@ -2324,7 +2325,16 @@ impl LiveSkatingClient {
                     let row = options.rows().get(options.selected).copied();
                     let physics = target == "physics";
                     let display = target.starts_with("display");
-                    let wanted = if physics { Row::PhysicsSettings } else if display { Row::DisplaySettings } else { Row::VideoSettings };
+                    let control = target == "control";
+                    let wanted = if physics {
+                        Row::PhysicsSettings
+                    } else if display {
+                        Row::DisplaySettings
+                    } else if control {
+                        Row::ControlSettings
+                    } else {
+                        Row::VideoSettings
+                    };
                     let left = target == "display_left";
                     let end = if left { *skate2_core::ui::options::BRIGHTNESSES.start() } else { *skate2_core::ui::options::BRIGHTNESSES.end() };
                     sample.buttons = match options.page {
@@ -2337,6 +2347,17 @@ impl LiveSkatingClient {
                                 eprintln!("options page Display: rows {:?}, selected {}, brightness {}", options.rows(), options.selected, options.values.brightness);
                             }
                             if options.values.brightness == end { 0x2000 } else if left { 0x0004 } else { 0x0008 }
+                        }
+                        Page::Control if row != Some(Row::TriggerThreshold) => 0x0002,
+                        Page::Control if !self.options_page_adjusted => {
+                            self.options_page_adjusted = true;
+                            0x0008
+                        }
+                        Page::Control => {
+                            if tick % 300 == 0 {
+                                eprintln!("options page Control: rows {:?}, selected {}, sticks {:?}", options.rows(), options.selected, options.sticks);
+                            }
+                            0
                         }
                         Page::Video if !physics && row == Some(Row::WeatherSettings) => 0x1000,
                         Page::Video if !physics => 0x0002,
@@ -4130,7 +4151,7 @@ impl LiveSkatingClient {
                 eprintln!("Eye-color diagnostic completed: {:?}", editor_view.rows.first());
             }
             // CAS camera constructor82f54320: normal near plane .05.
-            view.update_editor(renderer,scene,now,character,male,body,camera,gesture,0.05)?;
+            view.update_editor(renderer,scene,now,character,male,body,camera,gesture,editor_view.grip_view,0.05)?;
             let (intro,outro)=view.update_editor_ui(renderer,scene,now,&editor_view)?;
             self.session.acknowledge_frontend_scene_ready();
             self.session.acknowledge_edit_skater_movie(intro,outro);

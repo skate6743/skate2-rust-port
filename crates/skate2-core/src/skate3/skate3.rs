@@ -49,6 +49,14 @@ pub mod dlc;
 #[path = "skate3_head_fit.rs"]
 pub mod head_fit;
 
+/// The geometry and zone maps of [`tattoos`].
+#[path = "skate3_tattoo_transfer.rs"]
+pub mod tattoo_transfer;
+
+/// Skate 2's tattoos on Skate 3's arms and legs.
+#[path = "skate3_tattoos.rs"]
+pub mod tattoos;
+
 /// One of Port Carverton's districts the link adds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DistrictSpec {

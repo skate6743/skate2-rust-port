@@ -64,7 +64,7 @@ pub(crate) struct EditSkaterFrontend {
     /// PC port: the open colour picker (`edit_skater_colour_picker.rs`).
     colour_picker: Option<ColourPicker>,
     /// PC port: Apply Color (Y) opened the wear styles menu, whose colour row is then the colour
-    /// filter's (`edit_skater_colour_filter.rs`).
+    /// filter's (`edit_skater_colour_filter.rs`); on a deck, Edit Griptape opened it.
     colour_filter: bool,
 }
 const MAIN: u64 = 0xad45_4a0e_cd0e_2edf;
@@ -295,7 +295,7 @@ mod parity_tests {
         assert_eq!(frontend.record.installed_parts[23], id(tee, &frontend), "Apply Color wears the shirt");
         let option = EditSkaterOption::WearStylesFilter;
         let slot = frontend.colour_slot(option).unwrap();
-        let filters = frontend.filter_colours().unwrap();
+        let filters = frontend.filter_colours(slot).unwrap();
         let white = filters.iter().position(|(_, colour)| *colour == [1.0; 3]).expect("a white");
         assert_eq!(frontend.colour_position(slot, &[]).unwrap(), white, "no filter stands on white");
         assert!(frontend.colour_pickable(option).unwrap());
@@ -544,6 +544,13 @@ impl EditSkaterFrontend {
     pub(crate) fn camera_key(&self) -> u64 {
         self.camera
     }
+    /// PC port: Edit Griptape's menu is up, where the deck shows its top face
+    /// (`EditSkaterAnimation::set_board_grip_view`).
+    pub(crate) fn board_grip_view(&self) -> bool {
+        self.colour_filter
+            && self.controller.menu() == EditSkaterMenu::WearStyles
+            && self.current_part.is_some_and(|part| self.db.parts[part].slot == SKATE_DECK)
+    }
     pub(crate) fn skate3_gesture_preview(&self)->Option<u32> {
         if self.gesture_settings.selected!=GestureSet::Skate3 {return None;}
         self.controller.selected_option().and_then(gesture_slot)
@@ -596,6 +603,13 @@ impl EditSkaterFrontend {
         let index = self.current_part.ok_or("CAC wear styles part absent")?;
         let part = &self.db.parts[index];
         let mut options = Vec::new();
+        if self.colour_filter && part.slot == SKATE_DECK {
+            // PC port: Edit Griptape's menu holds the griptape's colour alone, the deck turned
+            // its top face to the camera (`board_grip_view`).
+            self.wear_styles = Vec::new();
+            self.controller.set_options(vec![O::WearStylesFilter]);
+            return Ok(());
+        }
         if flag(part.colourizable) && category_has_colour(self.controller.category) {
             options.push(O::WearStylesColour);
         } else if self.colour_filter && record_ops::part_filter(part.slot).is_some() {
@@ -955,14 +969,16 @@ impl EditSkaterFrontend {
             }
             // PC port: Apply Color on a row of a shirt or pants list. A part with a colour of its
             // own opens its colour row, as A does; any other opens the colour filter's. The
-            // remove row has neither.
+            // remove row has neither. On a row of the deck list it is Edit Griptape, which opens
+            // the griptape's colour on any deck (`wear_styles_menu`).
             A::ApplyColour(row) => {
                 let Some(i) = *self.parts.get(row).ok_or("CAC selected row out of range")? else {
                     return Ok(());
                 };
                 let part = &self.db.parts[i];
-                self.colour_filter = !(flag(part.colourizable) && category_has_colour(self.controller.category))
-                    && record_ops::part_filter(part.slot).is_some();
+                self.colour_filter = part.slot == SKATE_DECK
+                    || (!(flag(part.colourizable) && category_has_colour(self.controller.category))
+                        && record_ops::part_filter(part.slot).is_some());
                 self.select_part(row, e)?;
             }
             A::AdjustOption { option, forward } => {
@@ -1654,7 +1670,7 @@ impl EditSkaterFrontend {
             .get(next)
             .ok_or("CAC colour list empty")?;
         if record_ops::filter_part_slot(slot).is_some() {
-            let (_, colour) = *self.filter_colours()?.get(next).ok_or("CAC colour list empty")?;
+            let (_, colour) = *self.filter_colours(slot)?.get(next).ok_or("CAC colour list empty")?;
             return self.set_filter_colour(slot, colour);
         }
         let colour = self.vault.instance(record_ops::COLOUR_CLASS, key);
@@ -1726,7 +1742,12 @@ impl EditSkaterFrontend {
                         material: p.material_id,
                     };
                 } else {
+                    // PC port: the deck's griptape colour stays with it as its own colour, a
+                    // part each, changes.
+                    let deck = usize::from(SKATE_DECK);
+                    let previous = self.record.installed_parts[deck];
                     record_ops::wear_part(&mut self.record, &self.db, p)?;
+                    record_ops::rebind_filter(&mut custom, record_ops::GRIP_FILTER, previous, self.record.installed_parts[deck]);
                 }
             }
         }
@@ -1962,13 +1983,13 @@ impl EditSkaterFrontend {
         } else {
             "#"
         };
-        // PC port: Apply Color on a part of a shirt or pants list.
+        // PC port: Apply Color on a part of a shirt or pants list, Edit Griptape on a deck.
         let help_y = if !picking
             && menu == EditSkaterMenu::PartThumbnails
             && self.controller.category.is_some_and(colour_filter_category)
             && self.parts.get(self.controller.selected()).is_some_and(Option::is_some)
         {
-            "#Apply Color"
+            if self.controller.category.and_then(clothing_slot) == Some(SKATE_DECK) { "#Edit Griptape" } else { "#Apply Color" }
         } else {
             "#"
         };
@@ -1979,6 +2000,8 @@ impl EditSkaterFrontend {
                 .category
                 .map(|o| o.definition().title)
                 .unwrap_or(menu.title())
+        } else if self.board_grip_view() {
+            "#Edit Griptape"
         } else if menu == EditSkaterMenu::WearStyles
             // GetTitleText 0x82649408: the wear styles of a deck.
             && self.current_part.is_some_and(|part| self.db.parts[part].slot == SKATE_DECK)
@@ -2009,6 +2032,7 @@ impl EditSkaterFrontend {
             .into(),
             help_x: if picking { "ID_CAC_MORPHING_UNDO" } else { "#" }.into(),
             help_y: help_y.into(),
+            grip_view: self.board_grip_view(),
             colour_picker: self.colour_picker_view(),
             cash_popup: self.shop.not_enough_cash,
             receipt: self.receipt_view()?,

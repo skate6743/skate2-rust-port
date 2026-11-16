@@ -268,10 +268,14 @@ impl MotionCondition {
             Self::ArmChannelPlaying => ["GestureBoth", "GestureLeft", "GestureRight", "Shove"]
                 .iter()
                 .any(|channel| host.animation.channels.has(channel)),
-            Self::IsStandingOnMovingObject => host
-                .gameplay_conditions
-                .ok_or("IsStandingOnMovingObject requires the physical state publication")?
-                .moving_object,
+            Self::IsStandingOnMovingObject => {
+                //82BA5B80: |OffBoard+264| + |OffBoard+260| + OffBoard+256 over 0.01.
+                let [speed, x, z] = host
+                    .gameplay_conditions
+                    .ok_or("IsStandingOnMovingObject requires the physical state publication")?
+                    .support_motion;
+                (z.abs() + x.abs()) + speed > f32::from_bits(0x3c23_d70a)
+            }
             Self::AngleAdjustByAnimationEndLessThan { max_delta_angle } => {
                 super::motion_moving_object::angle_adjust_by_animation_end_less_than(
                     &host.moving_objects.coefficients,

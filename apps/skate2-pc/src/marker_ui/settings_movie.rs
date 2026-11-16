@@ -3,7 +3,8 @@
 //! Its fingerprinted CreateOptions/SetSelection/UpdateItemValue scripts own
 //! placement and controls. Only the two PC setting definitions are new.
 //! PC port addition: the Stick Settings pages take Edit Skater's morph knob
-//! for the deadzones and draw both sticks live in boxes beside their rows.
+//! for the deadzones and draw both sticks live in boxes beside their rows;
+//! Control Settings' Trigger Threshold takes the same knob.
 use super::{
     assets::Assets,
     clips::{Child, Clip},
@@ -15,7 +16,7 @@ use super::{
 };
 use crate::gpu_renderer::RenderResult;
 use skate2_core::{
-    stick_settings::DEADZONES,
+    stick_settings::{DEADZONES, TRIGGER_THRESHOLDS},
     ui::{
         apt_timeline::{DisplayEntry, PlacementIdentity},
         options::{BRIGHTNESSES, FIELD_OF_VIEWS, FrameRateCap, Labelled, Page, Row, Snapshot},
@@ -225,9 +226,13 @@ impl SettingsMovie {
             .iter()
             .map(|&row| options_row(assets, &state, row))
             .collect::<RenderResult<Vec<_>>>()?;
-        // PC port: the Field of View and Brightness rows add X, which puts them back to the game's own.
+        // PC port: the Field of View, Brightness and Trigger Threshold rows add X, which puts them
+        // back to the game's own (the threshold to its default).
         let on_knob = |snapshot: &Snapshot| {
-            snapshot.rows().get(snapshot.selected).is_some_and(|row| matches!(row, Row::FieldOfView | Row::Brightness))
+            snapshot
+                .rows()
+                .get(snapshot.selected)
+                .is_some_and(|row| matches!(row, Row::FieldOfView | Row::Brightness | Row::TriggerThreshold))
         };
         let knob = on_knob(&state);
         let was_knob = previous.page == state.page && on_knob(previous);
@@ -407,14 +412,14 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
         Row::RainVolume => Some(i32::from(state.modes.rain_volume)),
         _ => None,
     };
-    if matches!(row, Row::FieldOfView | Row::Brightness) {
+    if matches!(row, Row::FieldOfView | Row::Brightness | Row::TriggerThreshold) {
         // Its percent after its title and its knob along the morph line, whose ends are the ends
         // of its range: the game's own a quarter (Field of View) or a third (Brightness) of the way
-        // along.
-        let (percent, range) = if row == Row::Brightness {
-            (state.values.brightness, BRIGHTNESSES)
-        } else {
-            (state.values.field_of_view, FIELD_OF_VIEWS)
+        // along, and the Trigger Threshold's none at its start.
+        let (percent, range) = match row {
+            Row::Brightness => (state.values.brightness, BRIGHTNESSES),
+            Row::TriggerThreshold => (state.sticks.trigger_threshold, TRIGGER_THRESHOLDS),
+            _ => (state.values.field_of_view, FIELD_OF_VIEWS),
         };
         let (low, high) = (i32::from(*range.start()), i32::from(*range.end()));
         let value = (i32::from(percent) - low) * 100 / (high - low);
@@ -845,15 +850,27 @@ mod tests {
                 }
             }
         }
-        // Another page takes the boxes away.
+        // Another page takes the boxes away. Control Settings ends with the Trigger Threshold's
+        // knob, its percent after its title.
         state.page = Page::Control;
         movie.update(&assets, state, None).unwrap();
         assert!(movie.root.named(&["mStickBoxL"]).is_err());
+        tick(&mut movie, &mut main, &assets, 30);
+        let last = state.rows().len() - 1;
+        assert_eq!(state.rows()[last], Row::TriggerThreshold);
+        for selected in [0, last] {
+            state.selected = selected;
+            movie.update(&assets, state, None).unwrap();
+            tick(&mut movie, &mut main, &assets, 30);
+            let knob = movie.root.named(&[&format!("mItem{last}")]).unwrap();
+            assert_eq!(knob.asset, 16);
+            assert_eq!(mapped(knob.named(&["mTitle", "TEXTLABEL"]).unwrap(), &assets), "Trigger Threshold 20%");
+        }
     }
 
     /// PC port: the Online Settings page's titles, Show Ghost Players in pregame lobby among them,
-    /// and Physics Settings' under Skate 3 physics, 3 Shuv Bounce among them, in glyphs their font
-    /// has and within their fields.
+    /// and Physics Settings' under Skate 3 physics, Pre-patch Shuvit Bounce among them, in glyphs
+    /// their font has and within their fields.
     #[test]
     #[ignore = "requires external SKATE2_GAME_ROOT"]
     fn online_settings_titles_fit_their_fields() {

@@ -52,6 +52,10 @@ pub struct OnlineChallenge {
     pub turn_player: Option<i32>,
     /// The players `AI.RepositionAI` teleported whose output has not yet finished the teleport.
     pub teleporting: [bool; 8],
+    /// PC port: a game that runs Skate 3's own state graph began the turn player's turn, its
+    /// countdown or its run at this tick (`HUD2.LeaderboardSetTurn`, `StartCountdown`,
+    /// `StartTimer`): the turn player's facts begin a new run at the next tick.
+    pub turn_restart: bool,
     /// The round tick the challenge runs, the same on every console.
     pub tick: u32,
 }

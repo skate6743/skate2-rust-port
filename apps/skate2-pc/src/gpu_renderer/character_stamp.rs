@@ -528,6 +528,27 @@ impl GpuRenderer {
         binding.exposure.supplied(inputs.attributes[2][2]);
         Ok(())
     }
+    /// PC port: a character surface's constants with its custom rows, which `character_surface`
+    /// reads a deck's griptape colour from (`update_character_stamp` leaves them zero).
+    pub(crate) fn update_character_surface_constants(
+        &self,
+        object: &GpuObject,
+        inputs: &Inputs,
+        custom: [[f32; 4]; 5],
+    ) -> RenderResult<()> {
+        let binding = object
+            .character
+            .as_ref()
+            .and_then(|c| c.stamp.as_ref())
+            .ok_or("character surface binding absent")?;
+        if binding.cas {
+            return Err("surface constants on a CAS character".into());
+        }
+        self.character_uploads
+            .write(&binding.constants, 0, &inputs.bytes_custom(custom));
+        binding.exposure.supplied(inputs.attributes[2][2]);
+        Ok(())
+    }
     pub(crate) fn update_character_cas_constants(
         &self,
         object: &GpuObject,

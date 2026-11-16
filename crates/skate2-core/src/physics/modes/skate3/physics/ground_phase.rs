@@ -35,6 +35,9 @@ pub(crate) struct GroundLifecycle {
     /// Skeleton16388 instead belongs solely to SkeletonOutput::correction.
     pub skeleton_elapsed_16505: bool,
     pub board_animated_290: u8,
+    /// Skateboard+0x121: UpdatePostPhysics 82C0217C sets it for a deck without a transform,
+    /// FillPhysOut 82C03600..3618 publishes it as State+69 and clears it.
+    pub board_wants_respawn_289: bool,
     /// Processed2724: Reset82BFA35C clears this. The original image contains
     /// no other direct scalar writer at that offset.
     pub manual_drag_2724: f32,
@@ -49,6 +52,7 @@ impl GroundLifecycle {
             skeleton_controller: SkeletonControllerState::new(),
             skeleton_elapsed_16505: false,
             board_animated_290: 0,
+            board_wants_respawn_289: false,
             manual_drag_2724: 0.0,
             edge: None,
             pending_wall_jump: None,

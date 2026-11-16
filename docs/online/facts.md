@@ -95,9 +95,15 @@ sealing adds 20 bytes a datagram (a Death Race: 8.1 KB/s in 53 datagrams/s).
 A challenge tick runs once it has the facts of the players *pacing* it (`Round::contributors`).
 In a turn-based challenge (S.K.A.T.E., Spot Battle, Hall of Meat, 1-Up), once the first turn has
 started, those are the turn player (the last player `AI.RepositionAI` moved with the camera; every
-turn-based script passes its shared turn player, `vars.ActivePlayerID`, `vars.LeaderID` or the
-follower) and any player `AI.RepositionAI` teleported whose output has not yet finished the
-teleport. Everywhere else every player still in the round paces it. Every other player stands
+turn-based Skate 2 script passes its shared turn player, `vars.ActivePlayerID`, `vars.LeaderID` or
+the follower) and any player `AI.RepositionAI` teleported whose output has not yet finished the
+teleport. Skate 3's own 1-Up graph (a linked Skate 3 data folder's 1-Ups) never moves the camera
+with `AI.RepositionAI` (`spawn_players` passes `false`, `setup_run` five arguments); its
+`countdown` entry names the turn's player with `HUD2.LeaderboardSetTurn(self.Name,
+vars.Competitor[vars.CurrentCompetitorIndex].ID)`, the same on every console, so for a game that
+runs Skate 3's graph that call sets the turn player (2026-11-16; until then no turn player was
+ever set and every player paced the whole game, the turn player's console waiting on every
+other's). Everywhere else every player still in the round paces it. Every other player stands
 still at the frame of the last tick it sent facts for, its events cleared (`facts::standing`), and
 sends no facts at all, only replay frames. Every console computes the set from the same challenge
 state after each tick, so they agree. Pins cannot decide it: the scripts pin and unpin
@@ -119,6 +125,27 @@ state at the same tick and reached the same results.
 A player who starts pacing again begins a new *stint* (counted alike on every console, sent with
 each facts message); facts of an old stint are ignored, so a console that had run ahead before it
 was pinned cannot mix old ticks into new ones.
+
+A Skate 3 graph's turn player also begins a new stint where its turn, its countdown and its run
+start (`HUD2.LeaderboardSetTurn`, `HUD2.StartCountdown` and `HUD2.StartTimer`, each at the same
+tick on every console; `OnlineChallenge::turn_restart`, `Round::set_contributors`), though it
+already paces the round. A turn's `setup_run` teleports every player, each pacing the round until
+its teleport is done, and a console whose own skater stands pinned keeps producing facts while the
+round waits on a slower one (a start in another part of the district streams in on every console
+at its own speed). Those ticks then ran off in fast motion once the round was the turn player's
+alone: a countdown that skipped numbers, and a 20-second run that began two or three seconds in,
+shown as such (`display_lead`). With the new stint the console drops what it sent ahead and the
+others pass it over, so the countdown and the run start with nothing ahead of them. A round only
+the local skater paces also runs each tick as it is produced, without the buffer kept for other
+players' arrivals (`Round::paced_by_local_alone`). A round that ran out of facts waits for six
+ready ticks before it runs on (the buffer against the link's jitter); Skate 3's 1-Up teleports
+its players with no transition, so a waiting player paces its teleport for two ticks and sends
+no more until the round has run them, and a console holding out for six would never run them. A
+refill therefore runs what it has once that has waited twelve simulation ticks for more
+(`REFILL_WAIT`, `Round::ticks_to_run`; seen 2026-11-16 in a two-console run with the turn
+player defined: one console stopped for good at the next turn's teleports). The countdown HUD shows the challenge's own
+time on every console: it runs to the tick that lets the skater go, which a console reaches when
+it runs that tick.
 
 All of this holds only while every console's challenge takes the same inputs at the same tick.
 Two consoles a tick apart on a change of pacing wait on each other for good (a Hall of Meat turn

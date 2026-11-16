@@ -31,6 +31,11 @@ const CATCH_UP_TICKS: usize = 4;
 /// link's jitter, and the ticks they leave waiting are a jitter buffer that keeps the round, and
 /// the scenes it plays, at the simulation's pace instead of stopping at every arrival.
 const REFILL_LEAD: u32 = 6;
+/// Simulation ticks a refilling round waits with some ticks ready before it runs those. Facts
+/// that are coming fill the buffer well inside it; a player who paces the round for a tick or
+/// two (a teleport done at once, as Skate 3's 1-Up moves its players) sends no more until the
+/// round has run them, so waiting on for a full buffer would hold the round for good.
+const REFILL_WAIT: u32 = 12;
 /// Ready challenge ticks a simulation tick still runs one at a time: the buffer and a run's
 /// arrival on top of it.
 const SMOOTH_LEAD: u32 = 12;
@@ -233,6 +238,8 @@ pub(super) struct Round {
     others: BTreeMap<u64, PlayerFacts>,
     /// The round ran out of other players' facts and waits for [`REFILL_LEAD`] ticks of them.
     refilling: bool,
+    /// Simulation ticks the refill has waited with ticks ready ([`REFILL_WAIT`]).
+    refill_waited: u32,
     /// Simulation ticks the running round ran no tick in, for the trace.
     stalls: u32,
     /// The players whose facts pace the next challenge tick, a bit per player index. In a
@@ -332,6 +339,7 @@ impl Round {
             own: None,
             others: BTreeMap::new(),
             refilling: false,
+            refill_waited: 0,
             stalls: 0,
             contributors: u8::MAX,
             turn_based,
@@ -403,6 +411,30 @@ impl Round {
     /// Whether the local skater's facts pace the round.
     fn local_contributes(&self) -> bool {
         usize::try_from(self.local).is_ok_and(|local| self.contributes(local))
+    }
+
+    /// Whether the local skater alone paces the round: its own turn, no one else's teleport
+    /// still under way.
+    fn paced_by_local_alone(&self) -> bool {
+        u32::try_from(self.local).ok().and_then(|local| 1_u8.checked_shl(local)).is_some_and(|bit| self.contributors == bit)
+    }
+
+    /// The challenge ticks this simulation tick runs with `lead` of them ready ([`pace`]): none
+    /// while a round that ran out refills its buffer, unless the local skater alone paces it (no
+    /// one's arrivals to buffer) or the ready ticks have waited [`REFILL_WAIT`] for more.
+    fn ticks_to_run(&mut self, lead: u32) -> usize {
+        let (mut ticks, mut refilling) = pace(lead, self.refilling && !self.paced_by_local_alone());
+        if refilling && lead > 0 {
+            self.refill_waited += 1;
+            if self.refill_waited > REFILL_WAIT {
+                (ticks, refilling) = (ticks_for_lead(lead), false);
+            }
+        }
+        if !refilling || lead == 0 {
+            self.refill_waited = 0;
+        }
+        self.refilling = refilling;
+        ticks
     }
 
     /// Whether the local skater plays the round now: its facts pace the challenge, and the other
@@ -685,16 +717,29 @@ impl Round {
     /// The players pacing the next tick, after the challenge ran this one. A player who starts
     /// sending facts begins a new run of them; the local skater sends from the next tick on, or
     /// stops and drops what it sent ahead.
-    fn set_contributors(&mut self, next: u8) {
+    ///
+    /// PC port: `restart` is the turn player of a game that runs Skate 3's own state graph whose
+    /// turn, countdown or run began at this tick (`OnlineChallenge::turn_restart`). Still pacing,
+    /// it begins a new run of facts too, alike on every console: what its console sent ahead
+    /// while the round waited on other players was sent standing pinned, and would otherwise run
+    /// off, in fast motion, against the countdown or the run timer that starts here.
+    fn set_contributors(&mut self, next: u8, restart: Option<usize>) {
         for index in 0..self.players.len().min(MAX_PLAYERS) {
             let bit = 1 << index;
             let local = i32::try_from(index).is_ok_and(|index| index == self.local);
-            if next & bit != 0 && self.contributors & bit == 0 {
+            let paced = self.contributors & bit != 0;
+            if next & bit != 0 && (!paced || restart == Some(index)) {
                 self.stints[index] += 1;
                 if local {
-                    self.produced = self.processed;
+                    let processed = self.processed;
+                    self.produced = processed;
+                    self.local_frames.retain(|&tick, _| tick < processed);
+                    // What a dropped tick's facts announced goes out again with the new run's.
+                    for (_, announced) in &mut self.presentation_log {
+                        *announced = false;
+                    }
                 }
-            } else if local && next & bit == 0 && self.contributors & bit != 0 {
+            } else if local && next & bit == 0 && paced {
                 let processed = self.processed;
                 self.local_frames.retain(|&tick, _| tick < processed);
             }
@@ -1614,8 +1659,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 let completed = self.completed_frames;
                 let (ticks, stalled) = self.online.round.as_mut().map_or((0, None), |round| {
                     let lead = round.ready_lead(CATCH_UP_LEAD + 1);
-                    let (ticks, refilling) = pace(lead, round.refilling);
-                    round.refilling = refilling;
+                    let ticks = round.ticks_to_run(lead);
                     if ticks == 0 && round.running() && round.processed > 0 {
                         round.stalls += 1;
                     }
@@ -1665,13 +1709,30 @@ impl<T, C> SelectedLiveSession<T, C> {
                     self.career_step(Some((frames, local, own)))?;
                     self.take_held_presentation();
                     let voting = self.career.as_ref().is_some_and(|career| career.system.world().voting.in_voting());
+                    // PC port: a Skate 3 graph began its turn player's turn, countdown or run at
+                    // this tick.
+                    let restart = self
+                        .career
+                        .as_mut()
+                        .and_then(|career| career.system.world_mut().online.as_mut())
+                        .and_then(|online| std::mem::take(&mut online.turn_restart).then_some(online.turn_player).flatten())
+                        .and_then(|player| usize::try_from(player).ok());
                     if let Some(contributors) = self.online_contributors()
                         && let Some(round) = self.online.round.as_mut()
                     {
                         if contributors != round.contributors {
                             trace(format_args!("tick {} paced by {contributors:#04x}", round.processed));
                         }
-                        round.set_contributors(contributors);
+                        let restart = restart.filter(|&player| round.turn_based && player < MAX_PLAYERS);
+                        if let Some(player) = restart {
+                            let ahead = if round.local_contributes() && i32::try_from(player).is_ok_and(|player| player == round.local) {
+                                round.produced.saturating_sub(round.processed)
+                            } else {
+                                0
+                            };
+                            trace(format_args!("tick {}: player {player}'s facts start afresh, {ahead} sent ahead", round.processed));
+                        }
+                        round.set_contributors(contributors, restart);
                         if !voting {
                             round.votes.clear();
                         }
@@ -2269,6 +2330,95 @@ mod tests {
         let produced = round.produced;
         round.skip_ticks(5);
         assert_eq!(round.produced, produced);
+    }
+
+    /// A refilling round runs the ticks it has once they have waited `REFILL_WAIT` simulation
+    /// ticks for more: a player whose teleport is done at once paces two ticks and sends no more
+    /// until the round has run them. A round the local skater alone paces buffers nothing.
+    #[test]
+    fn a_refill_that_stops_filling_runs_what_it_has() {
+        let stance = std::sync::Arc::new(std::sync::Mutex::new([true; super::MAX_PLAYERS]));
+        let mut round = super::Round::loading(1, 0, None, vec![10, 20], 0, super::FactsScope::ALL, true, stance);
+        round.start(vec![10, 20], 0);
+        round.contributors = 0b11;
+        assert_eq!(round.ticks_to_run(0), 0, "out of ticks");
+        assert!(round.refilling);
+        for _ in 0..super::REFILL_WAIT {
+            assert_eq!(round.ticks_to_run(2), 0, "two ticks ready wait for the buffer");
+        }
+        assert_eq!(round.ticks_to_run(2), 1, "no more came: they run");
+        assert!(!round.refilling);
+        assert_eq!(round.ticks_to_run(1), 1);
+        // A buffer that fills runs as before.
+        assert_eq!(round.ticks_to_run(0), 0);
+        assert_eq!(round.ticks_to_run(REFILL_LEAD - 1), 0);
+        assert_eq!(round.ticks_to_run(REFILL_LEAD), 1);
+        // No facts at all is a wait for the player, however long.
+        assert_eq!(round.ticks_to_run(0), 0);
+        for _ in 0..4 * super::REFILL_WAIT {
+            assert_eq!(round.ticks_to_run(0), 0);
+        }
+        assert_eq!(round.ticks_to_run(1), 0, "the count starts with the first ready tick");
+        // Alone, the local skater's ticks run as they are produced.
+        round.contributors = 0b01;
+        assert_eq!(round.ticks_to_run(1), 1);
+        assert!(!round.refilling);
+    }
+
+    /// A Skate 3 graph's turn player whose turn, countdown or run begins while it already paces
+    /// the round starts its facts afresh: what it sent ahead is dropped on its own console and
+    /// passed over on the others', and the round goes on with the next tick's new facts.
+    #[test]
+    fn a_turn_that_begins_starts_its_players_facts_afresh() {
+        let stance = std::sync::Arc::new(std::sync::Mutex::new([true; super::MAX_PLAYERS]));
+        let frame = |player: i32, x: f32| super::MissionFrame { player, local: player == 0, position: [x, 0.0, 0.0], ..Default::default() };
+        // The turn player's own console: three ticks sent ahead while the round waited on player 1.
+        let mut round = super::Round::loading(1, 0, None, vec![10, 20], 0, super::FactsScope::ALL, true, stance.clone());
+        round.start(vec![10, 20], 0);
+        round.contributors = 0b11;
+        round.processed = 100;
+        round.produced = 100;
+        for x in [1.0, 2.0, 3.0] {
+            round.local_frames.insert(round.produced, (frame(0, x), frame(0, x), super::FactsNotes::default()));
+            round.produced += 1;
+        }
+        round.presentation_log.push((super::Presented::Nis { seq: 1, notification: 7 }, true));
+        assert!(!round.paced_by_local_alone());
+        // Player 1's teleport is done and the turn begins at this tick.
+        round.set_contributors(0b01, Some(0));
+        assert_eq!((round.stints[0], round.stints[1], round.produced, round.processed), (1, 0, 100, 100));
+        assert!(round.local_frames.is_empty(), "what it sent ahead is dropped");
+        assert!(round.presentation_log.iter().all(|&(_, announced)| !announced), "and what that announced goes out again");
+        assert!(round.paced_by_local_alone());
+        assert_eq!(round.ready_lead(10), 0, "the round waits for the new run's first facts");
+        round.local_frames.insert(round.produced, (frame(0, 9.0), frame(0, 9.0), super::FactsNotes::default()));
+        round.produced += 1;
+        let local = round.next_tick().and_then(|(frames, ..)| frames.into_iter().find(|frame| frame.player == 0)).map(|frame| frame.position[0]);
+        assert_eq!(local, Some(9.0));
+        // No restart leaves a pacing player's run as it is.
+        round.set_contributors(0b01, None);
+        assert_eq!(round.stints[0], 1);
+        // Another console: the turn player's old run is passed over from the tick on.
+        let mut other = super::Round::loading(1, 0, None, vec![10, 20], 1, super::FactsScope::ALL, true, stance);
+        other.start(vec![10, 20], 1);
+        other.contributors = 0b01;
+        other.processed = 100;
+        let facts = other.others.entry(10).or_insert_with(|| super::PlayerFacts::new(super::FactsScope::ALL));
+        for tick in 100..103 {
+            facts.frames.insert((0, tick), (frame(0, 1.0), super::FactsNotes::default()));
+        }
+        assert_eq!(other.ready_lead(10), 3);
+        other.set_contributors(0b01, Some(0));
+        assert_eq!(other.stints[0], 1);
+        assert_eq!(other.ready_lead(10), 0, "the old run's ticks no longer count");
+        assert_eq!(other.awaited(), Some(10));
+        other.others.get_mut(&10).unwrap().frames.insert((1, 100), (frame(0, 9.0), super::FactsNotes::default()));
+        let turn = other.next_tick().and_then(|(frames, ..)| frames.into_iter().find(|frame| frame.player == 0)).map(|frame| frame.position[0]);
+        assert_eq!(turn, Some(9.0));
+        // A player who only now starts to pace begins its run as before, from the next tick.
+        other.produced = 0;
+        other.set_contributors(0b11, None);
+        assert_eq!((other.stints[0], other.stints[1], other.produced), (1, 1, other.processed));
     }
 
     /// A round waiting at a tick for one other player's facts tells the server after

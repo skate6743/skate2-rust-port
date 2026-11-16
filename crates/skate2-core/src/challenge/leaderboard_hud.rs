@@ -313,11 +313,20 @@ fn leaderboard_init(_: &mut Lua<World>, world: &mut World, call: &NativeCall) ->
 /// `HUD2.LeaderboardSetTurn(group, player)` (`0x82898d98`). Skate 3's (`0x828513c8`) adds
 /// `(isTurn = true, exclusive = true)`: exclusive, every row's turn is the player's and
 /// `isTurn`, as Skate 2's; otherwise only the player's row takes `isTurn` (a team's turn).
+///
+/// PC port: online, a game that runs Skate 3's own state graph names its turn's player here
+/// and nowhere else (Skate 2's scripts move theirs with `AI.RepositionAI`'s `setCamera`, which
+/// Skate 3's 1-Up never passes), every console at the same tick: from it that player's facts
+/// pace the round (`OnlineChallenge::turn_player`), a new run of them.
 fn leaderboard_set_turn(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let group = get_string(call, 0).unwrap_or_default();
     let turn = get_int(call, 1);
     let is_turn = get_bool_or(call, 2, true);
     let exclusive = get_bool_or(call, 3, true);
+    if is_turn && exclusive && super::skate3_natives::own_graph(world) && let Some(online) = world.online.as_mut() {
+        online.turn_player = Some(turn);
+        online.turn_restart = true;
+    }
     if let Some(data) = leaderboard(world, &group) {
         if !exclusive {
             if let Some(player) = data.player_mut(turn) {
@@ -412,11 +421,23 @@ fn leaderboard_set_player_highlight(_: &mut Lua<World>, world: &mut World, call:
     none()
 }
 
+/// PC port: online, a game that runs Skate 3's own state graph starts its turn player's
+/// countdown or run at this tick. Until it the player stood pinned, and whatever its console
+/// sent ahead of the round while the round waited on other players (their teleports) would
+/// run off against the timer starting now, so its facts begin a new run with the next tick
+/// (`OnlineChallenge::turn_restart`).
+fn restart_skate3_turn(world: &mut World) {
+    if super::skate3_natives::own_graph(world) && let Some(online) = world.online.as_mut() {
+        online.turn_restart = true;
+    }
+}
+
 /// `HUD2.StartTimer(group, timerId)` (`0x828988f8`): the timer data's id, and the group's
 /// `timer` instance shows.
 fn start_timer(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let group = get_string(call, 0).unwrap_or_default();
     let timer = get_int(call, 1);
+    restart_skate3_turn(world);
     if let Some(data) = world.hud.group_mut(&group).and_then(|g| g.timer.as_mut()) {
         data.timer_id = timer;
         data.dirty = true;
@@ -430,6 +451,7 @@ fn start_timer(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
 fn start_countdown(_: &mut Lua<World>, world: &mut World, call: &NativeCall) -> R {
     let group = get_string(call, 0).unwrap_or_default();
     let timer = get_int(call, 1);
+    restart_skate3_turn(world);
     if let Some(data) = world.hud.group_mut(&group).and_then(|g| g.countdown.as_mut()) {
         data.timer_id = timer;
         data.dirty = true;

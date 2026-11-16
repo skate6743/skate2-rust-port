@@ -167,11 +167,12 @@ fn advance_inner(
     skater.mod_contact_frame = crate::skate3_native::modding::player_physics::after_solve(physics,skater,&mod_before);
     skater.mod_contact_frame.joint_loads=crate::skate3_native::modding::player_physics::joint_loads(skater,&joints,dt);
     physics.world_proxies.capture_dynamics_reactions(physics.board.solved_reactions(), dt);
-    if let Err(error) = diagnostics::validate(
+    diagnostics::inject_fault(physics, skater);
+    //The game goes on to Skateboard::UpdatePostPhysics 82C02160 and Skeleton::UpdatePostPhysics
+    //82BD8100, which answer a result without usable transforms (finish_skater).
+    physics.solver_fault = diagnostics::validate(
         &diagnostics::snapshot(physics, skater), "after shared solve",
-    ) {
-        return Err(format!("{error}; input_bodies={before:?}; contacts={contacts:?}; joints={joints:?}; drives={:?}", drives.rows));
-    }
+    ).err().map(|error| format!("{error}; input_bodies={before:?}; contacts={contacts:?}; joints={joints:?}; drives={:?}", drives.rows));
     skater
         .skeleton
         .publish_physical_record(deck_frame(&physics.board));

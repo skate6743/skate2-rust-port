@@ -7,6 +7,7 @@ mod air_phase;
 mod air_reckoning;
 mod air_trajectory;
 mod animated_skeleton;
+mod board_explosion;
 pub(crate) mod camera_output;
 mod clock;
 pub(crate) mod colliders;
@@ -26,6 +27,7 @@ mod riding_outputs;
 mod skateboard_controller;
 mod skater;
 mod skeleton_air;
+mod skeleton_bad_data;
 pub(crate) mod skeleton_body;
 pub(crate) mod skeleton_colliders;
 mod skeleton_controller;
@@ -125,6 +127,9 @@ pub(crate) struct Skate3PhysicsState {
     pub ticks: u64,
     pub contact_count: usize,
     pub failed: bool,
+    /// The shared solve's non-finite result with its inputs, until the post-physics phase has
+    /// answered it.
+    solver_fault: Option<String>,
     exchange: SimulationExchange,
     /// ProcessedPhysIn reset82BF9EF0 sets0x2000; initial stancebit20 is clear.
     /// Animation packet publication owns subsequent stance-bit updates.
@@ -374,6 +379,7 @@ impl Skate3PhysicsState {
             ticks: 0,
             contact_count: 0,
             failed: false,
+            solver_fault: None,
             exchange: SimulationExchange::new(0),
             processed_flags_2468,
             board_wiping_out: false,
@@ -425,6 +431,26 @@ mod map_startup;
 pub(crate) mod player;
 
 impl Skate3PhysicsState {
+    /// PC port: the game has no check between its solve and its post-physics phase. A fault
+    /// that phase got past is logged, one it left in the bodies ends the tick with the solve's
+    /// inputs.
+    fn settle_solver_fault(&mut self, finished: Result<(), String>) -> Result<(), String> {
+        let Some(fault) = self.solver_fault.take() else {
+            return finished;
+        };
+        finished.map_err(|error| format!("{error}; {fault}"))?;
+        let shown = if crate::diagnostics::test_log::enabled() {
+            fault.as_str()
+        } else {
+            fault.split("; input_bodies=").next().unwrap_or(&fault)
+        };
+        crate::skate3_native::trace::warn!(
+            "non-finite solver result on tick {}: {shown}",
+            self.ticks
+        );
+        Ok(())
+    }
+
     fn finish_skater(&mut self, skater: &mut Skate3ControllerState) -> Result<(), String> {
         //Skateboard::UpdatePostPhysics82C02158 prepares the wall probe for
         //the next StartBoard, using this input phase's cached deck toolkit.
@@ -436,17 +462,28 @@ impl Skate3PhysicsState {
                 .as_ref()
                 .ok_or("Postphysics wall probe requires the current board toolkit")?,
         );
-        self.riding.finish_post_physics(
-            &mut self.board,
-            self.board_wiping_out,
-            self.processed_flags_2468,
-            self.settings.step.simulation.time_step,
-            &self.world_proxies.groups,
-        )?;
+        //82C02160..230C: a solver result the game rejects replaces the board's own update, and
+        //Update4 82DB6D1C..6D58 has an on-board skater's wipeout requested for an exploded one.
+        match board_explosion::check(self, skater)? {
+            board_explosion::SolverResult::Accepted => self.riding.finish_post_physics(
+                &mut self.board,
+                self.board_wiping_out,
+                self.processed_flags_2468,
+                self.settings.step.simulation.time_step,
+                &self.world_proxies.groups,
+            )?,
+            board_explosion::SolverResult::Exploded => {
+                if skater.player_input.processed.category_2512 != 500 {
+                    skater.wipeout.state.request(22, 0.0);
+                }
+            }
+            board_explosion::SolverResult::BadData => {}
+        }
         let partial = skateboard_controller::partial_request(
             &skater.skateboard_controller,
             &self.riding.ground,
         );
+        skeleton_bad_data::reset(self, skater);
         skeleton_feedback::publish(self, skater, partial);
         if skater.player_state.current()
             == skate3_core::player::state::PhysicalStateId::WipeoutGround

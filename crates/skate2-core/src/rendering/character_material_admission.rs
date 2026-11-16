@@ -1,6 +1,7 @@
 //! Selected clone3 material binding over the finalized scene and same palette.
 use super::{
     CharacterScene,
+    grip_surface::{COLOUR_KEY as GRIP_COLOUR_KEY, GripSurface},
     palette::{CharacterPalette, CharacterPaletteIdentity},
 };
 use crate::{
@@ -82,6 +83,8 @@ struct Entry {
     cas_textures: [Option<usize>; 3],
     effect: String,
     material_key: (u64, u64),
+    /// PC port: a deck mesh's griptape (`grip_surface`).
+    grip: Option<GripSurface>,
 }
 /// Owns no geometry, texture copy or independent palette. Public methods only
 /// expose checked borrowed inputs to the actual GPU consumer.
@@ -105,6 +108,10 @@ pub struct CharacterMaterialView<'a> {
     /// GetCustomColour82cff8c8: base, highlight; untouched fourth lanes are one.
     pub colours: [[f32; 4]; 2],
     pub tattoos: [[f32; 4]; 2],
+    /// PC port: Edit Griptape's colour on a deck mesh: what its diffuse squared is multiplied by
+    /// (`GripSurface::gain`) within the rectangle of its first texture coordinate set that holds
+    /// its top face alone.
+    pub grip: Option<([f32; 3], [f32; 4])>,
     pub normal: Option<&'a NativeTexture>,
     pub decal: Option<&'a NativeTexture>,
     pub decal2: Option<&'a NativeTexture>,
@@ -338,6 +345,20 @@ impl CharacterMaterialAdmission {
                         continue;
                     }
                 }
+                // PC port: a deck mesh's griptape, which Edit Griptape's colour goes over.
+                let deck = scene.components[part.component_index]
+                    .name
+                    .eq_ignore_ascii_case(skate2_formats::cac_parts::SLOT_NAMES[11]);
+                let grip = deck
+                    .then(|| GripSurface::of(&mesh.geometry, &scene.textures[texture].texture))
+                    .flatten();
+                // SKATE2_DIAGNOSTIC_GRIP: each deck mesh's griptape.
+                if deck && std::env::var_os("SKATE2_DIAGNOSTIC_GRIP").is_some() {
+                    eprintln!(
+                        "grip: deck model {:#018x} mesh {mesh_index} {effect}: {grip:?}",
+                        scene.components[part.component_index].models[part.model_index].asset_id,
+                    );
+                }
                 entries.push(Entry {
                     part: part_index,
                     mesh: mesh_index,
@@ -348,6 +369,7 @@ impl CharacterMaterialAdmission {
                     cas_textures,
                     effect: effect.to_owned(),
                     material_key: (class, collection),
+                    grip,
                 });
             }
         }
@@ -501,12 +523,19 @@ impl CharacterMaterialAdmission {
         let recipe_model =
             &self.scene.components[indices.component_index].models[indices.model_index];
         let mut colours = [[1.0; 4]; 2];
+        let mut grip = None;
         // PC port: colours set since the scene was built stand for its own (`set_colours`).
         let custom_colours = self
             .colours
             .as_deref()
             .or_else(|| self.scene.customizations.as_ref().map(|custom| custom.colours.as_slice()));
         if let Some(custom_colours) = custom_colours {
+            // PC port: Edit Griptape's colour goes on the deck drawn, whichever of the installed
+            // deck's parts that is (`assemble_parts` wears another in the game).
+            grip = entry
+                .grip
+                .zip(custom_colours.iter().find(|c| c.key == GRIP_COLOUR_KEY))
+                .map(|(surface, colour)| (surface.gain(colour.base_rgb_bits.map(f32::from_bits)), surface.rectangle));
             // The chosen LOD material vector is the same ordered material map
             // consumed by RebindToMaterials. Each instance maps one RModel mesh.
             if let Some(material) = lod
@@ -514,8 +543,9 @@ impl CharacterMaterialAdmission {
                 .get(mesh)
                 .and_then(|m| m.materials.first())
             {
+                // PC port: the griptape's colour, bound to its deck, is no colour of the part's.
                 if let Some(colour) = custom_colours.iter().find(|c| {
-                    c.model_id == recipe_model.asset_id && c.material_id == material.asset_id
+                    c.key != GRIP_COLOUR_KEY && c.model_id == recipe_model.asset_id && c.material_id == material.asset_id
                 }) {
                     for axis in 0..3 {
                         colours[0][axis] = f32::from_bits(colour.base_rgb_bits[axis]);
@@ -548,6 +578,7 @@ impl CharacterMaterialAdmission {
             cpu_rows:cpu.map(|(_,rows)|rows),
             colours,
             tattoos,
+            grip,
             normal: entry.cas_textures[0].map(|i| &self.scene.textures[i].texture),
             decal: entry.cas_textures[1].map(|i| &self.scene.textures[i].texture),
             decal2: entry.cas_textures[2].map(|i| &self.scene.textures[i].texture),

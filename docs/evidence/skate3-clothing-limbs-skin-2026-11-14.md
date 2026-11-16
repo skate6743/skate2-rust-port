@@ -136,3 +136,62 @@ This applies with a linked Skate 3 data folder (`crate::skate3`), whose clothing
 - On a male skater, the Trefoil Tee over Skate 2's head showed no such patch.
 - `SKATE2_DIAGNOSTIC_CAS_HIDE=<component>[:<effect>],...` leaves those meshes undrawn, and lists
   every part's meshes with their effects.
+
+## Tattoos (2026-11-16)
+
+- Skate 2's `cacstamp_skin` program draws a skater's tattoos from three things:
+  - the material's alpha map (64 texels square), read at the mesh's first texture coordinate
+    set. Its red level names the zone (over 0.2, 0.4, 0.6 and 0.8 the first to the fourth of the
+    material's four choices) and, where red is zero, its green level a second row of choices;
+  - the mesh's second set, positive only over the tattooed skin, which places the zone's choice;
+  - the `decal` map, a sheet of eight cells, four wide and two high, one for each tattoo. A
+    choice of 8 (none) samples one texel of it.
+- The six zones of the Tattoos menu (left arm, right arm, right leg, left leg, back, front) are
+  the skater's six embedded stamps (`CharacterCustomizations::embedded`).
+- Skate 3's `cacstamp_skin` reads no alpha map (its pixel program binds `i_decal`, `i_decal2`,
+  `i_diffuse`, `i_normal` and `i_specular`): it samples `i_decal` at the second set and
+  multiplies the skin by it.
+  - Skate 3's arms' and legs' materials name no alpha map, and their `decal` map is Skate 3's.
+  - Their second set is laid out for that decal: a male arm's tattooed skin lies within u 0.12 to
+    0.39 (one arm) and 0.61 to 0.88 (the other), v 0.68 to 0.99, 498 of its 1868 vertices; the
+    rest sit at (0, 1).
+  - Skate 2's male shoulder-down arm has 525 of 1899 vertices with a positive second set, which
+    spans the whole cell on each arm. Its forearm-down arm has no second set.
+- Drawn by Skate 2's program, a Skate 3 arm or leg showed none of the skater's tattoos: no zone,
+  another layout, another sheet.
+- The body is the same: from each vertex of Skate 3's male arm under the Trefoil Tee, the nearest
+  vertex of Skate 2's shoulder-down arm is 0.2 mm away at the median and 7.3 mm at most (bind
+  pose), and the tattooed skin is the same patch (486 of the 498 vertices).
+- Port (`crate::skate3::tattoos`, as each character scene loads, after its materials are
+  rebound): an arm or leg whose skin names a decal map and no alpha map takes Skate 2's tattoos.
+  - The reference is Skate 2's own parts of the slot and gender, one for each model, those of
+    the same skin material first (`limb_models`), each loaded as a scene of its own: the finest
+    level of every mesh that has a second set, with its alpha map and its sheet. It is read once
+    for a slot, gender and skin.
+  - Every vertex of the limb is projected to the nearest point of the reference's surface within
+    20 mm (`tattoo_transfer::Surface`): it takes the zone the reference's alpha map names there,
+    and that point's second set.
+  - Where Skate 3 reshaped the limb the nearest points of neighbouring vertices cross: drawn
+    from the projected set alone, 24 of each male arm's 377 tattooed triangles come out mirrored
+    and the tattoo is jagged. The limb's own second set lays the same skin out without folds, so
+    for each zone the affine map that takes the limb's own coordinates nearest the projected ones
+    (least squares over the vertices that agree, `Affine::fit_agreeing`) carries that layout onto
+    Skate 2's sheet. On the male arm the vertices kept miss the map by 0.02 of a cell at the
+    median. A limb with no second set of its own keeps the projected one.
+  - The limb gets an alpha map of its own, 256 texels square: over its first set, each triangle
+    of its finest level is drawn with the zone its corners took, and every other texel takes its
+    nearest drawn one's. Skate 3's arm keeps its two arms apart in the first set (u under and
+    over 0.5), so the two zones do not meet.
+  - Its materials name that map as `alpha` and Skate 2's sheet as `decal`. Skate 2's program
+    draws the rest unchanged.
+- Seen in Edit Skater:
+  - a male skater's left arm tattoo lies on the forearm at the same place under Skate 2's tee
+    and under Skate 3's Trefoil Tee, the same drawing;
+  - with only the right arm tattooed, the left arm under the Trefoil Tee is bare;
+  - a left leg tattoo lies on the same calf with Skate 2's legs and with Skate 3's (the shorts
+    hidden), Skate 3's a little larger;
+  - a female skater's left arm tattoo shows under Skate 3's Trefoil Tee;
+  - with no Skate 3 data linked, the same menus and a tattooed skater load as before.
+- `SKATE2_DIAGNOSTIC_S3_TATTOOS=off` leaves the limbs as they are; any other value logs, for each
+  limb, the vertices near the reference, those on the sheet, the zones laid out by the limb's own
+  set and the map texels drawn.

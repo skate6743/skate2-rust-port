@@ -50,14 +50,14 @@ pub(super) fn height(skater: &Skate3ControllerState) -> HeightInput {
         velocity_608: p.vectors_544_560_592_608[3].map(f32::from_bits),
     }
 }
-pub(super) fn launch_packet(skater: &Skate3ControllerState) -> Result<Packet, String> {
+fn processed(skater: &Skate3ControllerState) -> Result<Processed, String> {
     let p = &skater.player_input.processed;
     let board = skater
         .player_input
         .toolkit
         .as_ref()
         .ok_or("BipedAir launch requires the completed BoardToolkit")?;
-    let input = Processed {
+    Ok(Processed {
         board_position_112: board.deck[3],
         forward_224: p.effective_anim_transform_192[2].map(f32::from_bits),
         up_544: p.vectors_544_560_592_608[0].map(f32::from_bits),
@@ -77,7 +77,10 @@ pub(super) fn launch_packet(skater: &Skate3ControllerState) -> Result<Packet, St
         previous_category_2516: p.category_2516,
         raw_x_2692: skater.animation_input.extra.biped_world_x,
         raw_z_2688: skater.animation_input.extra.biped_world_z,
-    };
+    })
+}
+pub(super) fn launch_packet(skater: &Skate3ControllerState) -> Result<Packet, String> {
+    let input = processed(skater)?;
     let (turn, settings) = skater.biped_ground.air_settings();
     skater
         .biped_air
@@ -89,6 +92,23 @@ pub(super) fn launch_packet(skater: &Skate3ControllerState) -> Result<Packet, St
             settings,
         )
         .map_err(str::to_owned)
+}
+///Update5's launch 82DB72C8..72DC: 82D7BA78 with 1 reads the current state and category
+///(Processed 2508/2512), where BipedAir's own launches read the previous ones.
+pub(super) fn runout_launch_packet(skater: &Skate3ControllerState) -> Result<Packet, String> {
+    let input = processed(skater)?;
+    let (turn, settings) = skater.biped_ground.air_settings();
+    let mut packet = Packet::initialized(0.);
+    skate3_core::player::offboard::air_launch::produce(
+        &mut packet,
+        &skater.biped_ground.controller.state,
+        &turn,
+        settings,
+        &input,
+        true,
+    )
+    .map_err(str::to_owned)?;
+    Ok(packet)
 }
 pub(super) fn submit(
     physics: &Skate3PhysicsState,

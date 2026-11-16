@@ -70,7 +70,8 @@ pub(crate) fn advance(
         });
     skater.animation.motion.runout_physical = Some(crate::skate3_native::graph_host::motion_runout::Observation {
         offboard_flag_331: physical.off_board.trajectory_valid_331 != 0,
-        offboard_velocity_128: physical.off_board.vector_64.map(f32::from_bits),
+        //82DB6E18 copies the selector's trajectory velocity (+8160) to OffBoard +128 when valid.
+        offboard_velocity_128: skater.offboard_air_selector.core.sampling.selection.trajectory_8144.velocity,
         reckoning_velocity_16: physical.reckoning.vector_16.map(f32::from_bits),
         reckoning_up_96: physical.reckoning.vector_96.map(f32::from_bits),
         skeleton_vector_0: skater.skeleton_input.drive_frames[0][0],
@@ -172,7 +173,16 @@ pub(crate) fn advance(
                 .iter()
                 .any(|&v| v != 0),
             tricks_blocked_on_stairs: false,
-            moving_object: physical.state.state_16 == 502,
+            //Update5 82DB725C..7274 copies the shared Biped's support speed (+348) and filtered
+            //local acceleration (+320 x, +328 z) to OffBoard +256, +260 and +264.
+            support_motion: {
+                let motion = &skater.biped_ground.controller.state.motion;
+                [
+                    motion.support_speed_348,
+                    motion.filtered_local_acceleration_320[0],
+                    motion.filtered_local_acceleration_320[2],
+                ]
+            },
         },
     );
     skater.animation.action.gameplay_conditions = skater.animation.motion.gameplay_conditions;

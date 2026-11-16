@@ -61,6 +61,11 @@ PC. Requires your own legally obtained Xbox 360 copy of Skate 2 to run, you will
 - **Stick Settings.** Under Control Settings, each stick takes a multiplier (0.40 to 1.20), a
   deadzone and an anti-deadzone that work as RPCS3's do, with both sticks drawn live beside them.
   Out of the box, and after Reset To Default, the sticks feel exactly as the original's.
+- **Trigger Threshold.** Under Control Settings, a knob sets how far a trigger travels before the
+  game reads it as held (0% to 90%, 20% out of the box), so a finger resting on a trigger no longer
+  grabs or crouches. It works as RPCS3's does: past the threshold the rest of the pull covers the
+  whole range, and a full pull stays full. At 0% the game reads the triggers exactly as the pad
+  reports them.
 - **Link Skate 3 data.** You can now link your own copy of Skate 3 data and play Port Carverton maps and hotswap between Skate 2/3 physics from the **Physics Settings** menu ingame.
 
 ## How to play

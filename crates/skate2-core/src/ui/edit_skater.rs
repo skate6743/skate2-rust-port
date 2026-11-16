@@ -164,7 +164,8 @@ pub enum EditSkaterOption {
     Skate2Hair = 105,
     Skate3Hair = 106,
     /// PC port: a shirt's or pants' colour filter, the wear styles menu's first row when Apply
-    /// Color (Y, [`EditSkaterAction::ApplyColour`]) opens it on a part with no colour of its own.
+    /// Color (Y, [`EditSkaterAction::ApplyColour`]) opens it on a part with no colour of its own;
+    /// a deck's griptape colour, the menu's one row when Edit Griptape (Y on a deck) opens it.
     WearStylesFilter = 107,
 }
 
@@ -1544,8 +1545,11 @@ pub struct EditSkaterView {
     pub help_start: String,
     /// PC port: X's button help, `#` for none (the colour picker's Undo Changes).
     pub help_x: String,
-    /// PC port: Y's button help, `#` for none (a shirt's or pants' Apply Color).
+    /// PC port: Y's button help, `#` for none (a shirt's or pants' Apply Color, a deck's Edit
+    /// Griptape).
     pub help_y: String,
+    /// PC port: Edit Griptape's menu is up: the deck shows its top face.
+    pub grip_view: bool,
     /// PC port: the open colour picker.
     pub colour_picker: Option<ColourPickerView>,
     /// The `ID_CAC_NOT_ENOUGH_CASH` popup is up.
@@ -1612,9 +1616,10 @@ pub fn clothing_slot(option: EditSkaterOption) -> Option<u8> {
     })
 }
 
-/// PC port: the clothing lists whose parts take Apply Color (Y): the shirts' and the pants'.
+/// PC port: the lists whose parts take Y: the shirts' and the pants' (Apply Color) and the
+/// decks' (Edit Griptape).
 pub fn colour_filter_category(option: EditSkaterOption) -> bool {
-    matches!(clothing_slot(option), Some(15 | 23))
+    matches!(clothing_slot(option), Some(11 | 15 | 23))
 }
 
 /// UpdatePartsList82680c90 / GetParts8259d510. DLC availability is a caller fact,
@@ -1842,12 +1847,12 @@ impl EditSkaterOption {
 mod tests {
     use super::*;
 
-    /// PC port: Y on a part of a shirts or pants list asks for Apply Color on that row; other
-    /// lists, and the other menus, take no Y.
+    /// PC port: Y on a part of a shirts or pants list asks for Apply Color on that row, and on
+    /// a deck for Edit Griptape, the same action; other lists, and the other menus, take no Y.
     #[test]
     fn y_on_a_shirts_or_pants_part_applies_colour() {
         use EditSkaterOption as O;
-        for (option, applies) in [(O::TShirts, true), (O::Hoodies, true), (O::Legs, true), (O::Shoes, false), (O::Hats, false)] {
+        for (option, applies) in [(O::TShirts, true), (O::Hoodies, true), (O::Legs, true), (O::Boards, true), (O::Trucks, false), (O::Shoes, false), (O::Hats, false)] {
             let mut controller = EditSkaterController::default();
             controller.open(false);
             controller.category = Some(option);

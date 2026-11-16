@@ -418,18 +418,18 @@ impl LiveSkatingView {
 
     pub(crate) fn update_editor(&mut self, renderer:&GpuRenderer,scene:&mut GpuScene,
         now:Instant,character:&mut skate2_core::edit_skater_character::EditSkaterCharacter,
-        male:bool,body_key:u64,camera_key:u64,gesture:Option<u32>,near_plane:f32)->RenderResult<()> {
+        male:bool,body_key:u64,camera_key:u64,gesture:Option<u32>,grip_view:bool,near_plane:f32)->RenderResult<()> {
         if self.editor.is_none() {
             let mut editor=crate::edit_skater_room::EditSkaterRoomView::load(&self.mounts,male,now)?;
             let mut room_scene=editor.initialize(renderer)?;
             // Prepare a complete room before replacing the visible scene.
-            editor.update(renderer,&mut room_scene,&self.mounts,now,character,male,body_key,camera_key,gesture,near_plane)?;
+            editor.update(renderer,&mut room_scene,&self.mounts,now,character,male,body_key,camera_key,gesture,grip_view,near_plane)?;
             self.retained_world_scene=Some(std::mem::replace(scene,room_scene));
             self.editor=Some(editor);
             return Ok(());
         }
         self.editor.as_mut().ok_or("CAS room owner missing")?.update(
-            renderer,scene,&self.mounts,now,character,male,body_key,camera_key,gesture,near_plane)
+            renderer,scene,&self.mounts,now,character,male,body_key,camera_key,gesture,grip_view,near_plane)
     }
 
     pub(crate) fn close_editor(&mut self,scene:&mut GpuScene) {

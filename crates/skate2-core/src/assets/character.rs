@@ -866,3 +866,6 @@ mod tests {
 
 #[path = "../rendering/character_material_admission.rs"]
 pub mod material_admission;
+/// PC port: a deck's griptape, for Edit Griptape's colour.
+#[path = "../rendering/character_grip_surface.rs"]
+pub mod grip_surface;

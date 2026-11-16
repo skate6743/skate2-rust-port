@@ -27,7 +27,8 @@ pub struct TimerManager {
     next_id: i32,
     timers: BTreeMap<i32, Timer>,
     /// Online, how many ticks the local skater's own play runs ahead of the challenge's ticks
-    /// (a round paced by slower players); the HUD shows the timers that much further on.
+    /// (a round paced by slower players); the HUD shows a run's timers that much further on,
+    /// and a countdown at the challenge's own time.
     pub display_lead: u32,
 }
 

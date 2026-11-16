@@ -43,11 +43,15 @@ const fn skate3_colour(colour: i32) -> i32 {
 /// A central message's colour as the main activity's game shows it: Skate 3's own for a game
 /// that runs Skate 3's graph (`crate::skate3`), else as asked.
 pub(super) fn central_colour(world: &World, colour: i32) -> i32 {
-    let skate3 = world.activities.main.is_some_and(|main| {
+    if own_graph(world) { skate3_colour(colour) } else { colour }
+}
+
+/// Whether the main activity is a game that runs Skate 3's own state graph (`crate::skate3`).
+pub(super) fn own_graph(world: &World) -> bool {
+    world.activities.main.is_some_and(|main| {
         let key = world.activities.activities[main].key;
         crate::skate3::linked().is_some_and(|data| data.runs_own_graph(key))
-    });
-    if skate3 { skate3_colour(colour) } else { colour }
+    })
 }
 
 /// The central message, as `HUD2.ShowCentralMessage` shows it.

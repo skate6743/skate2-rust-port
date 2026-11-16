@@ -17,8 +17,8 @@ static MODES: AtomicU32 = AtomicU32::new(pack(PcGameplayModes {
 }));
 /// Online Speed, beside the packed word (whose bits are all in use).
 static ONLINE_SPEED: AtomicBool = AtomicBool::new(false);
-/// 3 Shuv Bounce, beside the packed word. Off (TU3's selection) until Options publishes the
-/// profile's rows, and in tests, which never publish.
+/// Pre-patch Shuvit Bounce, beside the packed word. Off (TU3's selection) until Options
+/// publishes the profile's rows, and in tests, which never publish.
 static SHUV_BOUNCE: AtomicBool = AtomicBool::new(false);
 
 const fn pack(modes: PcGameplayModes) -> u32 {
@@ -78,7 +78,8 @@ fn diagnostic_physics() -> Option<(PhysicsMode, Option<Difficulty>)> {
     })
 }
 
-/// `SKATE2_DIAGNOSTIC_SHUV_BOUNCE=on|off`: 3 Shuv Bounce from boot, whatever the profile holds.
+/// `SKATE2_DIAGNOSTIC_SHUV_BOUNCE=on|off`: Pre-patch Shuvit Bounce from boot, whatever the
+/// profile holds.
 fn diagnostic_shuv_bounce() -> Option<bool> {
     static PICK: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
     *PICK.get_or_init(|| match std::env::var("SKATE2_DIAGNOSTIC_SHUV_BOUNCE").ok()?.trim().to_ascii_lowercase().as_str() {
@@ -171,7 +172,7 @@ pub fn online_speed() -> bool {
     ONLINE_SPEED.load(Ordering::Relaxed)
 }
 
-/// 3 Shuv Bounce is picked: the Skate 3 player's KnownAir selects as Skate 3 1.0 did
+/// Pre-patch Shuvit Bounce is picked: the Skate 3 player's KnownAir selects as Skate 3 1.0 did
 /// (`0x82D5FF10`), without the two dismount bails TU3 added, so getting off the board just
 /// before landing (a 360 shove-it into a grab, Y late) bounces the skater up instead of bailing.
 #[must_use]

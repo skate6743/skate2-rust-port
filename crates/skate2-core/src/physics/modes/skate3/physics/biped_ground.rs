@@ -316,6 +316,13 @@ pub(crate) fn update(
         // out of collision for five frames.
         services::update_feet(skater);
         skater.skeleton_collision.disable_handplant_contacts(5);
+        // 0x82D44B18..44BEC: and the toes, feet and lower legs (volumes 3168, 3152, 3172, 3156,
+        // 3160, 3176: parts 19, 15, 20, 16, 17, 21), with the same five-frame counters.
+        skater.skeleton_collision.pending_reenable = true;
+        for part in [19, 15, 20, 16, 17, 21] {
+            skater.skeleton_collision.disable_count[part] = 5;
+            skater.skeleton_collision.parts[part].enabled = false;
+        }
         // Before the grab's first update, and whenever it holds nothing, Pushing still moves the
         // skeleton through UpdateOffBoardPushing with no motion or turn (0x82D45218..45260).
         Some(skater.pushing_follow.take().unwrap_or(PushingFollow {

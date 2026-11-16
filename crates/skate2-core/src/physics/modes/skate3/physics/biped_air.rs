@@ -46,6 +46,45 @@ pub(crate) fn consume_selector(
         .map(|_| ())
         .map_err(str::to_owned)
 }
+///82DB6E18 (PhysicalPlayerHiLOD slot 3, called by SkaterManager::UpdateAnimation1 82596AF0 ahead
+///of the animation update): the selector's validity (+8497) and time (+8392) go to OffBoard +331
+///and +120, and with a valid selection its trajectory's highest point and the time to it go to
+///+240 and +156. The trajectory's launch velocity (+128) is read from the selector where the
+///run-out attributes need it.
+pub(crate) fn publish_selector(skater: &mut Skate3ControllerState) {
+    let selector = &skater.offboard_air_selector.core;
+    let off = &mut skater.player_input.physical.off_board;
+    off.trajectory_valid_331 = u8::from(selector.just_changed_8497);
+    off.trajectory_time_120 = selector.sampling.selection.scalar_8392;
+    if selector.just_changed_8497 {
+        let (apex, time) = selector.sampling.selection.trajectory_8144.highest_position();
+        off.vector_240 = apex.map(f32::to_bits);
+        off.scalar_156 = time;
+        if skater.player_input.processed.state_2508 != 501 {
+            crate::diagnostics::test_log::event(
+                "skate3_offboard_prediction",
+                format_args!(
+                    "state={} time={} apex_time={time}",
+                    skater.player_input.processed.state_2508, off.trajectory_time_120
+                ),
+            );
+        }
+    }
+}
+///Update5 82DB7298..72E8: a run-out requested outside the off-board states (Processed 2508 not
+///500 or 501) fills a launch from the current state and starts the shared selector (82D6CA58).
+///82DB3C78 completes it at the next tick's start, and a BipedAir entered in that tick takes it over.
+pub(crate) fn launch_runout(physics: &Skate3PhysicsState, skater: &mut Skate3ControllerState) -> Result<(), String> {
+    let packet = input::runout_launch_packet(skater)?;
+    crate::diagnostics::test_log::event(
+        "skate3_runout_launch",
+        format_args!(
+            "tick={} state={} velocity={:?} position={:?}",
+            physics.ticks, skater.player_input.processed.state_2508, packet.velocity_0, packet.position_32
+        ),
+    );
+    input::submit(physics, skater, packet)
+}
 pub(crate) fn enter(physics: &Skate3PhysicsState, skater: &mut Skate3ControllerState) -> Result<(), String> {
     skater.biped_air.state.reset();
     //State68 is the SAME manager consumed by state503; state64 is Biped.

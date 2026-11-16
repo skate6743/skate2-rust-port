@@ -820,7 +820,17 @@ to the lobby:
   (its own mode 1 is activated by `Objectives.ActivateChallengeStartObjectives`), so an imported
   Skate 3 objective's mode is read in Skate 2's numbering: the 1-Up objective activates as each
   line begins, as Skate 3's does. A run that fails to 1-Up the round's best takes a letter and sits out the rest of the
-  round. The letters are Skate 3's own, from its `fedynamic.big`: each letter board row shows
+  round. PC port: after the letter's three seconds Skate 3 holds three more under a central message
+  while the round goes on ("Failed to 1-Up. You're out for this round!" to the player, "... is out
+  for the Round." to the others); here that message is left out and the next run starts after the
+  one second the handler waits when it has nothing to show (`script_fixes::FIXES_SOURCE`,
+  `h_fix_` of the graph's `end_run` timer handler); an elimination's message and wait stay. Online
+  the turn's player alone paces its turn (`facts.md`). Not ported: Skate 3's banner refresh (TU3
+  0x826692F8) also plays a sound with each 1-Up letter, `1up_1_user`, `1up_u_user` or `1up_p_user`
+  for the local player's letter (`HUD2.ShowSkateMessage`'s fourth argument) and `1up_1_challenger`,
+  `1up_u_challenger` or `1up_p_challenger` for another player's; they are Skate 3 front-end sounds,
+  which the port does not load, so the letters are silent. The letters are Skate 3's own, from its
+  `fedynamic.big`: each letter board row shows
   the `mUp` letters of Skate 3's `leaderboardhud` in place of its S.K.A.T.E. letters, sized as
   Skate 3 sizes them against its own S.K.A.T.E. letters and started just past the row's name
   panel. Skate 3 sizes its row around the shorter strip; this board's backs come in fixed

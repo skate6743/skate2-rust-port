@@ -1,8 +1,5 @@
-Skate 3 DLCs can now be linked in the Downloadable Content section (using the "Link DLCs" button)
-Added drop ins and darkslide grabs to Skate 3 Physics mode
-Fixed multiple parity mistakes with manuals, airs and prop grabbing scenarios on Skate 3 Physics mode
-Host can now be migrated to anyone in online lobbies from the player list
-Added a "Max Out Save" option to Extras for those who want to quickly unlock/complete everything
-Added color filter option for any shirts/pants in Edit Skater by pressing Y while highlighting them
-Fixed loads of issues with softlocking, crashing, and Freeskate Activities
-Added AI Skaters toggle to Freeplay menu
+Fixed and issue with trigger thresholds being too sensitive (this caused tricks to not from manuals sometimes)
+Added Skate 3 360 Pop Shuvit bounce from Pre-patch version to Physics Settings (credits to S4M)
+Experimental griptape coloring has been added (press Y on a deck to apply a color)
+Fixed parity mistakes with superdudes on Skate 3 Physics mode
+Skate 3 1-Ups have been fixed with full Skate 3 round and timer logic implemented

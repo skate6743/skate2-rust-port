@@ -45,7 +45,8 @@ pub(super) fn advance(
         skitching_off_ground: skater.player_state.skitching_off_ground,
     };
     let current = skater.player_state.current();
-    // PC port option: Physics Settings' 3 Shuv Bounce, read every tick, selects KnownAir as 1.0 did.
+    // PC port option: Physics Settings' Pre-patch Shuvit Bounce, read every tick, selects KnownAir
+    // as 1.0 did.
     skater.player_state.selector.v10_known_air = crate::ui::gameplay_modes::shuv_bounce();
     let requested = skater.player_state.selector.calculate(current, &input);
     if crate::diagnostics::test_log::enabled() && skater.animation_input.output.flags & (1 << 28) != 0 {

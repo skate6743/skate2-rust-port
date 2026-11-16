@@ -67,6 +67,7 @@ pub(super) fn prepare(physics:&mut Skate3PhysicsState,skater:&mut Skate3Controll
     //Player slot16=82DB3C78 (vtable82328688). Consume with retained input
     //BEFORE this frame's queries, ProcessInput, and state selection.
     super::biped_air::consume_selector(physics, skater)?;
+    super::biped_air::publish_selector(skater);
     physics.board.clear_forces();
     //World8275EA20 starts both batches before actor SetUpPhysics. Foot
     //results stay pending while PlayerInput consumes the preceding records.
@@ -327,7 +328,8 @@ pub(super) fn finish(physics:&mut Skate3PhysicsState,skater:&mut Skate3Controlle
     //ProcessOutput82DB6EE8 resets the packet before its component publishers.
     //All consumers of the preceding output have completed this frame's input.
     super::player_input::reset_outputs(&mut skater.player_input.physical);
-    crate::skate3_native::trace::info_span!("fixed_finish_skater").in_scope(|| physics.finish_skater(skater))?;
+    let finished = crate::skate3_native::trace::info_span!("fixed_finish_skater").in_scope(|| physics.finish_skater(skater));
+    physics.settle_solver_fault(finished)?;
     super::offboard_audit_trace::stage(tick, "finish", physics, skater, controls);
     #[cfg(debug_assertions)]
     super::dev_trace::checkpoint("finish", physics, skater);

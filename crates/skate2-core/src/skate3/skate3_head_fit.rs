@@ -85,7 +85,7 @@ pub fn fit_heads(components: &mut [CharacterComponentAsset]) {
 }
 
 /// Model units in a metre: the inverse bind poses' scale (their columns' length).
-fn model_units_per_metre(models: &[crate::presentation::PresentationModel]) -> f32 {
+pub(super) fn model_units_per_metre(models: &[crate::presentation::PresentationModel]) -> f32 {
     let lengths: Vec<f32> = models
         .iter()
         .flat_map(|model| &model.inverse_bind_pose)

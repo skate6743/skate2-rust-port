@@ -8,10 +8,13 @@
 //! an Online Settings page holds Show Lobby Chat, saved in `online-config.json`. Beside them the
 //! PC port calls Video Settings (`ID_GAMESETTINGS_VIDEO_SETTINGS`) Gameplay Settings, for its
 //! camera, HUD and subtitle rows, and the PC Field of View last. PC port addition: Control Settings'
-//! Stick Settings page leads to each stick's multiplier, deadzone and anti-deadzone
-//! ([`crate::stick_settings`]), saved in `controller_config.json`.
+//! Stick Settings page leads to each stick's multiplier, deadzone and anti-deadzone, and its
+//! Trigger Threshold knob sets how far a trigger travels before it reads as held
+//! ([`crate::stick_settings`]), all saved in `controller_config.json`.
 use super::{FeSoundRequest, pause_menu::PauseMenuInput};
-use crate::stick_settings::{ControllerSettings, DEADZONES, MULTIPLIERS, StickSettings};
+use crate::stick_settings::{
+    ControllerSettings, DEADZONES, DEFAULT_TRIGGER_THRESHOLD, MULTIPLIERS, StickSettings, TRIGGER_THRESHOLDS,
+};
 pub use skate2_formats::skater_profile::{
     BRIGHTNESSES, FIELD_OF_VIEWS, FrameRateCap, Msaa, PcDisplaySettings, ProfileSettings, RESOLUTION_SCALES, RESOLUTION_SCALE_STEP,
     VANILLA_BRIGHTNESS, VANILLA_FIELD_OF_VIEW,
@@ -147,6 +150,8 @@ pub enum Row {
     StickMultiplier,
     StickDeadzone,
     StickAntiDeadzone,
+    /// PC port addition: Control Settings' trigger threshold, on Edit Skater's morph knob.
+    TriggerThreshold,
     /// PC port addition: Gameplay Settings' field of view, on Edit Skater's morph knob.
     FieldOfView,
     /// PC port addition: Display Settings' brightness, on the same knob.
@@ -163,7 +168,7 @@ pub enum Row {
     PuddlePhysics,
     /// PC port addition: Online Speed, the online lockstep's usual pace in offline play.
     OnlineSpeed,
-    /// PC port addition: Physics Settings' 3 Shuv Bounce, Skate 3 1.0's KnownAir selection.
+    /// PC port addition: Physics Settings' Pre-patch Shuvit Bounce, Skate 3 1.0's KnownAir selection.
     ShuvBounce,
 }
 impl Row {
@@ -176,7 +181,8 @@ impl Row {
             | Self::OnlineSettings | Self::StickSettings | Self::LeftStick | Self::RightStick | Self::ResetSticks
             | Self::PhysicsSettings | Self::WeatherSettings => "option",
             Self::SfxVolume | Self::DialogueVolume | Self::MusicVolume | Self::RainVolume => "slider",
-            Self::StickDeadzone | Self::StickAntiDeadzone | Self::FieldOfView | Self::Brightness => "morph",
+            Self::StickDeadzone | Self::StickAntiDeadzone | Self::TriggerThreshold | Self::FieldOfView
+            | Self::Brightness => "morph",
             Self::PostFx | Self::Fisheye | Self::FrameRateCap | Self::VSync | Self::ResolutionScale | Self::Msaa
             | Self::FpsCounter | Self::Fullscreen | Self::Subtitles | Self::CameraAngle | Self::GrindTransparency
             | Self::MiniMap | Self::Hud | Self::OffboardYAxis | Self::Vibration | Self::ShowLobbyChat
@@ -221,6 +227,7 @@ impl Row {
             Self::StickMultiplier => "Stick Multiplier",
             Self::StickDeadzone => "Stick Deadzone",
             Self::StickAntiDeadzone => "Stick Anti-Deadzone",
+            Self::TriggerThreshold => "Trigger Threshold",
             Self::FieldOfView => "Field of View",
             Self::Brightness => "Brightness",
             Self::PhysicsSettings => "Physics Settings",
@@ -231,7 +238,7 @@ impl Row {
             Self::RainVolume => "Rain Volume",
             Self::PuddlePhysics => "Puddle Physics",
             Self::OnlineSpeed => "Online Speed",
-            Self::ShuvBounce => "3 Shuv Bounce",
+            Self::ShuvBounce => "Pre-patch Shuvit Bounce",
         }
     }
 }
@@ -266,7 +273,7 @@ const IN_GAME_LINKED: &[Row] = &[
     Row::DisplaySettings,
     Row::OnlineSettings,
 ];
-/// Physics Settings: Skate 3's difficulty and 3 Shuv Bounce only under Skate 3's physics.
+/// Physics Settings: Skate 3's difficulty and Pre-patch Shuvit Bounce only under Skate 3's physics.
 const PHYSICS_SKATE2: &[Row] = &[Row::PhysicsMode];
 const PHYSICS_SKATE3: &[Row] = &[Row::PhysicsMode, Row::Difficulty, Row::ShuvBounce];
 /// Weather Settings: the rain's volume only where there is rain to hear.
@@ -288,8 +295,8 @@ const VIDEO_FREESKATE: &[Row] = &[
     Row::OnlineSpeed,
     Row::FieldOfView,
 ];
-/// `gGameOptionsScreens` row 8, with the PC Stick Settings page last.
-const CONTROL: &[Row] = &[Row::OffboardYAxis, Row::Vibration, Row::StickSettings];
+/// `gGameOptionsScreens` row 8, with the PC Stick Settings page and Trigger Threshold knob last.
+const CONTROL: &[Row] = &[Row::OffboardYAxis, Row::Vibration, Row::StickSettings, Row::TriggerThreshold];
 const STICK_SETTINGS: &[Row] = &[Row::LeftStick, Row::RightStick, Row::ResetSticks];
 const STICK: &[Row] = &[Row::StickMultiplier, Row::StickDeadzone, Row::StickAntiDeadzone];
 /// `FE_SOUND_CAS_SLIDER`, which Edit Skater loops while a morph knob moves (`OnUpdate` 0x82670400).
@@ -333,8 +340,8 @@ pub struct Snapshot {
     pub show_lobby_chat: bool,
     /// Show Ghost Players in pregame lobby (PC port addition).
     pub show_ghost_players: bool,
-    /// The stick settings as the rows have them, which the pads follow at once (PC port
-    /// addition).
+    /// The stick settings and the trigger threshold as the rows have them, which the pads follow
+    /// at once (PC port addition).
     pub sticks: ControllerSettings,
     /// The Video Settings screen this opening picks.
     pub video: VideoScreen,
@@ -478,9 +485,13 @@ const fn repeat_due(frames: u32) -> bool {
 const fn slide_due(frames: u32) -> bool {
     frames == 0 || (frames >= 12 && (frames - 12) % 3 == 0)
 }
-/// The value a knob row of the display settings moves.
-fn knob(values: &mut PcDisplaySettings, row: Row) -> &mut u8 {
-    if row == Row::Brightness { &mut values.brightness } else { &mut values.field_of_view }
+/// The value a knob row moves: a display setting's, or the pads' trigger threshold.
+fn knob(state: &mut Snapshot, row: Row) -> &mut u8 {
+    match row {
+        Row::Brightness => &mut state.values.brightness,
+        Row::TriggerThreshold => &mut state.sticks.trigger_threshold,
+        _ => &mut state.values.field_of_view,
+    }
 }
 /// PC port: the anti-aliasing sample counts the renderer can draw with, as bits (1, 2, 4); all
 /// until the renderer says.
@@ -729,7 +740,7 @@ impl Controller {
             self.stop_slider();
         }
         let Some(&row) = self.state.rows().get(self.state.selected) else { return Action::None };
-        if matches!(row, Row::FieldOfView | Row::Brightness) {
+        if matches!(row, Row::FieldOfView | Row::Brightness | Row::TriggerThreshold) {
             self.update_knob(row, input);
             return Action::None;
         }
@@ -888,16 +899,20 @@ impl Controller {
         self.sounds.push(if forward { "FE_SOUND_CORE_NAV_RIGHT" } else { "FE_SOUND_CORE_NAV_LEFT" });
         super::gameplay_modes::publish(*modes);
     }
-    /// PC port addition: Gameplay Settings' Field of View and Display Settings' Brightness. The
-    /// stick or the D-pad held moves the knob a percent at a time at Edit Skater's steady pace,
-    /// looping `FE_SOUND_CAS_SLIDER` while it moves, and X puts it back to the game's own; the
-    /// camera and the screen follow at once.
+    /// PC port addition: Gameplay Settings' Field of View, Display Settings' Brightness and Control
+    /// Settings' Trigger Threshold. The stick or the D-pad held moves the knob a percent at a time
+    /// at Edit Skater's steady pace, looping `FE_SOUND_CAS_SLIDER` while it moves, and X puts it
+    /// back to the game's own (the threshold to its default); the camera, the screen and the pads
+    /// follow at once.
     fn update_knob(&mut self, row: Row, input: PauseMenuInput) {
-        let (range, vanilla) =
-            if row == Row::Brightness { (BRIGHTNESSES, VANILLA_BRIGHTNESS) } else { (FIELD_OF_VIEWS, VANILLA_FIELD_OF_VIEW) };
+        let (range, vanilla) = match row {
+            Row::Brightness => (BRIGHTNESSES, VANILLA_BRIGHTNESS),
+            Row::TriggerThreshold => (TRIGGER_THRESHOLDS, DEFAULT_TRIGGER_THRESHOLD),
+            _ => (FIELD_OF_VIEWS, VANILLA_FIELD_OF_VIEW),
+        };
         if input.misc {
             self.stop_slider();
-            let value = knob(&mut self.state.values, row);
+            let value = knob(&mut self.state, row);
             if *value != vanilla {
                 *value = vanilla;
                 self.sounds.push("FE_SOUND_CORE_A_BUTTON");
@@ -930,13 +945,13 @@ impl Controller {
         if !slide_due(frames) {
             return;
         }
-        let value = *knob(&mut self.state.values, row);
+        let value = *knob(&mut self.state, row);
         let next = value.saturating_add_signed(direction).clamp(*range.start(), *range.end());
         if next == value {
             self.stop_slider();
             self.held = Some((direction, frames));
         } else {
-            *knob(&mut self.state.values, row) = next;
+            *knob(&mut self.state, row) = next;
             publish(&self.state.values);
             if !self.slider {
                 self.slider = true;
@@ -946,7 +961,7 @@ impl Controller {
     }
     /// PC port addition: a Stick Settings page's input, from the D-pad alone, as the sticks are
     /// what its boxes show. Up and down pick a row, A opens a stick's page or puts both sticks back
-    /// to vanilla, and left or right held moves the row's value: the multiplier a hundredth at a
+    /// to vanilla (the trigger threshold stays), and left or right held moves the row's value: the multiplier a hundredth at a
     /// time, sooner the longer it is held, and a deadzone's knob at Edit Skater's steady pace,
     /// looping `FE_SOUND_CAS_SLIDER` while it moves.
     fn update_sticks(&mut self, input: PauseMenuInput) {
@@ -962,7 +977,10 @@ impl Controller {
             match row {
                 Row::LeftStick => self.state.page = Page::LeftStick,
                 Row::RightStick => self.state.page = Page::RightStick,
-                _ => self.state.sticks = ControllerSettings::VANILLA,
+                _ => {
+                    self.state.sticks =
+                        ControllerSettings { trigger_threshold: self.state.sticks.trigger_threshold, ..ControllerSettings::VANILLA };
+                }
             }
             if row != Row::ResetSticks {
                 self.state.selected = 0;
@@ -1294,6 +1312,61 @@ mod tests {
         // B returns to the main list.
         assert_eq!(menu.update(press(|i| i.cancel = true), &mut settings), Action::None);
         assert_eq!(menu.snapshot().page, Page::Options);
+    }
+    #[test]
+    fn the_trigger_threshold_slides_on_control_settings_and_x_resets_it() {
+        let mut settings = ProfileSettings::default();
+        let mut menu = Controller::default();
+        menu.load_sticks(ControllerSettings::DEFAULT);
+        menu.open(false, VideoScreen::MainMenu, &settings);
+        menu.acknowledge_intro();
+        for _ in 0..2 {
+            menu.update(press(|i| i.down = true), &mut settings);
+        }
+        menu.update(press(|i| i.select = true), &mut settings);
+        assert_eq!(menu.snapshot().page, Page::Control);
+        // Up from the first row wraps to the last, the knob.
+        menu.update(press(|i| i.up = true), &mut settings);
+        assert_eq!(menu.snapshot().rows()[menu.snapshot().selected], Row::TriggerThreshold);
+        assert_eq!(Row::TriggerThreshold.kind(), "morph");
+        assert_eq!(menu.sticks().trigger_threshold, DEFAULT_TRIGGER_THRESHOLD);
+        menu.take_sound_requests();
+        // Held right: a step at once, then from 12 frames one every 3.
+        for _ in 0..16 {
+            menu.update(press(|i| i.morph_axis = 1.), &mut settings);
+        }
+        assert_eq!(menu.sticks().trigger_threshold, DEFAULT_TRIGGER_THRESHOLD + 3);
+        assert_eq!(menu.snapshot().sticks, menu.sticks());
+        assert_eq!(menu.take_sound_requests(), [FeSoundRequest::Loop(SLIDER_SOUND)]);
+        assert!(menu.sticks_dirty() && !menu.dirty() && !menu.display_dirty(), "kept in controller_config.json");
+        for _ in 0..400 {
+            menu.update(press(|i| i.morph_axis_secondary = -1.), &mut settings);
+        }
+        assert_eq!(menu.sticks().trigger_threshold, *TRIGGER_THRESHOLDS.start());
+        for _ in 0..600 {
+            menu.update(press(|i| i.morph_axis_secondary = 1.), &mut settings);
+        }
+        assert_eq!(menu.sticks().trigger_threshold, *TRIGGER_THRESHOLDS.end());
+        menu.update(press(|i| i.misc = true), &mut settings);
+        assert_eq!(menu.sticks(), ControllerSettings::DEFAULT);
+        assert!(!menu.sticks_dirty());
+        // Stick Settings' Reset To Default puts the sticks back and leaves the threshold.
+        menu.update(press(|i| i.morph_axis_secondary = 1.), &mut settings);
+        menu.update(press(|i| i.up = true), &mut settings);
+        assert_eq!(menu.snapshot().rows()[menu.snapshot().selected], Row::StickSettings);
+        menu.update(press(|i| i.select = true), &mut settings);
+        menu.update(press(|i| i.select = true), &mut settings);
+        assert_eq!(menu.snapshot().page, Page::LeftStick);
+        menu.update(press(|i| i.morph_axis_secondary = -1.), &mut settings);
+        assert_eq!(menu.sticks().left.multiplier, 99);
+        menu.update(press(|i| i.cancel = true), &mut settings);
+        menu.update(press(|i| i.dpad_up = true), &mut settings);
+        assert_eq!(menu.snapshot().rows()[menu.snapshot().selected], Row::ResetSticks);
+        menu.update(press(|i| i.select = true), &mut settings);
+        assert_eq!(
+            menu.sticks(),
+            ControllerSettings { trigger_threshold: DEFAULT_TRIGGER_THRESHOLD + 1, ..ControllerSettings::VANILLA }
+        );
     }
     #[test]
     fn field_of_view_slides_from_vanilla_and_x_resets_it() {

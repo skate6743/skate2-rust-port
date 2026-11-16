@@ -51,9 +51,10 @@ impl EditSkaterFrontend {
     /// A colour row's own colours. A colour filter's row holds its colours on screen as its tints
     /// (`edit_skater_colour_filter.rs`).
     fn row_colours(&self, o: EditSkaterOption) -> RecordResult<Vec<RowColour>> {
-        if record_ops::filter_part_slot(self.colour_slot(o)?).is_some() {
+        let slot = self.colour_slot(o)?;
+        if record_ops::filter_part_slot(slot).is_some() {
             return Ok(self
-                .filter_colours()?
+                .filter_colours(slot)?
                 .into_iter()
                 .map(|(key, colour)| RowColour { key, base: colour.map(f32::to_bits), highlight: [0; 3], swatch: colour })
                 .collect());

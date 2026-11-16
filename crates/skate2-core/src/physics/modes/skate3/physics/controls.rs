@@ -96,6 +96,11 @@ impl PlayerControls {
         } else {
             None
         };
+        //ActionGraphInputListener::Fill 82599A70..A90 hands the raw controller update the
+        //published State+16 being Pushing (502) and Skitching (104). In either, both bumpers
+        //held keep the one that was down first (82598FE0).
+        self.bumper_state_502 = physical.state.state_16 == 502;
+        self.bumper_state_104 = physical.state.state_16 == 104;
         self.update(
             &mut SimulationActions {
                 source: map,

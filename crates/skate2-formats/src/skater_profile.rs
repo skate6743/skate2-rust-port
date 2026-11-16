@@ -134,8 +134,8 @@ pub struct PcGameplayModes {
     pub puddle_physics: bool,
     /// Online Speed: offline play paced like the online lockstep usually ran (61.5 Hz).
     pub online_speed: bool,
-    /// 3 Shuv Bounce: with Skate 3 physics, KnownAir selects as Skate 3 1.0 did, so getting off
-    /// the board just before landing bounces instead of bailing. On unless turned off.
+    /// Pre-patch Shuvit Bounce: with Skate 3 physics, KnownAir selects as Skate 3 1.0 did, so
+    /// getting off the board just before landing bounces instead of bailing. On unless turned off.
     pub shuv_bounce: bool,
 }
 impl Default for PcGameplayModes {
@@ -850,7 +850,7 @@ impl SkaterProfile {
                 // Puddle Physics came later, and a leaf ends in padding: only a set flag is on.
                 let puddle_physics = matches!(r.tuple(), Ok([1]));
                 let online_speed = matches!(r.tuple(), Ok([1]));
-                // 3 Shuv Bounce is kept as its Off, so a save from before it reads On.
+                // Pre-patch Shuvit Bounce is kept as its Off, so a save from before it reads On.
                 let shuv_bounce = !matches!(r.tuple(), Ok([1]));
                 return Ok(PcGameplayModes { physics, difficulty, weather, rain_volume, puddle_physics, online_speed, shuv_bounce });
             }

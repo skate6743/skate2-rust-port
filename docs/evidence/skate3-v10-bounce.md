@@ -1,6 +1,6 @@
-# Skate 3 physics: the 1.0 "3 Shuv Bounce" (PC port option)
+# Skate 3 physics: the 1.0 "Pre-patch Shuvit Bounce" (PC port option)
 
-Physics Settings' **3 Shuv Bounce** row (Skate 3 physics only, On by default) runs
+Physics Settings' **Pre-patch Shuvit Bounce** row (Skate 3 physics only, On by default) runs
 the Skate 3 player's KnownAir state selection as the base 1.0 `default.xex` did, instead of TU3's.
 
 The evidence comes from a function-matched diff of the base 1.0 `default.xex` and the TU3 image

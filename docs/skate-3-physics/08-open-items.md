@@ -19,9 +19,10 @@ What is not ported, not verified, or knowingly different. TU3 addresses.
 
 ## Knowingly different (timing)
 
-| Item | TU3 | Port |
-|---|---|---|
-| Off-board (BipedAir) trajectory completion | completes at the next tick start (0x82DB3C78 → 0x82D6CC50 → 0x82D6D020); a pending tick's packet 0x82D6E3F8 uses the launch arc and does not advance the blend timer | completes at launch: BipedAir enter/relaunch ticks differ by one blend tick (PhysicsAir's selector already completes next tick, the big-air fix) |
+None at present. The off-board (BipedAir) trajectory, once listed here, completes at the next
+tick's start as in TU3 (0x82DB3C78 → 0x82D6CC50): `offboard/air_selector.rs` stages the launch's
+query results and `biped_air::consume_selector` takes them in `frame.rs` before the animation
+update.
 
 ## Not verified in play
 

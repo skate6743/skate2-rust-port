@@ -366,13 +366,21 @@ pub(super) fn execute(
                         }
                     }
                     crate::skate3_native::graph_host::motion_stock_gameplay::Operation::UpdateStandingOnCar => {
-                        // This node is a consumer of the moving-object
-                        // publication.  It must not turn an absent publication
-                        // into a fatal graph error: the native dispatcher keeps
-                        // the last valid physical owner state and continues the
-                        // frame.  A moving-object owner can publish its update
-                        // through the registry when one is actually active.
-                        let _ = phase;
+                        //Update 82BBB660 (vtable 82320C90: Begin and End are empty): the support's
+                        //acceleration and speed drive the stand's lean and speed blends.
+                        if phase == 1 {
+                            let [speed, x, z] = host.gameplay_conditions.as_ref()
+                                .ok_or("UpdateStandingOnCar requires completed OffBoard output")?.support_motion;
+                            for (name, value) in [
+                                (&b"xdisp"[..], (-x).max(-1.0).min(1.0)),
+                                (&b"zDisp"[..], z.max(-1.0).min(1.0)),
+                                (&b"objSpeed"[..], speed.max(0.0).min(1.0)),
+                            ] {
+                                host.animation.set_attribute(SettableAttribute {
+                                    name: encode(name), value, normalized: false, sequence_id: -1,
+                                });
+                            }
+                        }
                     }
                     crate::skate3_native::graph_host::motion_stock_gameplay::Operation::SetGrabType { grab } => {
                         let grab = crate::skate3_native::graph_host::motion_stock_gameplay::GrabType::parse(&grab)?;

@@ -699,6 +699,13 @@ impl Skate3Player {
                 // the animation read it.
                 if inputs.in_state {
                     self.skater.player_input.physical.off_board.flag_304 = u8::from(self.pushing.grabbing_object());
+                    // 0x82d46ff4: it also clears the locomotion state (OffBoard +84) the common
+                    // publication wrote from the walking cadence.
+                    self.skater.player_input.physical.off_board.locomotion_state_84 = 0;
+                    // 0x82d470e4: the repush delay goes to the Ground record's +0x128. The next
+                    // ProcessInput (0x82DB5034..506C) starts the player's timer from it and counts
+                    // it down in ProcessedPhysIn+2852, which holds BipedGround's grab decision off.
+                    self.skater.player_input.physical.ground.scalar_296 = self.pushing.delay_until_repushable();
                 }
             }
             self.advanced_this_tick = true;

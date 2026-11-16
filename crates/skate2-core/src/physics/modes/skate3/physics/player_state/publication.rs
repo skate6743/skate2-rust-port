@@ -17,6 +17,13 @@ pub(super) fn publish(physics: &mut Skate3PhysicsState, skater: &mut Skate3Contr
         biped.frame_output.velocity.map(f32::to_bits);
     skater.player_input.physical.off_board.cadence_phase_80 = biped.cadence.phase.phase;
     skater.player_input.physical.off_board.locomotion_state_84 = biped.cadence.locomotion_index;
+    //82DB7298..72E8: a run-out requested from the board predicts the jump off it now, for the
+    //MotionGraph's OBTrajTime (Dismount/Air/Jumpout) and AddRunoutAttribs on the next tick.
+    if skater.wipeout.requests_runout(&skater.player_input.processed)
+        && !matches!(skater.player_input.processed.state_2508, 500 | 501)
+    {
+        super::super::biped_air::launch_runout(physics, skater)?;
+    }
     if !state.is_grind()
         && state != PhysicalStateId::Nonspecific
         && !matches!(
@@ -174,6 +181,16 @@ pub(super) fn publish(physics: &mut Skate3PhysicsState, skater: &mut Skate3Contr
     if state == PhysicalStateId::GroundAnimation {
         skater.ground_animation.fill(p, &mut physical.air);
     }
+    //Skateboard::FillPhysOut 82C03600..3618 and Skeleton::FillPhysOut 82BE22E0..22FC raise
+    //State69 for their own requests (Skateboard+0x121, Skeleton+0x407A) and clear those.
+    let board_respawn = std::mem::take(&mut skater.ground_lifecycle.board_wants_respawn_289);
+    let skeleton_respawn = std::mem::take(&mut skater.skeleton_input.invalid_target_reset);
+    if board_respawn || skeleton_respawn {
+        crate::diagnostics::test_log::event(
+            "skate3_teleport_request",
+            format_args!("board={board_respawn} skeleton={skeleton_respawn} state={state:?} tick={}", physics.ticks),
+        );
+    }
     physical.state = CurrentStateFields {
         category_12: state.category(),
         state_16: state as u32,
@@ -181,7 +198,9 @@ pub(super) fn publish(physics: &mut Skate3PhysicsState, skater: &mut Skate3Contr
         flag_74: u8::from(state==PhysicalStateId::HandPlant && skater.handplant.continuation),
         //ProcessOutput82DB7104..7128: selector57 requests State69 here.
         //The next input/selection enters702; never reset inside selection.
-        flag_69: u8::from(skater.player_state.selector.request_teleport),
+        flag_69: u8::from(
+            skater.player_state.selector.request_teleport || board_respawn || skeleton_respawn,
+        ),
         ..CurrentStateFields::default()
     };
     skater.player_state.state_flags[69 - 52] = physical.state.flag_69 != 0;

@@ -1,6 +1,6 @@
-//! PC port addition: the stick settings on every pad's sample (`skate2_core::stick_settings`) as
-//! the pad platforms hand samples to the game, and each slot's last sample as its pad reported it,
-//! whose sticks the Stick Settings pages show.
+//! PC port addition: the stick settings and the trigger threshold on every pad's sample
+//! (`skate2_core::stick_settings`) as the pad platforms hand samples to the game, and each slot's
+//! last sample as its pad reported it, whose sticks the Stick Settings pages show.
 use skate2_core::{XboxPadSample, stick_settings::ControllerSettings};
 
 /// The four `XInputGetState` slots.
@@ -48,8 +48,9 @@ mod tests {
     #[test]
     fn samples_take_the_settings_and_slots_keep_what_the_pad_reported() {
         let mut sticks = PadSticks::default();
-        let sample = XboxPadSample { buttons: 0x10, left_trigger: 1, right_trigger: 2, left_x: 3277, left_y: -3277, right_x: 0, right_y: 32767 };
-        assert_eq!(sticks.apply(1, sample), sample, "vanilla until set");
+        let sample = XboxPadSample { buttons: 0x10, left_trigger: 0, right_trigger: 255, left_x: 3277, left_y: -3277, right_x: 0, right_y: 32767 };
+        assert_eq!(sticks.apply(1, sample), sample, "the sticks vanilla until set");
+        assert_eq!(sticks.apply(1, XboxPadSample { left_trigger: 30, ..sample }), sample, "a light pull is under the default threshold");
         sticks.set_settings(ControllerSettings { left: StickSettings { deadzone: 20, ..StickSettings::VANILLA }, ..ControllerSettings::VANILLA });
         let game = sticks.apply(1, sample);
         assert_eq!(game, XboxPadSample { left_x: 0, left_y: 0, ..sample }, "the left stick sits inside its deadzone");

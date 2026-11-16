@@ -143,6 +143,12 @@ fn cas_colour(input:Output)->vec4<f32>{
    return vec4<f32>(cas_tone(lit,input.fog),hair_alpha*object.color.a);
  }
  if mode!=3. {colour*=stamp.custom[0];}
+ // PC port: Edit Griptape's colour (custom[2], its fourth lane set) over the deck's top face,
+ // which the first texture coordinate set keeps within custom[3]: the diffuse squared, brought
+ // to a mean of one there, times the colour's tint.
+ if (mode==0. || mode==3.) && stamp.custom[2].w>0. && all(input.uv.xy>=stamp.custom[3].xy) && all(input.uv.xy<=stamp.custom[3].zw) {
+   colour=vec4<f32>(sample.xyz*sample.xyz*stamp.custom[2].xyz,1.);
+ }
  if uv.x>0. && uv.y>0. {
    if mode==0. || (mode==3. && uv.x<1. && uv.y<1.) {
      let decal=decal_sample;colour=colour*(1.-decal.a)+decal*decal.a;
