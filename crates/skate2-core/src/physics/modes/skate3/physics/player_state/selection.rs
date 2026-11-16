@@ -45,6 +45,8 @@ pub(super) fn advance(
         skitching_off_ground: skater.player_state.skitching_off_ground,
     };
     let current = skater.player_state.current();
+    // PC port option: Physics Settings' 3 Shuv Bounce, read every tick, selects KnownAir as 1.0 did.
+    skater.player_state.selector.v10_known_air = crate::ui::gameplay_modes::shuv_bounce();
     let requested = skater.player_state.selector.calculate(current, &input);
     if crate::diagnostics::test_log::enabled() && skater.animation_input.output.flags & (1 << 28) != 0 {
         // KickTurn attribute active: the animated deck that IsSkateboardAnimated82BDC6C8 tests,
@@ -58,6 +60,11 @@ pub(super) fn advance(
     }
     skater.player_state.requested_state = requested;
     if requested != current {
+        let p = &input.processed;
+        crate::diagnostics::test_log::event("skate3_state", format_args!(
+            "tick={} {current:?}->{requested:?} v10_known_air={} 2476={:#x} 2480={:#x} collision_time={:.3} wheels={}",
+            physics.ticks, skater.player_state.selector.v10_known_air, p.flags_2476, p.flags_2480,
+            p.trajectory_collision_time_2772, p.wheel_contact_count_2556));
         //82DB5FF4 restores the actual counter also used by ground-history.
         skater.player_input.player.ground_history_frames_1304 = 100;
         super::transition::set(physics, skater, requested)?;

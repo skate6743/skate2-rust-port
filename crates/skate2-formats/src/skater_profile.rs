@@ -134,10 +134,13 @@ pub struct PcGameplayModes {
     pub puddle_physics: bool,
     /// Online Speed: offline play paced like the online lockstep usually ran (61.5 Hz).
     pub online_speed: bool,
+    /// 3 Shuv Bounce: with Skate 3 physics, KnownAir selects as Skate 3 1.0 did, so getting off
+    /// the board just before landing bounces instead of bailing. On unless turned off.
+    pub shuv_bounce: bool,
 }
 impl Default for PcGameplayModes {
     fn default() -> Self {
-        Self { physics: PhysicsMode::Skate2, difficulty: Difficulty::Normal, weather: Weather::Vanilla, rain_volume: RAIN_VOLUME_STEPS, puddle_physics: false, online_speed: false }
+        Self { physics: PhysicsMode::Skate2, difficulty: Difficulty::Normal, weather: Weather::Vanilla, rain_volume: RAIN_VOLUME_STEPS, puddle_physics: false, online_speed: false, shuv_bounce: true }
     }
 }
 
@@ -847,7 +850,9 @@ impl SkaterProfile {
                 // Puddle Physics came later, and a leaf ends in padding: only a set flag is on.
                 let puddle_physics = matches!(r.tuple(), Ok([1]));
                 let online_speed = matches!(r.tuple(), Ok([1]));
-                return Ok(PcGameplayModes { physics, difficulty, weather, rain_volume, puddle_physics, online_speed });
+                // 3 Shuv Bounce is kept as its Off, so a save from before it reads On.
+                let shuv_bounce = !matches!(r.tuple(), Ok([1]));
+                return Ok(PcGameplayModes { physics, difficulty, weather, rain_volume, puddle_physics, online_speed, shuv_bounce });
             }
         }
         Ok(PcGameplayModes::default())
@@ -856,7 +861,7 @@ impl SkaterProfile {
         let id = name_hash("SK82_PC::GameplayModes");
         let leaf = leaf_chunk(id, 1, &[vec![modes.physics as u8], vec![modes.difficulty as u8], vec![modes.weather as u8],
             vec![modes.rain_volume.min(RAIN_VOLUME_STEPS)], vec![u8::from(modes.puddle_physics)],
-            vec![u8::from(modes.online_speed)]]);
+            vec![u8::from(modes.online_speed)], vec![u8::from(!modes.shuv_bounce)]]);
         for chunk in self.chunks.iter_mut().skip(1) {
             if read32(chunk, 0)? != name_hash("SK82_PC") { continue; }
             let mut children = split_chunks(&chunk[16..])?;
@@ -1265,9 +1270,10 @@ mod display_tests {
         let modes = earlier.gameplay_modes().unwrap();
         assert!(!modes.puddle_physics);
         assert!(!modes.online_speed);
+        assert!(modes.shuv_bounce);
         assert_eq!(modes.rain_volume, 4);
         for puddle_physics in [true, false] {
-            let modes = PcGameplayModes { puddle_physics, online_speed: !puddle_physics, ..PcGameplayModes::default() };
+            let modes = PcGameplayModes { puddle_physics, online_speed: !puddle_physics, shuv_bounce: !puddle_physics, ..PcGameplayModes::default() };
             let mut profile = SkaterProfile::new_empty();
             profile.set_gameplay_modes(modes).unwrap();
             let profile = SkaterProfile::parse(&profile.encode().unwrap()).unwrap();

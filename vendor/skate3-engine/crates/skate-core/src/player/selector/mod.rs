@@ -28,6 +28,10 @@ pub struct StateSelector {
     pub skitch_exit_countdown: i32,
     pub revert_exited_normally: bool,
     pub request_teleport: bool,
+    /// PC port option ("3 Shuv Bounce"), not a TU3 member: KnownAir selects as the base 1.0
+    /// `default.xex` did (`0x82D5FF10`), without the two dismount wipeout gates TU3 added
+    /// (`0x82D8B5B0..B5DC` and `0x82D8B69C..B6BC`). See `docs/evidence/skate3-v10-bounce.md`.
+    pub v10_known_air: bool,
 }
 
 #[derive(Clone, Copy)]

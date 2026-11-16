@@ -13,9 +13,13 @@ static MODES: AtomicU32 = AtomicU32::new(pack(PcGameplayModes {
     rain_volume: RAIN_VOLUME_STEPS,
     puddle_physics: false,
     online_speed: false,
+    shuv_bounce: false,
 }));
 /// Online Speed, beside the packed word (whose bits are all in use).
 static ONLINE_SPEED: AtomicBool = AtomicBool::new(false);
+/// 3 Shuv Bounce, beside the packed word. Off (TU3's selection) until Options publishes the
+/// profile's rows, and in tests, which never publish.
+static SHUV_BOUNCE: AtomicBool = AtomicBool::new(false);
 
 const fn pack(modes: PcGameplayModes) -> u32 {
     modes.physics as u32 | (modes.difficulty as u32) << 8 | (modes.weather as u32) << 16 | (modes.rain_volume as u32) << 24
@@ -31,9 +35,13 @@ pub fn publish(mut modes: PcGameplayModes) {
         modes.physics = physics;
         modes.difficulty = difficulty.unwrap_or(modes.difficulty);
     }
+    if let Some(shuv_bounce) = diagnostic_shuv_bounce() {
+        modes.shuv_bounce = shuv_bounce;
+    }
     if cfg!(not(test)) {
         MODES.store(pack(modes), Ordering::Relaxed);
         ONLINE_SPEED.store(modes.online_speed, Ordering::Relaxed);
+        SHUV_BOUNCE.store(modes.shuv_bounce, Ordering::Relaxed);
     }
 }
 
@@ -70,6 +78,16 @@ fn diagnostic_physics() -> Option<(PhysicsMode, Option<Difficulty>)> {
     })
 }
 
+/// `SKATE2_DIAGNOSTIC_SHUV_BOUNCE=on|off`: 3 Shuv Bounce from boot, whatever the profile holds.
+fn diagnostic_shuv_bounce() -> Option<bool> {
+    static PICK: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    *PICK.get_or_init(|| match std::env::var("SKATE2_DIAGNOSTIC_SHUV_BOUNCE").ok()?.trim().to_ascii_lowercase().as_str() {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    })
+}
+
 /// With each completed simulation tick: a live diagnostic weather pick reaching its tick.
 pub fn diagnostic_tick(tick: u32) {
     if let Some((weather, at)) = diagnostic_weather()
@@ -97,6 +115,7 @@ pub fn current() -> PcGameplayModes {
         rain_volume: (byte(24) & 0x7F).min(RAIN_VOLUME_STEPS),
         puddle_physics: word >> 31 != 0,
         online_speed: ONLINE_SPEED.load(Ordering::Relaxed),
+        shuv_bounce: SHUV_BOUNCE.load(Ordering::Relaxed),
     }
 }
 
@@ -152,6 +171,14 @@ pub fn online_speed() -> bool {
     ONLINE_SPEED.load(Ordering::Relaxed)
 }
 
+/// 3 Shuv Bounce is picked: the Skate 3 player's KnownAir selects as Skate 3 1.0 did
+/// (`0x82D5FF10`), without the two dismount bails TU3 added, so getting off the board just
+/// before landing (a 360 shove-it into a grab, Y late) bounces the skater up instead of bailing.
+#[must_use]
+pub fn shuv_bounce() -> bool {
+    SHUV_BOUNCE.load(Ordering::Relaxed)
+}
+
 /// The rain's loudness as a fraction of the sound effects' volume.
 #[must_use]
 pub fn rain_volume() -> f32 {
@@ -194,7 +221,7 @@ mod tests {
 
     #[test]
     fn modes_pack_and_unpack() {
-        let modes = PcGameplayModes { physics: PhysicsMode::Skate3, difficulty: Difficulty::Motorized, weather: Weather::Storm, rain_volume: 4, puddle_physics: true, online_speed: true };
+        let modes = PcGameplayModes { physics: PhysicsMode::Skate3, difficulty: Difficulty::Motorized, weather: Weather::Storm, rain_volume: 4, puddle_physics: true, online_speed: true, shuv_bounce: true };
         let word = pack(modes);
         assert_eq!(word & 0xff, 1);
         assert_eq!(word >> 8 & 0xff, 3);

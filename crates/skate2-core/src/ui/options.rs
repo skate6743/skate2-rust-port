@@ -163,6 +163,8 @@ pub enum Row {
     PuddlePhysics,
     /// PC port addition: Online Speed, the online lockstep's usual pace in offline play.
     OnlineSpeed,
+    /// PC port addition: Physics Settings' 3 Shuv Bounce, Skate 3 1.0's KnownAir selection.
+    ShuvBounce,
 }
 impl Row {
     /// `gGameOptionsItems` 0x82fdf9a8's type: `option`, `slider` or `selector`; the stick
@@ -179,7 +181,7 @@ impl Row {
             | Self::FpsCounter | Self::Fullscreen | Self::Subtitles | Self::CameraAngle | Self::GrindTransparency
             | Self::MiniMap | Self::Hud | Self::OffboardYAxis | Self::Vibration | Self::ShowLobbyChat
             | Self::ShowGhostPlayers | Self::StickMultiplier | Self::PhysicsMode | Self::Difficulty | Self::Weather
-            | Self::PuddlePhysics | Self::OnlineSpeed => "selector",
+            | Self::PuddlePhysics | Self::OnlineSpeed | Self::ShuvBounce => "selector",
         }
     }
     /// `gGameOptionsItems`' title id; the PC rows carry literal text.
@@ -229,6 +231,7 @@ impl Row {
             Self::RainVolume => "Rain Volume",
             Self::PuddlePhysics => "Puddle Physics",
             Self::OnlineSpeed => "Online Speed",
+            Self::ShuvBounce => "3 Shuv Bounce",
         }
     }
 }
@@ -263,9 +266,9 @@ const IN_GAME_LINKED: &[Row] = &[
     Row::DisplaySettings,
     Row::OnlineSettings,
 ];
-/// Physics Settings: Skate 3's difficulty only under Skate 3's physics.
+/// Physics Settings: Skate 3's difficulty and 3 Shuv Bounce only under Skate 3's physics.
 const PHYSICS_SKATE2: &[Row] = &[Row::PhysicsMode];
-const PHYSICS_SKATE3: &[Row] = &[Row::PhysicsMode, Row::Difficulty];
+const PHYSICS_SKATE3: &[Row] = &[Row::PhysicsMode, Row::Difficulty, Row::ShuvBounce];
 /// Weather Settings: the rain's volume only where there is rain to hear.
 const WEATHER_DRY: &[Row] = &[Row::Weather];
 const WEATHER_RAIN: &[Row] = &[Row::Weather, Row::RainVolume, Row::PuddlePhysics];
@@ -750,7 +753,7 @@ impl Controller {
         if input.left == input.right {
             return Action::None;
         }
-        if matches!(row, Row::PhysicsMode | Row::Difficulty | Row::Weather | Row::RainVolume | Row::PuddlePhysics | Row::OnlineSpeed) {
+        if matches!(row, Row::PhysicsMode | Row::Difficulty | Row::Weather | Row::RainVolume | Row::PuddlePhysics | Row::OnlineSpeed | Row::ShuvBounce) {
             self.step_mode(row, input.right);
             return Action::None;
         }
@@ -870,6 +873,7 @@ impl Controller {
             }
             Row::PuddlePhysics => modes.puddle_physics = !modes.puddle_physics,
             Row::OnlineSpeed => modes.online_speed = !modes.online_speed,
+            Row::ShuvBounce => modes.shuv_bounce = !modes.shuv_bounce,
             _ => {
                 let next = if forward { modes.rain_volume.saturating_add(1) } else { modes.rain_volume.saturating_sub(1) };
                 if next > RAIN_VOLUME_STEPS || next == modes.rain_volume {
