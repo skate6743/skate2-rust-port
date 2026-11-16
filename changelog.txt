@@ -1,4 +1,4 @@
-Fixed and issue with trigger thresholds being too sensitive (this caused tricks to not from manuals sometimes)
+Fixed an issue with trigger thresholds being too sensitive (this caused issues with tricking from manuals)
 Added Skate 3 360 Pop Shuvit bounce from Pre-patch version to Physics Settings (credits to S4M)
 Experimental griptape coloring has been added (press Y on a deck to apply a color)
 Fixed parity mistakes with superdudes on Skate 3 Physics mode
