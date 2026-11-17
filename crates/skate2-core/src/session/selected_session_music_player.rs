@@ -129,10 +129,15 @@ impl ProfileAudio {
                 .and_then(|mut store| store.save_gameplay_modes(options.modes()))
                 .map_err(error)?;
         }
-        if options.lobby_chat_dirty() || options.ghost_players_dirty() {
-            OnlineConfig { show_lobby_chat: options.show_lobby_chat(), show_ghost_players: options.show_ghost_players(), ..OnlineConfig::load() }
-                .save()
-                .map_err(error)?;
+        if options.lobby_chat_dirty() || options.ghost_players_dirty() || options.brainrot_mode_dirty() {
+            OnlineConfig {
+                show_lobby_chat: options.show_lobby_chat(),
+                show_ghost_players: options.show_ghost_players(),
+                brainrot_mode: options.brainrot_mode(),
+                ..OnlineConfig::load()
+            }
+            .save()
+            .map_err(error)?;
         }
         if options.sticks_dirty() {
             controller_config::save(&options.sticks()).map_err(error)?;

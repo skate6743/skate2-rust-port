@@ -32,11 +32,21 @@ pub struct OnlineConfig {
     /// Show Ghost Players in pregame lobby: off, a member waiting in a challenge's pre-game
     /// lobby sees nothing of the challenge's players. On unless the file says otherwise.
     pub show_ghost_players: bool,
+    /// Brainrot Mode: while another player's turn of a challenge plays, the local skater
+    /// is free to skate and its own camera shows in a corner of the screen. Off, the waiting
+    /// skater stands pinned as the challenge asks. Off unless the file says otherwise.
+    pub brainrot_mode: bool,
 }
 
 impl Default for OnlineConfig {
     fn default() -> Self {
-        Self { nickname: String::new(), server: String::new(), show_lobby_chat: true, show_ghost_players: true }
+        Self {
+            nickname: String::new(),
+            server: String::new(),
+            show_lobby_chat: true,
+            show_ghost_players: true,
+            brainrot_mode: false,
+        }
     }
 }
 
@@ -85,11 +95,12 @@ impl OnlineConfig {
 
     fn text(&self) -> String {
         format!(
-            "{{\n  \"nickname\": {},\n  \"server\": {},\n  \"show_lobby_chat\": {},\n  \"show_ghost_players\": {}\n}}\n",
+            "{{\n  \"nickname\": {},\n  \"server\": {},\n  \"show_lobby_chat\": {},\n  \"show_ghost_players\": {},\n  \"brainrot_mode\": {}\n}}\n",
             quote(&self.nickname),
             quote(&self.server),
             self.show_lobby_chat,
-            self.show_ghost_players
+            self.show_ghost_players,
+            self.brainrot_mode
         )
     }
 }
@@ -112,8 +123,8 @@ pub(super) fn quote(text: &str) -> String {
     out
 }
 
-/// Reads the top-level object's `nickname` and `server` strings and its `show_lobby_chat` and
-/// `show_ghost_players` booleans, and skips every other value.
+/// Reads the top-level object's `nickname` and `server` strings and its `show_lobby_chat`,
+/// `show_ghost_players` and `brainrot_mode` booleans, and skips every other value.
 fn parse(text: &str) -> Option<OnlineConfig> {
     let mut reader = Reader { bytes: text.as_bytes(), at: 0 };
     let mut config = OnlineConfig::default();
@@ -132,6 +143,8 @@ fn parse(text: &str) -> Option<OnlineConfig> {
             config.show_lobby_chat = reader.boolean()?;
         } else if key == "show_ghost_players" && matches!(reader.peek()?, b't' | b'f') {
             config.show_ghost_players = reader.boolean()?;
+        } else if key == "brainrot_mode" && matches!(reader.peek()?, b't' | b'f') {
+            config.brainrot_mode = reader.boolean()?;
         } else {
             reader.skip_value()?;
         }
@@ -390,9 +403,20 @@ mod tests {
                 server: "203.0.113.7:32082".into(),
                 show_lobby_chat,
                 show_ghost_players: !show_lobby_chat,
+                brainrot_mode: show_lobby_chat,
             };
             assert_eq!(parse(&config.text()), Some(config));
         }
+    }
+
+    #[test]
+    fn brainrot_mode_is_off_unless_the_file_turns_it_on() {
+        assert!(!parse(r#"{"nickname": "Rob", "show_ghost_players": false}"#).unwrap().brainrot_mode);
+        let config = parse(r#"{"brainrot_mode": true, "nickname": "Rob"}"#).unwrap();
+        assert!(config.brainrot_mode && config.show_ghost_players && config.show_lobby_chat);
+        assert!(!parse(r#"{"brainrot_mode": 1}"#).unwrap().brainrot_mode);
+        // The key it had before it was Brainrot Mode is not read.
+        assert!(!parse(r#"{"skate_while_waiting": true}"#).unwrap().brainrot_mode);
     }
 
     #[test]

@@ -140,6 +140,8 @@ pub enum Row {
     ShowLobbyChat,
     /// PC port addition: `online-config.json`'s `show_ghost_players`.
     ShowGhostPlayers,
+    /// PC port addition: `online-config.json`'s `brainrot_mode`.
+    BrainrotMode,
     /// PC port addition: Control Settings' Stick Settings page.
     StickSettings,
     /// PC port addition: Stick Settings' page of each stick, and its reset of both to vanilla.
@@ -186,8 +188,8 @@ impl Row {
             Self::PostFx | Self::Fisheye | Self::FrameRateCap | Self::VSync | Self::ResolutionScale | Self::Msaa
             | Self::FpsCounter | Self::Fullscreen | Self::Subtitles | Self::CameraAngle | Self::GrindTransparency
             | Self::MiniMap | Self::Hud | Self::OffboardYAxis | Self::Vibration | Self::ShowLobbyChat
-            | Self::ShowGhostPlayers | Self::StickMultiplier | Self::PhysicsMode | Self::Difficulty | Self::Weather
-            | Self::PuddlePhysics | Self::OnlineSpeed | Self::ShuvBounce => "selector",
+            | Self::ShowGhostPlayers | Self::BrainrotMode | Self::StickMultiplier | Self::PhysicsMode
+            | Self::Difficulty | Self::Weather | Self::PuddlePhysics | Self::OnlineSpeed | Self::ShuvBounce => "selector",
         }
     }
     /// `gGameOptionsItems`' title id; the PC rows carry literal text.
@@ -220,6 +222,7 @@ impl Row {
             Self::Vibration => "ID_GAMESETTINGS_VIBRATION_TOGGLE",
             Self::ShowLobbyChat => "Show Lobby Chat",
             Self::ShowGhostPlayers => "Show Ghost Players in pregame lobby",
+            Self::BrainrotMode => "Brainrot Mode",
             Self::StickSettings => "Stick Settings",
             Self::LeftStick => "Left Stick",
             Self::RightStick => "Right Stick",
@@ -312,7 +315,7 @@ const DISPLAY: &[Row] = &[
     Row::Fullscreen,
     Row::Brightness,
 ];
-const ONLINE: &[Row] = &[Row::ShowLobbyChat, Row::ShowGhostPlayers];
+const ONLINE: &[Row] = &[Row::ShowLobbyChat, Row::ShowGhostPlayers, Row::BrainrotMode];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -340,6 +343,8 @@ pub struct Snapshot {
     pub show_lobby_chat: bool,
     /// Show Ghost Players in pregame lobby (PC port addition).
     pub show_ghost_players: bool,
+    /// Brainrot Mode (PC port addition).
+    pub brainrot_mode: bool,
     /// The stick settings and the trigger threshold as the rows have them, which the pads follow
     /// at once (PC port addition).
     pub sticks: ControllerSettings,
@@ -436,6 +441,8 @@ pub struct Controller {
     saved_lobby_chat: bool,
     /// Show Ghost Players in pregame lobby as `online-config.json` last held it.
     saved_ghost_players: bool,
+    /// Brainrot Mode as `online-config.json` last held it.
+    saved_brainrot_mode: bool,
     /// `mIsDirty`: a profile setting changed since `OnEnter`.
     dirty: bool,
     /// `FE_SOUND_*` globals this input played (options.apt and `FrontEndState_Options`).
@@ -591,6 +598,21 @@ impl Controller {
     pub const fn ghost_players_dirty(&self) -> bool {
         self.state.show_ghost_players != self.saved_ghost_players
     }
+    /// `online-config.json`'s Brainrot Mode.
+    pub fn load_brainrot_mode(&mut self, on: bool) {
+        self.state.brainrot_mode = on;
+        self.saved_brainrot_mode = on;
+    }
+    /// Brainrot Mode as the row has it, which the game follows at once.
+    #[must_use]
+    pub const fn brainrot_mode(&self) -> bool {
+        self.state.brainrot_mode
+    }
+    /// Whether exiting saves Brainrot Mode to `online-config.json`.
+    #[must_use]
+    pub const fn brainrot_mode_dirty(&self) -> bool {
+        self.state.brainrot_mode != self.saved_brainrot_mode
+    }
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
         self.state
@@ -642,6 +664,7 @@ impl Controller {
         self.saved = self.state.values;
         self.saved_lobby_chat = self.state.show_lobby_chat;
         self.saved_ghost_players = self.state.show_ghost_players;
+        self.saved_brainrot_mode = self.state.brainrot_mode;
         self.saved_sticks = self.state.sticks;
         self.saved_modes = self.state.modes;
         self.dirty = false;
@@ -783,7 +806,7 @@ impl Controller {
                 &mut settings.music_volume
             }
             Row::PostFx | Row::Fisheye | Row::FrameRateCap | Row::VSync | Row::ResolutionScale | Row::Msaa | Row::FpsCounter
-            | Row::Fullscreen | Row::ShowLobbyChat | Row::ShowGhostPlayers => {
+            | Row::Fullscreen | Row::ShowLobbyChat | Row::ShowGhostPlayers | Row::BrainrotMode => {
                 // The PC selectors sound core_nav_left/core_nav_right by key and, as
                 // Prev/NextValueCalc do, wrap past either end; Resolution Scale stops at its ends.
                 self.sounds.push(if input.right { "FE_SOUND_CORE_NAV_RIGHT" } else { "FE_SOUND_CORE_NAV_LEFT" });
@@ -793,6 +816,10 @@ impl Controller {
                 }
                 if row == Row::ShowGhostPlayers {
                     self.state.show_ghost_players = !self.state.show_ghost_players;
+                    return Action::None;
+                }
+                if row == Row::BrainrotMode {
+                    self.state.brainrot_mode = !self.state.brainrot_mode;
                     return Action::None;
                 }
                 let values = &mut self.state.values;
@@ -1232,7 +1259,7 @@ mod tests {
             menu.update(press(|i| i.down = true), &mut settings);
         }
         menu.update(press(|i| i.select = true), &mut settings);
-        assert_eq!(menu.snapshot().rows(), [Row::ShowLobbyChat, Row::ShowGhostPlayers]);
+        assert_eq!(menu.snapshot().rows(), [Row::ShowLobbyChat, Row::ShowGhostPlayers, Row::BrainrotMode]);
         menu.update(press(|i| i.down = true), &mut settings);
         assert_eq!(Row::ShowGhostPlayers.kind(), "selector");
         assert_eq!(Row::ShowGhostPlayers.title(), "Show Ghost Players in pregame lobby");
@@ -1247,6 +1274,36 @@ mod tests {
         menu.update(press(|i| i.left = true), &mut settings);
         menu.close_after_save();
         assert!(!menu.show_ghost_players() && !menu.ghost_players_dirty());
+    }
+    #[test]
+    fn brainrot_mode_toggles_last_on_online_settings_and_saves_only_when_changed() {
+        let mut settings = ProfileSettings::default();
+        let mut menu = Controller::default();
+        menu.load_lobby_chat(true);
+        menu.load_ghost_players(true);
+        menu.load_brainrot_mode(true);
+        menu.open(true, VideoScreen::Game, &settings);
+        menu.acknowledge_intro();
+        for _ in 0..5 {
+            menu.update(press(|i| i.down = true), &mut settings);
+        }
+        menu.update(press(|i| i.select = true), &mut settings);
+        assert_eq!(menu.snapshot().rows().last(), Some(&Row::BrainrotMode));
+        menu.update(press(|i| i.down = true), &mut settings);
+        menu.update(press(|i| i.down = true), &mut settings);
+        assert_eq!(Row::BrainrotMode.kind(), "selector");
+        assert_eq!(Row::BrainrotMode.title(), "Brainrot Mode");
+        menu.take_sounds();
+        menu.update(press(|i| i.right = true), &mut settings);
+        assert!(!menu.brainrot_mode() && !menu.snapshot().brainrot_mode && menu.brainrot_mode_dirty());
+        // Neither a profile setting nor the other online rows.
+        assert!(!menu.dirty() && !menu.lobby_chat_dirty() && !menu.ghost_players_dirty());
+        menu.update(press(|i| i.left = true), &mut settings);
+        assert!(menu.brainrot_mode() && !menu.brainrot_mode_dirty());
+        assert_eq!(menu.take_sounds(), ["FE_SOUND_CORE_NAV_RIGHT", "FE_SOUND_CORE_NAV_LEFT"]);
+        menu.update(press(|i| i.left = true), &mut settings);
+        menu.close_after_save();
+        assert!(!menu.brainrot_mode() && !menu.brainrot_mode_dirty());
     }
     #[test]
     fn video_settings_rows_follow_the_game_mode() {
