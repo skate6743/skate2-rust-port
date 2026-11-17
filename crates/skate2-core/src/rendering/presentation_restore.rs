@@ -42,7 +42,7 @@ use std::{
 /// One tick's `SubmitFrame`: what each presentation's `DoSimSubmit` recorded.
 pub struct PresentationSubmission {
     pub(crate) camera: CameraSubmission,
-    /// PC port addition, Skate While Waiting: the local game camera while `camera` shows another
+    /// PC port addition, Brainrot Mode: the local game camera while `camera` shows another
     /// player's, for the corner the local skater's own view draws in.
     pub(crate) pip_camera: Option<CameraSubmission>,
     pub(crate) skaters: Vec<SkaterFrame>,
@@ -110,8 +110,8 @@ pub struct PresentationRestorer {
     /// The recorded game camera a replay restores beside the scene's camera, which the scene's
     /// camera reads (`CameraPresentation::GetReplayMatrix`) but does not show.
     recorded_camera: CameraRestore,
-    /// The local game camera beside a shown camera of another player (PC port addition, Skate
-    /// While Waiting), and whether the last restore had one.
+    /// The local game camera beside a shown camera of another player (PC port addition,
+    /// Brainrot Mode), and whether the last restore had one.
     pip_camera: CameraRestore,
     pip_shown: bool,
     skaters: Vec<SkaterRestore>,
@@ -372,7 +372,7 @@ impl PresentationRestorer {
     }
 
     /// The local game camera the last restore left beside another player's shown camera (PC port
-    /// addition, Skate While Waiting); none when the restored frame showed the game camera.
+    /// addition, Brainrot Mode); none when the restored frame showed the game camera.
     #[must_use]
     pub fn pip_camera(&self) -> Option<CameraView> {
         if self.pip_shown { self.pip_camera.view() } else { None }

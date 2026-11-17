@@ -831,7 +831,7 @@ impl LiveSkatingView {
     ) -> RenderResult<()> {
         let view = restore.and_then(PresentationRestorer::camera).unwrap_or(retained.camera);
         scene.stereo_planes=Some(view.planes);
-        // PC port addition, Skate While Waiting: the local skater's own camera for the corner,
+        // PC port addition, Brainrot Mode: the local skater's own camera for the corner,
         // while the frame shows another player's.
         scene.pip = restore.and_then(PresentationRestorer::pip_camera).map(|pip| crate::gpu_renderer::PipView {
             clip_from_world: window_clip_from_world(pip.clip_from_world, renderer.dimensions()),

@@ -1390,7 +1390,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let online = crate::ui::online_config::OnlineConfig::load();
         self.options_menu.load_lobby_chat(online.show_lobby_chat);
         self.options_menu.load_ghost_players(online.show_ghost_players);
-        self.options_menu.load_skate_while_waiting(online.skate_while_waiting);
+        self.options_menu.load_brainrot_mode(online.brainrot_mode);
         self.options_menu.load_sticks(crate::ui::controller_config::load());
         self.audio.settings = profile.load_settings().map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?;
         self.audio.new_profile = profile.is_new_profile().map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?;
@@ -4257,7 +4257,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             let rows = output.try_skeleton_output().ok()?.effective_skeleton_root_matrix.columns();
             [rows[0], rows[1], rows[2]]
         };
-        // Skate While Waiting (PC port): the skater walks by its own camera, the one its corner shows.
+        // Brainrot Mode (PC port): the skater walks by its own camera, the one its corner shows.
         let camera = self
             .online_view_camera()
             .filter(|_| !self.online_skates_while_waiting())

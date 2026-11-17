@@ -85,7 +85,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             }
         }
         skaters.extend(self.online_submitted_frames());
-        // PC port addition, Skate While Waiting: the local game camera, before another player's
+        // PC port addition, Brainrot Mode: the local game camera, before another player's
         // takes its place, for the corner the local skater's own view draws in.
         let pip_camera = self.online_skates_while_waiting().then(|| camera.clone());
         self.online_camera_submission(&mut camera);

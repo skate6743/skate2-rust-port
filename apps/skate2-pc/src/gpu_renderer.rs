@@ -153,7 +153,7 @@ const NIS_WHITE_BLOWOUT: f32 = 3.0;
 pub struct GpuScene {
     pub(crate) stereoscopy: bool,
     pub(crate) stereo_planes: Option<[f32;2]>,
-    /// PC port addition, Skate While Waiting: the local skater's own camera, drawn into the
+    /// PC port addition, Brainrot Mode: the local skater's own camera, drawn into the
     /// corner at the left, above the trick display, while the frame shows another player's.
     pub(crate) pip: Option<PipView>,
     pub(crate) career_photo: Option<u32>,
@@ -342,7 +342,7 @@ pub(crate) struct FrameDiagnostics {
 }
 
 /// A frame's commands on either side of the map's runs.
-/// What a recorded frame does with Skate While Waiting's corner (PC port addition).
+/// What a recorded frame does with Brainrot Mode's corner (PC port addition).
 #[derive(Clone, Copy)]
 enum PipPass<'a> {
     None,
@@ -364,7 +364,7 @@ struct RecordedFrame {
 pub struct GpuRenderer {
     media_capture: Option<media_capture::Target>,
     stereo_objects_active: bool,
-    /// Skate While Waiting's corner (PC port addition): its pass into the window and its scene
+    /// Brainrot Mode's corner (PC port addition): its pass into the window and its scene
     /// targets at the corner's size, made when a frame first shows it.
     pip_composite: pip::Composite,
     pip_targets: Option<pip::Targets>,
@@ -1170,7 +1170,7 @@ impl GpuRenderer {
             let planes=scene.stereo_planes.ok_or("stereo camera planes absent")?;
             vec![Some(map.stereo_eye(planes,0)?),Some(map.stereo_eye(planes,1)?)]
         } else { vec![None] };
-        // PC port addition, Skate While Waiting: the local skater's own camera is a second eye drawn
+        // PC port addition, Brainrot Mode: the local skater's own camera is a second eye drawn
         // first, into the corner's own targets, which the main view then shows under its HUD. Not
         // beside stereoscopy's eyes, nor in a capture of the scene without its overlays.
         let pip_layout = scene
@@ -1415,7 +1415,7 @@ impl GpuRenderer {
         let scene_view = scene_color(self.final_pass.as_ref(), scene, settings, view);
         // With MSAA the samples resolve into the swapchain image and are
         // then discarded; the overlay and capture read the resolved image.
-        // Skate While Waiting's corner draws into its own targets alike.
+        // Brainrot Mode's corner draws into its own targets alike.
         let (target, resolve, scene_depth_view) = match pip {
             PipPass::Draw(targets) => (
                 targets.msaa.as_ref().unwrap_or(&targets.colour),
@@ -1705,7 +1705,7 @@ impl GpuRenderer {
                 },
             );
         }
-        // PC port addition, Skate While Waiting: the local skater's own view, drawn before this
+        // PC port addition, Brainrot Mode: the local skater's own view, drawn before this
         // frame, in its corner over the finished scene and under every 2D layer.
         if let PipPass::Show(targets, layout) = pip {
             self.pip_composite.draw(&self.queue, &mut encoder, view, targets, layout);

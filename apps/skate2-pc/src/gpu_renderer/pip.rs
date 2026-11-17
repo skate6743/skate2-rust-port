@@ -1,4 +1,4 @@
-//! PC port addition, Skate While Waiting (Online Settings): while another player's turn of an
+//! PC port addition, Brainrot Mode (Online Settings): while another player's turn of an
 //! online challenge shows, the local skater's own game camera draws into a corner at the left of
 //! the screen, just above the trick display, under the HUD.
 //!
@@ -165,7 +165,7 @@ pub(super) struct Composite {
 impl Composite {
     pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Skate While Waiting corner"),
+            label: Some("Brainrot Mode corner"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -196,17 +196,17 @@ impl Composite {
             ],
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Skate While Waiting corner"),
+            label: Some("Brainrot Mode corner"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Skate While Waiting corner"),
+            label: Some("Brainrot Mode corner"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             cache: None,
-            label: Some("Skate While Waiting corner"),
+            label: Some("Brainrot Mode corner"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -230,13 +230,13 @@ impl Composite {
             multiview_mask: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Skate While Waiting corner"),
+            label: Some("Brainrot Mode corner"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let rect = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Skate While Waiting corner rect"),
+            label: Some("Brainrot Mode corner rect"),
             size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -274,27 +274,27 @@ impl Composite {
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
         let colour = texture(
-            "Skate While Waiting corner image",
+            "Brainrot Mode corner image",
             1,
             self.format,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         );
         let msaa = (samples > 1).then(|| {
             texture(
-                "Skate While Waiting corner samples",
+                "Brainrot Mode corner samples",
                 samples,
                 self.format,
                 wgpu::TextureUsages::RENDER_ATTACHMENT,
             )
         });
         let depth = texture(
-            "Skate While Waiting corner depth",
+            "Brainrot Mode corner depth",
             samples,
             super::DEPTH_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
         let binding = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Skate While Waiting corner"),
+            label: Some("Brainrot Mode corner"),
             layout: &self.layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -340,7 +340,7 @@ impl Composite {
         queue.write_buffer(&self.rect, 0, &rect);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             multiview_mask: None,
-            label: Some("Skate While Waiting corner"),
+            label: Some("Brainrot Mode corner"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 depth_slice: None,
                 view,

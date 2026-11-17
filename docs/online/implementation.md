@@ -877,6 +877,18 @@ to the lobby:
   LB held moves the view to the next player who can be watched, in the game's join order and
   followed by user id (a player who left is simply not in the order), and after the last one back
   to the local skater. While watching, the menu follows LB with its marker rows disabled.
+- **Brainrot Mode** (PC port addition): Online Settings' last row, off unless
+  `online-config.json`'s `brainrot_mode` is true. While a turn-based round shows another
+  player's turn from that player's camera (no scene playing, no Spectate, the round running and
+  the challenge not teleporting the local skater), the local skater is unpinned and skates on its
+  own pad and game camera; the challenge's pin (`cMsgPinPlayer`) comes back once that stops. Its
+  camera draws in a corner at the left of the screen, just above the trick display and under the
+  HUD (`apps/skate2-pc` `gpu_renderer/pip.rs`: 30% of the window's width at the window's aspect,
+  a second eye into its own targets, without PostFX; fog, shadows, audio and world streaming
+  follow the main view). A waiting player sends no facts and the round reads it at its last ones,
+  so nothing it does counts, and the other consoles stop drawing it more than 4 m from its spot,
+  as for any waiting player. Collision stays loaded around the online game area, whose boundary
+  still breadcrumbs it.
 - **Edit Skater** (PC port addition): the online free skate's pause menu has Edit Skater above
   Game Settings, as the single-player hub's, enabled while the local skater is in the game's
   world with no round, travel, change of location or freeskate activity it proposed or accepted

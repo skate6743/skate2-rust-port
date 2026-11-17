@@ -203,7 +203,7 @@ pub(super) struct Online {
     lobby_hud_dirty: bool,
     /// What the submitted camera shows in place of the game camera.
     view: Option<online_challenge::OnlineView>,
-    /// Skate While Waiting (PC port addition): the local skater skated freely through the last
+    /// Brainrot Mode (PC port addition): the local skater skated freely through the last
     /// tick while another player's turn played.
     pub(super) free_skating: bool,
     /// When the game last sent a replay frame or `Busy`: the server drops a game that sends
@@ -1386,7 +1386,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         // GenerateActionGraphIntents 0x825fda28 skips the whole fill while pinned).
         let online = self.online.game.as_ref().is_some_and(|game| game.entered);
         let diagnostic_pin = diagnostic_pin();
-        // PC port addition, Skate While Waiting: while another player's turn shows, the local
+        // PC port addition, Brainrot Mode: while another player's turn shows, the local
         // skater is unpinned every tick (over any pin the challenge sends meanwhile); once it no
         // longer is, the challenge's own pin is back.
         let free = self.online_skates_while_waiting();
@@ -1394,7 +1394,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let script_pinned = self.online.round.as_ref().is_some_and(online_challenge::Round::script_pinned);
         if free != was_free {
             trace(format_args!(
-                "skate while waiting: {}",
+                "brainrot mode: {}",
                 if free { "the local skater skates" } else if script_pinned { "the local skater is pinned again" } else { "stopped" }
             ));
         }

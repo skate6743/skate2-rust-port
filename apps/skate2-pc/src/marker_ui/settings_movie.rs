@@ -444,7 +444,7 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
             Row::Hud => on_off(state.hud),
             Row::ShowLobbyChat => on_off(state.show_lobby_chat),
             Row::ShowGhostPlayers => on_off(state.show_ghost_players),
-            Row::SkateWhileWaiting => on_off(state.skate_while_waiting),
+            Row::BrainrotMode => on_off(state.brainrot_mode),
             // GetStringValue 0x82643d48: ID_GAMESETTINGS_CAMERA_HIGH for 1, _LOW for 0.
             Row::CameraAngle => if state.camera_high { "ID_GAMESETTINGS_CAMERA_HIGH" } else { "ID_GAMESETTINGS_CAMERA_LOW" },
             // Its Off-board Y Axis reads Normal with mInvertYAxis set.
@@ -886,7 +886,7 @@ mod tests {
         movie.update(&assets, Snapshot { page: Page::Options, ..Default::default() }, None).unwrap();
         movie.link(&assets, None).unwrap();
         tick(&mut movie, &mut main, &assets, 90);
-        let online = Snapshot { page: Page::Online, show_lobby_chat: true, show_ghost_players: true, skate_while_waiting: true, ..Default::default() };
+        let online = Snapshot { page: Page::Online, show_lobby_chat: true, show_ghost_players: true, brainrot_mode: true, ..Default::default() };
         let skate3 = skate2_core::ui::gameplay_modes::PcGameplayModes {
             physics: skate2_core::ui::gameplay_modes::PhysicsMode::Skate3,
             ..Default::default()
