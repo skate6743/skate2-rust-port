@@ -55,6 +55,7 @@ pub(crate) mod particles;
 pub(crate) mod crowd;
 pub(crate) mod deck_ao;
 pub(crate) mod movie;
+mod pip;
 mod stereoscopy;
 mod weather;
 pub(crate) mod rain;
@@ -68,6 +69,7 @@ pub(crate) use map_draw::{
     DiagnosticFragment, DiagnosticPipelineKey, FrameEnvironment, GpuMap, GpuMapBuilder,
     InstanceMaterial, MapEnvironment, MapFrameStats, WorldShadowGeometry, world_box_in_view,
 };
+pub(crate) use pip::PipView;
 pub(crate) use raster_state::RasterState;
 pub(crate) use shadow_map::ShadowCascades;
 
@@ -151,6 +153,9 @@ const NIS_WHITE_BLOWOUT: f32 = 3.0;
 pub struct GpuScene {
     pub(crate) stereoscopy: bool,
     pub(crate) stereo_planes: Option<[f32;2]>,
+    /// PC port addition, Skate While Waiting: the local skater's own camera, drawn into the
+    /// corner at the left, above the trick display, while the frame shows another player's.
+    pub(crate) pip: Option<PipView>,
     pub(crate) career_photo: Option<u32>,
     pub(crate) replay_media: Option<crate::replay_media::Request>,
     pub(crate) capture_watermark: Option<marker_ui::DrawList>,
@@ -337,6 +342,16 @@ pub(crate) struct FrameDiagnostics {
 }
 
 /// A frame's commands on either side of the map's runs.
+/// What a recorded frame does with Skate While Waiting's corner (PC port addition).
+#[derive(Clone, Copy)]
+enum PipPass<'a> {
+    None,
+    /// The corner's own view: the scene into its targets, nothing after the scene's objects.
+    Draw(&'a pip::Targets),
+    /// The main view, which shows the corner drawn before it under the HUD.
+    Show(&'a pip::Targets, pip::Layout),
+}
+
 struct RecordedFrame {
     /// The shadow maps and the world UI panel's texture.
     before: wgpu::CommandBuffer,
@@ -349,6 +364,10 @@ struct RecordedFrame {
 pub struct GpuRenderer {
     media_capture: Option<media_capture::Target>,
     stereo_objects_active: bool,
+    /// Skate While Waiting's corner (PC port addition): its pass into the window and its scene
+    /// targets at the corner's size, made when a frame first shows it.
+    pip_composite: pip::Composite,
+    pip_targets: Option<pip::Targets>,
     present_pacing: PresentPacing,
     frame_cap: FrameCap,
     /// For the monitor's refresh rate.
@@ -705,6 +724,7 @@ impl GpuRenderer {
             shadows.world_rows(),
         ));
         let fps = fps::Fps::new(&device, format);
+        let pip_composite = pip::Composite::new(&device, format);
         let marker_ui = marker_ui::Pipeline::new(&device, &queue, format, sample_count);
         let visual_indicators = visual_indicator::Pipelines::new(&device, format, sample_count);
         let particles = particles::Pipelines::new(&device, format, sample_count);
@@ -729,6 +749,8 @@ impl GpuRenderer {
             final_pass: None,
             main_target,
             stereo_objects_active: false,
+            pip_composite,
+            pip_targets: None,
             display_settings: Default::default(),
             resolution_scale: 100,
             scale_requested: 100,
@@ -1148,52 +1170,95 @@ impl GpuRenderer {
             let planes=scene.stereo_planes.ok_or("stereo camera planes absent")?;
             vec![Some(map.stereo_eye(planes,0)?),Some(map.stereo_eye(planes,1)?)]
         } else { vec![None] };
+        // PC port addition, Skate While Waiting: the local skater's own camera is a second eye drawn
+        // first, into the corner's own targets, which the main view then shows under its HUD. Not
+        // beside stereoscopy's eyes, nor in a capture of the scene without its overlays.
+        let pip_layout = scene
+            .pip
+            .filter(|_| !stereo && capture.is_none_or(|(_, _, before_ui)| !before_ui))
+            .and(map_view)
+            .and_then(|_| pip::Layout::of(self.config.width, self.config.height));
+        let pip_eye = match (pip_layout, scene.pip.as_ref(), map_view) {
+            (Some(layout), Some(pip), Some(map)) => {
+                let size = layout.image_size();
+                if !self.pip_targets.as_ref().is_some_and(|targets| targets.fit(size, self.sample_count, self.config.format)) {
+                    self.pip_targets = Some(self.pip_composite.targets(&self.device, size, self.sample_count));
+                }
+                Some(pip::eye(map.view_clip(None), pip)?)
+            }
+            _ => None,
+        };
+        let pip_layout = pip_eye.and(pip_layout);
+        let pip_targets = if pip_eye.is_some() { self.pip_targets.take() } else { None };
+        let passes: Vec<(Option<stereoscopy::Eye>, bool)> =
+            pip_eye.map(|eye| (Some(eye), true)).into_iter().chain(eyes.into_iter().map(|eye| (eye, false))).collect();
+        // The objects' uniforms hold an eye's clips rather than their own until a pass writes
+        // their own back.
+        let mut objects_corrected = self.stereo_objects_active;
         let mut diagnostics=FrameDiagnostics::default();
         let mut map_wait=Duration::ZERO;
         let mut submit=Duration::ZERO;
-        for eye in eyes {
+        for (eye, pip_pass) in passes {
+        let pip = match (pip_pass, pip_targets.as_ref(), pip_layout) {
+            (true, Some(targets), _) => PipPass::Draw(targets),
+            (false, Some(targets), Some(layout)) => PipPass::Show(targets, layout),
+            _ => PipPass::None,
+        };
+        let (target, depth) = match pip {
+            PipPass::Draw(targets) => (targets.msaa.as_ref().unwrap_or(&targets.colour).clone(), targets.depth.clone()),
+            _ => (
+                self.msaa_color
+                    .as_ref()
+                    .unwrap_or(scene_color(
+                        self.final_pass.as_ref(),
+                        scene,
+                        settings,
+                        &view,
+                    ))
+                    .clone(),
+                self.depth.clone(),
+            ),
+        };
         // The map's selection and runs encode on the render workers while this thread
         // records the frame's other commands.
         let runs = MapRuns {
             device: Arc::clone(&self.device),
             camera: self.camera_binding.clone(),
-            target: self
-                .msaa_color
-                .as_ref()
-                .unwrap_or(scene_color(
-                    self.final_pass.as_ref(),
-                    scene,
-                    settings,
-                    &view,
-                ))
-                .clone(),
-            depth: self.depth.clone(),
+            target,
+            depth,
             threads: self.map_threads,
         };
         self.marker_ui.set_eye(&self.queue,eye.as_ref());
         self.visual_indicators.set_eye(&self.queue,eye.as_ref());
         self.particles.set_eye(&self.queue,eye.as_ref());
         self.crowd.set_eye(&self.queue,eye.as_ref());
-        if eye.is_some() || self.stereo_objects_active {
+        if eye.is_some() || objects_corrected {
             for object in &scene.objects {
                 let central=*object.central_clip.lock().map_err(|_| "object projection lock")?;
                 let clip=eye.as_ref().map_or(central,|e|e.transform(central));
                 let bytes:Vec<_>=clip.into_iter().flat_map(f32::to_ne_bytes).collect();
                 self.character_uploads.write(&object.uniform,0,&bytes);
             }
+            objects_corrected = eye.is_some();
         }
+        // The corner's pass keeps out of the GPU profile, which times the frame's main view.
+        let profile = if pip_pass { self.gpu_profile.take() } else { None };
         let mut map = None;
         let (recorded, recorded_end) = rayon::in_place_scope(|scope| {
             if let Some(source) = map_view {
                 let (runs, map) = (&runs, &mut map);
                 scope.spawn(move |_| *map = Some(runs.encode(source,eye.as_ref())));
             }
-            let recorded = self.record_frame(scene, settings, &render_texture, &view, if eye.is_some_and(|e|e.field==0) {None} else {capture}, eye.as_ref());
+            let capture = if pip_pass || eye.is_some_and(|e|e.field==0) {None} else {capture};
+            let recorded = self.record_frame(scene, settings, &render_texture, &view, capture, eye.as_ref(), pip);
             // While the map's runs finish, the submissions the GPU has completed release
             // their resources here rather than in this frame's submit.
             let _ = self.device.poll(wgpu::PollType::Poll);
             (recorded, Instant::now())
         });
+        if pip_pass {
+            self.gpu_profile = profile;
+        }
         map_wait += recorded_end.elapsed();
         let RecordedFrame {
             before,
@@ -1214,13 +1279,16 @@ impl GpuRenderer {
         self.queue.submit(uploads.into_iter().chain(buffers));
         if let Some(final_pass)=&mut self.final_pass {final_pass.after_submit();}
         self.shadows.submitted();
-        if let Some(profile) = &mut self.gpu_profile {
+        if let Some(profile) = self.gpu_profile.as_mut().filter(|_| !pip_pass) {
             profile.submitted();
         }
         submit += field_submit.elapsed();
         diagnostics=recorded_diagnostics;
         }
-        self.stereo_objects_active=stereo;
+        self.stereo_objects_active=objects_corrected;
+        if pip_targets.is_some() {
+            self.pip_targets = pip_targets;
+        }
         if let Some(capture)=&self.media_capture {
             self.queue.submit(Some(capture.preview(&self.device,&self.queue,&frame.texture.create_view(&Default::default()))));
         }
@@ -1257,6 +1325,7 @@ impl GpuRenderer {
         view: &wgpu::TextureView,
         capture: Option<(&wgpu::Buffer, u32, bool)>,
         eye: Option<&stereoscopy::Eye>,
+        pip: PipPass<'_>,
     ) -> RenderResult<RecordedFrame> {
         // A map draw list built for another sample count waits for its rebuild.
         let map_view = scene.map.as_ref().filter(|map| map.sample_count == self.sample_count);
@@ -1267,9 +1336,11 @@ impl GpuRenderer {
             .as_mut()
             .map_or_else(Default::default, |profile| profile.begin(&self.device));
         if let Some(map) = map_view {
-            // The only per-frame map upload: every map draw shares these globals.
+            // The only per-frame map upload: every map draw shares these globals. Skate While
+            // Waiting's corner, which no PostFX follows, takes PostFX Off's exposure.
+            let unexposed = !settings.postfx || matches!(pip, PipPass::Draw(_));
             self.queue
-                .write_buffer(&self.camera, 0, &map.globals_for_eye((!settings.postfx).then_some(1.),eye));
+                .write_buffer(&self.camera, 0, &map.globals_for_eye(unexposed.then_some(1.),eye));
         }
         let mut encoder = self
             .device
@@ -1344,7 +1415,19 @@ impl GpuRenderer {
         let scene_view = scene_color(self.final_pass.as_ref(), scene, settings, view);
         // With MSAA the samples resolve into the swapchain image and are
         // then discarded; the overlay and capture read the resolved image.
-        let target = self.msaa_color.as_ref().unwrap_or(scene_view);
+        // Skate While Waiting's corner draws into its own targets alike.
+        let (target, resolve, scene_depth_view) = match pip {
+            PipPass::Draw(targets) => (
+                targets.msaa.as_ref().unwrap_or(&targets.colour),
+                targets.msaa.as_ref().map(|_| &targets.colour),
+                &targets.depth,
+            ),
+            PipPass::None | PipPass::Show(..) => (
+                self.msaa_color.as_ref().unwrap_or(scene_view),
+                self.msaa_color.as_ref().map(|_| scene_view),
+                &self.depth,
+            ),
+        };
         // A map's runs clear the scene targets; the individually bound objects
         // continue them.
         let cleared = map_view.is_some();
@@ -1356,8 +1439,8 @@ impl GpuRenderer {
                 label: Some("diagnostic frame objects"),
             });
         {
-            let (resolve_target, store) = match &self.msaa_color {
-                Some(_) => (Some(scene_view), wgpu::StoreOp::Discard),
+            let (resolve_target, store) = match resolve {
+                Some(resolved) => (Some(resolved), wgpu::StoreOp::Discard),
                 None => (None, wgpu::StoreOp::Store),
             };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1376,7 +1459,7 @@ impl GpuRenderer {
                         store,
                     },
                 })],
-                depth_stencil_attachment: Some(scene_depth(&self.depth, !cleared)),
+                depth_stencil_attachment: Some(scene_depth(scene_depth_view, !cleared)),
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
@@ -1516,6 +1599,28 @@ impl GpuRenderer {
         }
         let pass_end = pass_end_start.elapsed();
         let scene_time = scene_start.elapsed();
+        if let PipPass::Draw(_) = pip {
+            // The corner shows the scene as it stands: no PostFX, blit, capture or HUD.
+            let finish_start = Instant::now();
+            let after = encoder.finish();
+            finish += finish_start.elapsed();
+            return Ok(RecordedFrame {
+                before,
+                after,
+                diagnostics: FrameDiagnostics {
+                    dynamic_upload,
+                    dynamic_shadows,
+                    world_shadows,
+                    scene: scene_time,
+                    objects: object_draws,
+                    pass_end,
+                    finish,
+                    world_shadow_islands,
+                    dynamic_objects: dynamic_objects.len(),
+                    ..FrameDiagnostics::default()
+                },
+            });
+        }
         let post_start = Instant::now();
         if let Some(profile) = &self.gpu_profile {
             profile.stamp(&mut encoder, 3);
@@ -1599,6 +1704,11 @@ impl GpuRenderer {
                     depth_or_array_layers: 1,
                 },
             );
+        }
+        // PC port addition, Skate While Waiting: the local skater's own view, drawn before this
+        // frame, in its corner over the finished scene and under every 2D layer.
+        if let PipPass::Show(targets, layout) = pip {
+            self.pip_composite.draw(&self.queue, &mut encoder, view, targets, layout);
         }
         // RenderModeScene82857ea4 -> FE.Render2D -> AptRendering.Render2D
         // 82631bc8..bd0 draws layer5 AFTER PostFX.Apply82857dec. Left-focus
@@ -1694,7 +1804,9 @@ fn write_bmp(
         .and_then(|size| size.checked_mul(4))
         .ok_or("BMP size overflow")?;
     let file_size = image_size.checked_add(54).ok_or("BMP file overflow")?;
-    let mut file = std::fs::File::create(path)?;
+    // Buffered: an RGBA image goes out four bytes a pixel, and unbuffered each was a write of its
+    // own (seconds a capture, which held the game's loop).
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     file.write_all(b"BM")?;
     file.write_all(&file_size.to_le_bytes())?;
     file.write_all(&[0; 4])?;
@@ -1720,6 +1832,7 @@ fn write_bmp(
             }
         }
     }
+    file.flush()?;
     Ok(())
 }
 

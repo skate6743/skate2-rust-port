@@ -106,7 +106,7 @@ fn get_frame(r:&mut Reader<'_>,c:&mut Loaded)->Result<ReplayFrame> {
     let vehicles=(0..count).map(|_|get_vehicle(r,&c.catalog)).collect::<Result<Vec<_>>>()?;
     let count=usize::get(r)?;if count>4096 {return Err("replay pedestrian count".into());}
     let pedestrians=(0..count).map(|_|get_pedestrian(r,c)).collect::<Result<Vec<_>>>()?;
-    Ok(ReplayFrame {visual:PresentationSubmission {camera,skaters,living_world,tick,sim_rate},audio,
+    Ok(ReplayFrame {visual:PresentationSubmission {camera,pip_camera:None,skaters,living_world,tick,sim_rate},audio,
         world:RecordedWorld {dynamic_objects,vehicles,pedestrians,traffic_lights:Store::get(r)?},local_skater,players_recipe})
 }
 

@@ -13,6 +13,7 @@ fn submission() -> PresentationSubmission {
                 update_counter: 0,
             },
         },
+        pip_camera: None,
         skaters: Vec::new(),
         living_world: LivingWorldSubmission::default(),
         tick: 0,

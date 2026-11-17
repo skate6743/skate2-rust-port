@@ -280,6 +280,9 @@ pub(super) struct Round {
     /// it has, for diagnostics.
     unpinned: Option<u32>,
     turns: u32,
+    /// The challenge's last `cMsgPinPlayer` for the local skater pinned it: what the skater goes
+    /// back to when Skate While Waiting stops (PC port).
+    script_pinned: bool,
     /// The player `Online.SwitchCamera` last made this console follow.
     camera_player: Option<i32>,
     /// The sync point the challenge waits at.
@@ -357,6 +360,7 @@ impl Round {
             stance,
             unpinned: None,
             turns: 0,
+            script_pinned: false,
             camera_player: None,
             sync: None,
             released: BTreeSet::new(),
@@ -441,6 +445,11 @@ impl Round {
     /// players see it play (its turn, or a challenge everyone plays at once).
     pub(super) fn local_plays(&self) -> bool {
         self.running() && self.local_contributes()
+    }
+
+    /// The challenge's last pin of the local skater (`cMsgPinPlayer`) pinned it.
+    pub(super) const fn script_pinned(&self) -> bool {
+        self.script_pinned
     }
 
     /// Whether the round follows the local skater (`Online.SwitchCamera`). A turn-based challenge
@@ -1349,10 +1358,33 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.online_spectated().map(|remote| remote.user_id)
     }
 
+    /// PC port addition, Skate While Waiting (Online Settings): whether the local skater skates
+    /// freely now, its own camera shown in a corner while the screen follows another player's
+    /// turn. Only while the view is on that player's camera (no scene plays), the round runs and
+    /// the challenge is not teleporting the local skater: a teleporting player's facts pace the
+    /// round, so the skater must stand as the challenge left it from the teleport's start. A
+    /// waiting player sends no facts and the round reads it at its last ones without their events
+    /// (`standing_frame`), so nothing it does counts; the other consoles stop drawing it once it
+    /// leaves its spot (`update_spectator_spots`).
+    pub(in super::super) fn online_skates_while_waiting(&self) -> bool {
+        if !self.options_menu.skate_while_waiting() || self.online.spectate.is_some() {
+            return false;
+        }
+        let Some(round) = self.online.round.as_ref().filter(|round| round.turn_based && round.running()) else { return false };
+        let teleporting = usize::try_from(round.local).ok().is_some_and(|local| {
+            self.career
+                .as_ref()
+                .and_then(|career| career.system.world().online.as_ref())
+                .is_some_and(|online| online.teleporting.get(local).copied().unwrap_or(false))
+        });
+        !teleporting && matches!(self.online_view(), Some((OnlineView::Player(player), ..)) if player != round.local)
+    }
+
     /// The challenge pinned or unpinned the local skater (`cMsgPinPlayer`).
     pub(in super::super) fn online_local_pinned(&mut self, pin: bool) {
         let tick = self.completed_frames;
         if let Some(round) = self.online.round.as_mut() {
+            round.script_pinned = pin;
             if pin {
                 round.unpinned = None;
             } else if round.unpinned.is_none() {
