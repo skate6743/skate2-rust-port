@@ -148,8 +148,9 @@ impl LiveSkatingView {
     pub(crate) fn update_online_event_log(&mut self, open: bool, log: Option<skate2_core::online::event_log::EventLogSnapshot>) -> RenderResult<()> {
         self.marker_ui.as_mut().ok_or("frontend UI absent")?.update_online_event_log(open, log.as_ref())
     }
-    pub(crate) fn update_online_chat(&mut self, prompt: Option<&skate2_core::online::chat::ChatPrompt>, nickname: Option<&skate2_core::ui::profile_name::Prompt>) -> RenderResult<()> {
-        self.marker_ui.as_mut().ok_or("frontend UI absent")?.update_online_chat(prompt, nickname)
+    pub(crate) fn update_online_chat(&mut self, prompt: Option<&skate2_core::online::chat::ChatPrompt>, nickname: Option<&skate2_core::ui::profile_name::Prompt>,
+        song: Option<&skate2_core::ui::custom_songs::SongPrompt>) -> RenderResult<()> {
+        self.marker_ui.as_mut().ok_or("frontend UI absent")?.update_online_chat(prompt, nickname, song)
     }
     pub(crate) fn update_online_spectator(&mut self, name: Option<&str>) -> RenderResult<()> {
         self.marker_ui.as_mut().ok_or("frontend UI absent")?.update_online_spectator(name)
@@ -178,6 +179,11 @@ impl LiveSkatingView {
     pub(crate) fn set_free_skate_settings(&mut self, settings: Option<(bool, bool)>) {
         if let Some(ui) = self.marker_ui.as_mut() {
             ui.set_free_skate_settings(settings);
+        }
+    }
+    pub(crate) fn set_free_skate_hud(&mut self, hud: Option<skate2_core::FreeSkateHud>) {
+        if let Some(ui) = self.marker_ui.as_mut() {
+            ui.set_free_skate_hud(hud);
         }
     }
     pub(crate) fn navigation(&self) -> Vec<skate2_core::presentation::PresentationNavigationArena> {
@@ -367,6 +373,13 @@ impl LiveSkatingView {
     /// The music system's song catalogue, when audio is running.
     pub(crate) fn music_player_song_ids(&self) -> Option<Vec<u32>> {
         self.audio.as_ref().map(crate::game_audio::GameAudio::music_player_song_ids)
+    }
+
+    /// PC port: the music player's custom songs for the music system; false without audio.
+    pub(crate) fn set_custom_songs(&self, songs: &[(u32, std::path::PathBuf)]) -> bool {
+        let Some(audio) = self.audio.as_ref() else { return false };
+        audio.set_custom_songs(songs);
+        true
     }
 
     /// The audio system's `IAudioInterface`, when audio is running.
@@ -831,6 +844,12 @@ impl LiveSkatingView {
     ) -> RenderResult<()> {
         let view = restore.and_then(PresentationRestorer::camera).unwrap_or(retained.camera);
         scene.stereo_planes=Some(view.planes);
+        // PC port addition, Skate During Turn Wait: the local skater's own camera for the corner,
+        // while the frame shows another player's.
+        scene.pip = restore.and_then(PresentationRestorer::pip_camera).map(|pip| crate::gpu_renderer::PipView {
+            clip_from_world: window_clip_from_world(pip.clip_from_world, renderer.dimensions()),
+            planes: pip.planes,
+        });
         let local = retained.local.draw(restore);
         let party: Vec<SkaterDraw<'_>> = retained.party.iter().map(|skater| skater.draw(restore)).collect();
         let shadow = match retained.shadow_skater {

@@ -10,7 +10,7 @@ layer the port keeps 1:1. Addresses are `sk82_na_m.xex`.
 | Ranked quick match | `OnlineHubMenu::GoToRankedQuickMatch` 0x826615c0 → `StateOnlinePlayNow::DoQuickMatch` 0x827737d0 | PlayNow, any ranked mode |
 | Ranked custom match | `GoToRankedCustomMatch`, `FrontEndState_RankedCustomMatch::SendRankedMatchMessage` 0x826a8440 | PlayNow for one mode |
 | Unranked quick / custom match | `GoToUnrankedQuickMatch`, `GoToUnrankedCustomMatch`, `FrontEndState_UnrankedCustomMatch::SendUnrankedMatchMessage` 0x826a85a0 | PlayNow; custom picks mode, location (or "any"), private |
-| Free skate here / now | `GoToFreeSkateHere`, `StateOnlinePlayNow::DoFreeskateNow` 0x82778d60 | the online free skate nearest the player (`StateOnlineFreeskateHere::FindClosestFreeskateByDistance`), then PlayNow |
+| Free skate here / now | `GoToFreeSkateHere`, `StateOnlinePlayNow::DoFreeskateNow` 0x82778d60 | the online free skate nearest the player (`StateOnlineFreeskateHere::FindClosestFreeskateByDistance`), then PlayNow. PC port: among the free skates of the world the player is in (the main world's, a downloadable content world's, or a linked Skate 3 map's own), as another world's locations lie over the same ground |
 | Join a friend | `IE_JoinGame_UserId` (`EventSystem::HandleJoinGame_UserId`) | Theater join by user id |
 | Accept an invite | `PlasmaSystemPlatform::OnXb360ConnectionGameInviteAccepted` 0x82786970, `EventSystemPlatform::HandleJoinGame_GameInvite` 0x82781d28, `Net::CheckPendingGameInvite` | Theater join by invite; a ranked game refuses invited players (`SER_GAME_INVITE_TO_RANKED_GAME`) |
 

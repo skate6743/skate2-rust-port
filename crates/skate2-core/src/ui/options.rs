@@ -13,7 +13,7 @@
 //! ([`crate::stick_settings`]), all saved in `controller_config.json`.
 use super::{FeSoundRequest, pause_menu::PauseMenuInput};
 use crate::stick_settings::{
-    ControllerSettings, DEADZONES, DEFAULT_TRIGGER_THRESHOLD, MULTIPLIERS, StickSettings, TRIGGER_THRESHOLDS,
+    ControllerSettings, DEADZONES, DEFAULT_TRIGGER_THRESHOLD, INPUT_DELAYS, MULTIPLIERS, Polling, StickSettings, TRIGGER_THRESHOLDS,
 };
 pub use skate2_formats::skater_profile::{
     BRIGHTNESSES, FIELD_OF_VIEWS, FrameRateCap, Msaa, PcDisplaySettings, ProfileSettings, RESOLUTION_SCALES, RESOLUTION_SCALE_STEP,
@@ -79,6 +79,8 @@ pub enum Page {
     /// PC port addition: Stick Settings' page of each stick.
     LeftStick,
     RightStick,
+    /// PC port addition: Control Settings' Polling & Delay.
+    PollingDelay,
     /// PC port addition: Physics Settings, with Skate 3 data linked.
     Physics,
     /// PC port addition: Gameplay Settings' Weather Settings.
@@ -140,6 +142,8 @@ pub enum Row {
     ShowLobbyChat,
     /// PC port addition: `online-config.json`'s `show_ghost_players`.
     ShowGhostPlayers,
+    /// PC port addition: `online-config.json`'s `skate_during_turn_wait`.
+    SkateDuringTurnWait,
     /// PC port addition: Control Settings' Stick Settings page.
     StickSettings,
     /// PC port addition: Stick Settings' page of each stick, and its reset of both to vanilla.
@@ -152,6 +156,11 @@ pub enum Row {
     StickAntiDeadzone,
     /// PC port addition: Control Settings' trigger threshold, on Edit Skater's morph knob.
     TriggerThreshold,
+    /// PC port addition: Control Settings' Polling & Delay page, its polling rate and its input
+    /// delay in milliseconds, on the same knob.
+    PollingDelay,
+    PollingRate,
+    InputDelay,
     /// PC port addition: Gameplay Settings' field of view, on Edit Skater's morph knob.
     FieldOfView,
     /// PC port addition: Display Settings' brightness, on the same knob.
@@ -179,15 +188,15 @@ impl Row {
         match self {
             Self::MusicPlayer | Self::AudioSettings | Self::VideoSettings | Self::ControlSettings | Self::DisplaySettings
             | Self::OnlineSettings | Self::StickSettings | Self::LeftStick | Self::RightStick | Self::ResetSticks
-            | Self::PhysicsSettings | Self::WeatherSettings => "option",
+            | Self::PhysicsSettings | Self::WeatherSettings | Self::PollingDelay => "option",
             Self::SfxVolume | Self::DialogueVolume | Self::MusicVolume | Self::RainVolume => "slider",
-            Self::StickDeadzone | Self::StickAntiDeadzone | Self::TriggerThreshold | Self::FieldOfView
-            | Self::Brightness => "morph",
+            Self::StickDeadzone | Self::StickAntiDeadzone | Self::TriggerThreshold | Self::InputDelay
+            | Self::FieldOfView | Self::Brightness => "morph",
             Self::PostFx | Self::Fisheye | Self::FrameRateCap | Self::VSync | Self::ResolutionScale | Self::Msaa
             | Self::FpsCounter | Self::Fullscreen | Self::Subtitles | Self::CameraAngle | Self::GrindTransparency
             | Self::MiniMap | Self::Hud | Self::OffboardYAxis | Self::Vibration | Self::ShowLobbyChat
-            | Self::ShowGhostPlayers | Self::StickMultiplier | Self::PhysicsMode | Self::Difficulty | Self::Weather
-            | Self::PuddlePhysics | Self::OnlineSpeed | Self::ShuvBounce => "selector",
+            | Self::ShowGhostPlayers | Self::SkateDuringTurnWait | Self::StickMultiplier | Self::PhysicsMode | Self::Difficulty
+            | Self::Weather | Self::PuddlePhysics | Self::OnlineSpeed | Self::ShuvBounce | Self::PollingRate => "selector",
         }
     }
     /// `gGameOptionsItems`' title id; the PC rows carry literal text.
@@ -220,6 +229,7 @@ impl Row {
             Self::Vibration => "ID_GAMESETTINGS_VIBRATION_TOGGLE",
             Self::ShowLobbyChat => "Show Lobby Chat",
             Self::ShowGhostPlayers => "Show Ghost Players in pregame lobby",
+            Self::SkateDuringTurnWait => "Skate During Turn Wait",
             Self::StickSettings => "Stick Settings",
             Self::LeftStick => "Left Stick",
             Self::RightStick => "Right Stick",
@@ -228,6 +238,9 @@ impl Row {
             Self::StickDeadzone => "Stick Deadzone",
             Self::StickAntiDeadzone => "Stick Anti-Deadzone",
             Self::TriggerThreshold => "Trigger Threshold",
+            Self::PollingDelay => "Polling & Delay",
+            Self::PollingRate => "Polling Rate",
+            Self::InputDelay => "Added Input Delay",
             Self::FieldOfView => "Field of View",
             Self::Brightness => "Brightness",
             Self::PhysicsSettings => "Physics Settings",
@@ -295,8 +308,11 @@ const VIDEO_FREESKATE: &[Row] = &[
     Row::OnlineSpeed,
     Row::FieldOfView,
 ];
-/// `gGameOptionsScreens` row 8, with the PC Stick Settings page and Trigger Threshold knob last.
-const CONTROL: &[Row] = &[Row::OffboardYAxis, Row::Vibration, Row::StickSettings, Row::TriggerThreshold];
+/// `gGameOptionsScreens` row 8, with the PC Stick Settings page, Trigger Threshold knob and
+/// Polling & Delay page last.
+const CONTROL: &[Row] = &[Row::OffboardYAxis, Row::Vibration, Row::StickSettings, Row::TriggerThreshold, Row::PollingDelay];
+/// PC port addition: when a tick's poll reads the pads, and how long before it.
+const POLLING_DELAY: &[Row] = &[Row::PollingRate, Row::InputDelay];
 const STICK_SETTINGS: &[Row] = &[Row::LeftStick, Row::RightStick, Row::ResetSticks];
 const STICK: &[Row] = &[Row::StickMultiplier, Row::StickDeadzone, Row::StickAntiDeadzone];
 /// `FE_SOUND_CAS_SLIDER`, which Edit Skater loops while a morph knob moves (`OnUpdate` 0x82670400).
@@ -312,7 +328,7 @@ const DISPLAY: &[Row] = &[
     Row::Fullscreen,
     Row::Brightness,
 ];
-const ONLINE: &[Row] = &[Row::ShowLobbyChat, Row::ShowGhostPlayers];
+const ONLINE: &[Row] = &[Row::ShowLobbyChat, Row::ShowGhostPlayers, Row::SkateDuringTurnWait];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -340,6 +356,8 @@ pub struct Snapshot {
     pub show_lobby_chat: bool,
     /// Show Ghost Players in pregame lobby (PC port addition).
     pub show_ghost_players: bool,
+    /// Skate During Turn Wait (PC port addition).
+    pub skate_during_turn_wait: bool,
     /// The stick settings and the trigger threshold as the rows have them, which the pads follow
     /// at once (PC port addition).
     pub sticks: ControllerSettings,
@@ -375,6 +393,7 @@ impl Snapshot {
             Page::Online => ONLINE,
             Page::StickSettings => STICK_SETTINGS,
             Page::LeftStick | Page::RightStick => STICK,
+            Page::PollingDelay => POLLING_DELAY,
             Page::Physics => match self.modes.physics {
                 PhysicsMode::Skate2 => PHYSICS_SKATE2,
                 PhysicsMode::Skate3 => PHYSICS_SKATE3,
@@ -411,6 +430,7 @@ impl Snapshot {
             Page::StickSettings => "Stick Settings",
             Page::LeftStick => "Left Stick",
             Page::RightStick => "Right Stick",
+            Page::PollingDelay => "Polling & Delay",
             Page::Physics => "Physics Settings",
             Page::Weather => "Weather Settings",
             Page::Hidden | Page::Options => "ID_GAMESETTINGS_TITLE",
@@ -436,6 +456,8 @@ pub struct Controller {
     saved_lobby_chat: bool,
     /// Show Ghost Players in pregame lobby as `online-config.json` last held it.
     saved_ghost_players: bool,
+    /// Skate During Turn Wait as `online-config.json` last held it.
+    saved_skate_during_turn_wait: bool,
     /// `mIsDirty`: a profile setting changed since `OnEnter`.
     dirty: bool,
     /// `FE_SOUND_*` globals this input played (options.apt and `FrontEndState_Options`).
@@ -485,11 +507,12 @@ const fn repeat_due(frames: u32) -> bool {
 const fn slide_due(frames: u32) -> bool {
     frames == 0 || (frames >= 12 && (frames - 12) % 3 == 0)
 }
-/// The value a knob row moves: a display setting's, or the pads' trigger threshold.
+/// The value a knob row moves: a display setting's, or the pads' trigger threshold or input delay.
 fn knob(state: &mut Snapshot, row: Row) -> &mut u8 {
     match row {
         Row::Brightness => &mut state.values.brightness,
         Row::TriggerThreshold => &mut state.sticks.trigger_threshold,
+        Row::InputDelay => &mut state.sticks.input_delay,
         _ => &mut state.values.field_of_view,
     }
 }
@@ -591,6 +614,21 @@ impl Controller {
     pub const fn ghost_players_dirty(&self) -> bool {
         self.state.show_ghost_players != self.saved_ghost_players
     }
+    /// `online-config.json`'s Skate During Turn Wait.
+    pub fn load_skate_during_turn_wait(&mut self, on: bool) {
+        self.state.skate_during_turn_wait = on;
+        self.saved_skate_during_turn_wait = on;
+    }
+    /// Skate During Turn Wait as the row has it, which the game follows at once.
+    #[must_use]
+    pub const fn skate_during_turn_wait(&self) -> bool {
+        self.state.skate_during_turn_wait
+    }
+    /// Whether exiting saves Skate During Turn Wait to `online-config.json`.
+    #[must_use]
+    pub const fn skate_during_turn_wait_dirty(&self) -> bool {
+        self.state.skate_during_turn_wait != self.saved_skate_during_turn_wait
+    }
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
         self.state
@@ -642,6 +680,7 @@ impl Controller {
         self.saved = self.state.values;
         self.saved_lobby_chat = self.state.show_lobby_chat;
         self.saved_ghost_players = self.state.show_ghost_players;
+        self.saved_skate_during_turn_wait = self.state.skate_during_turn_wait;
         self.saved_sticks = self.state.sticks;
         self.saved_modes = self.state.modes;
         self.dirty = false;
@@ -707,6 +746,7 @@ impl Controller {
                 Page::StickSettings => (Page::Control, CONTROL.iter().position(|&row| row == Row::StickSettings).unwrap_or(0)),
                 Page::LeftStick => (Page::StickSettings, 0),
                 Page::RightStick => (Page::StickSettings, 1),
+                Page::PollingDelay => (Page::Control, CONTROL.iter().position(|&row| row == Row::PollingDelay).unwrap_or(0)),
                 Page::Physics => {
                     let rows = Snapshot { page: Page::Options, ..self.state }.rows();
                     (Page::Options, rows.iter().position(|&row| row == Row::PhysicsSettings).unwrap_or(0))
@@ -740,7 +780,7 @@ impl Controller {
             self.stop_slider();
         }
         let Some(&row) = self.state.rows().get(self.state.selected) else { return Action::None };
-        if matches!(row, Row::FieldOfView | Row::Brightness | Row::TriggerThreshold) {
+        if matches!(row, Row::FieldOfView | Row::Brightness | Row::TriggerThreshold | Row::InputDelay) {
             self.update_knob(row, input);
             return Action::None;
         }
@@ -752,6 +792,7 @@ impl Controller {
                 Row::AudioSettings => self.state.page = Page::Audio,
                 Row::ControlSettings => self.state.page = Page::Control,
                 Row::StickSettings => self.state.page = Page::StickSettings,
+                Row::PollingDelay => self.state.page = Page::PollingDelay,
                 Row::DisplaySettings => self.state.page = Page::Display,
                 Row::OnlineSettings => self.state.page = Page::Online,
                 Row::PhysicsSettings => self.state.page = Page::Physics,
@@ -766,6 +807,16 @@ impl Controller {
         }
         if matches!(row, Row::PhysicsMode | Row::Difficulty | Row::Weather | Row::RainVolume | Row::PuddlePhysics | Row::OnlineSpeed | Row::ShuvBounce) {
             self.step_mode(row, input.right);
+            return Action::None;
+        }
+        if row == Row::PollingRate {
+            // PC port addition: its two values, either key the other one, which the pads follow
+            // at once; kept in controller_config.json.
+            self.sounds.push(if input.right { "FE_SOUND_CORE_NAV_RIGHT" } else { "FE_SOUND_CORE_NAV_LEFT" });
+            self.state.sticks.polling = match self.state.sticks.polling {
+                Polling::Vanilla => Polling::FrameTimed,
+                Polling::FrameTimed => Polling::Vanilla,
+            };
             return Action::None;
         }
         let step = if input.right { 1.0 } else { -1.0 };
@@ -783,7 +834,7 @@ impl Controller {
                 &mut settings.music_volume
             }
             Row::PostFx | Row::Fisheye | Row::FrameRateCap | Row::VSync | Row::ResolutionScale | Row::Msaa | Row::FpsCounter
-            | Row::Fullscreen | Row::ShowLobbyChat | Row::ShowGhostPlayers => {
+            | Row::Fullscreen | Row::ShowLobbyChat | Row::ShowGhostPlayers | Row::SkateDuringTurnWait => {
                 // The PC selectors sound core_nav_left/core_nav_right by key and, as
                 // Prev/NextValueCalc do, wrap past either end; Resolution Scale stops at its ends.
                 self.sounds.push(if input.right { "FE_SOUND_CORE_NAV_RIGHT" } else { "FE_SOUND_CORE_NAV_LEFT" });
@@ -793,6 +844,10 @@ impl Controller {
                 }
                 if row == Row::ShowGhostPlayers {
                     self.state.show_ghost_players = !self.state.show_ghost_players;
+                    return Action::None;
+                }
+                if row == Row::SkateDuringTurnWait {
+                    self.state.skate_during_turn_wait = !self.state.skate_during_turn_wait;
                     return Action::None;
                 }
                 let values = &mut self.state.values;
@@ -900,14 +955,15 @@ impl Controller {
         super::gameplay_modes::publish(*modes);
     }
     /// PC port addition: Gameplay Settings' Field of View, Display Settings' Brightness and Control
-    /// Settings' Trigger Threshold. The stick or the D-pad held moves the knob a percent at a time
-    /// at Edit Skater's steady pace, looping `FE_SOUND_CAS_SLIDER` while it moves, and X puts it
-    /// back to the game's own (the threshold to its default); the camera, the screen and the pads
-    /// follow at once.
+    /// Settings' Trigger Threshold and Input Delay. The stick or the D-pad held moves the knob a
+    /// step at a time (a percent, or a millisecond) at Edit Skater's steady pace, looping
+    /// `FE_SOUND_CAS_SLIDER` while it moves, and X puts it back to the game's own (the threshold to
+    /// its default, the delay to none); the camera, the screen and the pads follow at once.
     fn update_knob(&mut self, row: Row, input: PauseMenuInput) {
         let (range, vanilla) = match row {
             Row::Brightness => (BRIGHTNESSES, VANILLA_BRIGHTNESS),
             Row::TriggerThreshold => (TRIGGER_THRESHOLDS, DEFAULT_TRIGGER_THRESHOLD),
+            Row::InputDelay => (INPUT_DELAYS, *INPUT_DELAYS.start()),
             _ => (FIELD_OF_VIEWS, VANILLA_FIELD_OF_VIEW),
         };
         if input.misc {
@@ -978,8 +1034,12 @@ impl Controller {
                 Row::LeftStick => self.state.page = Page::LeftStick,
                 Row::RightStick => self.state.page = Page::RightStick,
                 _ => {
-                    self.state.sticks =
-                        ControllerSettings { trigger_threshold: self.state.sticks.trigger_threshold, ..ControllerSettings::VANILLA };
+                    self.state.sticks = ControllerSettings {
+                        trigger_threshold: self.state.sticks.trigger_threshold,
+                        input_delay: self.state.sticks.input_delay,
+                        polling: self.state.sticks.polling,
+                        ..ControllerSettings::VANILLA
+                    };
                 }
             }
             if row != Row::ResetSticks {
@@ -1232,7 +1292,7 @@ mod tests {
             menu.update(press(|i| i.down = true), &mut settings);
         }
         menu.update(press(|i| i.select = true), &mut settings);
-        assert_eq!(menu.snapshot().rows(), [Row::ShowLobbyChat, Row::ShowGhostPlayers]);
+        assert_eq!(menu.snapshot().rows(), [Row::ShowLobbyChat, Row::ShowGhostPlayers, Row::SkateDuringTurnWait]);
         menu.update(press(|i| i.down = true), &mut settings);
         assert_eq!(Row::ShowGhostPlayers.kind(), "selector");
         assert_eq!(Row::ShowGhostPlayers.title(), "Show Ghost Players in pregame lobby");
@@ -1247,6 +1307,36 @@ mod tests {
         menu.update(press(|i| i.left = true), &mut settings);
         menu.close_after_save();
         assert!(!menu.show_ghost_players() && !menu.ghost_players_dirty());
+    }
+    #[test]
+    fn skate_during_turn_wait_toggles_last_on_online_settings_and_saves_only_when_changed() {
+        let mut settings = ProfileSettings::default();
+        let mut menu = Controller::default();
+        menu.load_lobby_chat(true);
+        menu.load_ghost_players(true);
+        menu.load_skate_during_turn_wait(true);
+        menu.open(true, VideoScreen::Game, &settings);
+        menu.acknowledge_intro();
+        for _ in 0..5 {
+            menu.update(press(|i| i.down = true), &mut settings);
+        }
+        menu.update(press(|i| i.select = true), &mut settings);
+        assert_eq!(menu.snapshot().rows().last(), Some(&Row::SkateDuringTurnWait));
+        menu.update(press(|i| i.down = true), &mut settings);
+        menu.update(press(|i| i.down = true), &mut settings);
+        assert_eq!(Row::SkateDuringTurnWait.kind(), "selector");
+        assert_eq!(Row::SkateDuringTurnWait.title(), "Skate During Turn Wait");
+        menu.take_sounds();
+        menu.update(press(|i| i.right = true), &mut settings);
+        assert!(!menu.skate_during_turn_wait() && !menu.snapshot().skate_during_turn_wait && menu.skate_during_turn_wait_dirty());
+        // Neither a profile setting nor the other online rows.
+        assert!(!menu.dirty() && !menu.lobby_chat_dirty() && !menu.ghost_players_dirty());
+        menu.update(press(|i| i.left = true), &mut settings);
+        assert!(menu.skate_during_turn_wait() && !menu.skate_during_turn_wait_dirty());
+        assert_eq!(menu.take_sounds(), ["FE_SOUND_CORE_NAV_RIGHT", "FE_SOUND_CORE_NAV_LEFT"]);
+        menu.update(press(|i| i.left = true), &mut settings);
+        menu.close_after_save();
+        assert!(!menu.skate_during_turn_wait() && !menu.skate_during_turn_wait_dirty());
     }
     #[test]
     fn video_settings_rows_follow_the_game_mode() {
@@ -1325,7 +1415,10 @@ mod tests {
         }
         menu.update(press(|i| i.select = true), &mut settings);
         assert_eq!(menu.snapshot().page, Page::Control);
-        // Up from the first row wraps to the last, the knob.
+        // Up from the first row wraps to the last, Polling & Delay; the threshold's knob is the
+        // row above it.
+        menu.update(press(|i| i.up = true), &mut settings);
+        assert_eq!(menu.snapshot().rows()[menu.snapshot().selected], Row::PollingDelay);
         menu.update(press(|i| i.up = true), &mut settings);
         assert_eq!(menu.snapshot().rows()[menu.snapshot().selected], Row::TriggerThreshold);
         assert_eq!(Row::TriggerThreshold.kind(), "morph");
@@ -1367,6 +1460,50 @@ mod tests {
             menu.sticks(),
             ControllerSettings { trigger_threshold: DEFAULT_TRIGGER_THRESHOLD + 1, ..ControllerSettings::VANILLA }
         );
+    }
+    #[test]
+    fn the_input_delay_slides_a_millisecond_at_a_time_and_x_puts_it_back_to_none() {
+        let mut settings = ProfileSettings::default();
+        let mut menu = Controller::default();
+        menu.load_sticks(ControllerSettings::DEFAULT);
+        menu.open(false, VideoScreen::MainMenu, &settings);
+        menu.acknowledge_intro();
+        for _ in 0..2 {
+            menu.update(press(|i| i.down = true), &mut settings);
+        }
+        menu.update(press(|i| i.select = true), &mut settings);
+        // Control Settings' last row opens Polling & Delay: the Polling Rate, then the Input Delay.
+        menu.update(press(|i| i.up = true), &mut settings);
+        assert_eq!((Row::PollingDelay.kind(), Row::PollingDelay.title()), ("option", "Polling & Delay"));
+        menu.update(press(|i| i.select = true), &mut settings);
+        assert_eq!((menu.snapshot().page, menu.snapshot().title()), (Page::PollingDelay, "Polling & Delay"));
+        assert_eq!(menu.snapshot().rows(), [Row::PollingRate, Row::InputDelay]);
+        // The original's polling without a saved one; either key picks the other value.
+        assert_eq!((menu.sticks().polling, menu.sticks().polling.label()), (Polling::Vanilla, "60hz (Vanilla)"));
+        menu.update(press(|i| i.right = true), &mut settings);
+        assert_eq!((menu.sticks().polling, menu.sticks().polling.label()), (Polling::FrameTimed, "Frame Timed"));
+        assert!(menu.sticks_dirty() && !menu.dirty(), "kept in controller_config.json");
+        menu.update(press(|i| i.left = true), &mut settings);
+        assert_eq!(menu.sticks().polling, Polling::Vanilla);
+        menu.update(press(|i| i.down = true), &mut settings);
+        assert_eq!(menu.snapshot().rows()[menu.snapshot().selected], Row::InputDelay);
+        assert_eq!((Row::InputDelay.kind(), Row::InputDelay.title()), ("morph", "Added Input Delay"));
+        assert_eq!(menu.sticks().input_delay, 0, "none until the player asks for one");
+        for _ in 0..16 {
+            menu.update(press(|i| i.morph_axis = 1.), &mut settings);
+        }
+        assert_eq!(menu.sticks().input_delay, 3);
+        assert!(menu.sticks_dirty() && !menu.dirty() && !menu.display_dirty(), "kept in controller_config.json");
+        for _ in 0..400 {
+            menu.update(press(|i| i.morph_axis_secondary = 1.), &mut settings);
+        }
+        assert_eq!(menu.sticks().input_delay, *INPUT_DELAYS.end());
+        menu.update(press(|i| i.misc = true), &mut settings);
+        assert_eq!(menu.sticks(), ControllerSettings::DEFAULT);
+        // B goes back to Control Settings, on the row that opened the page.
+        menu.update(press(|i| i.cancel = true), &mut settings);
+        let snapshot = menu.snapshot();
+        assert_eq!((snapshot.page, snapshot.rows()[snapshot.selected]), (Page::Control, Row::PollingDelay));
     }
     #[test]
     fn field_of_view_slides_from_vanilla_and_x_resets_it() {

@@ -72,12 +72,21 @@ stick, where it applies, the pages and their input, and the file that keeps them
   follow the knob at once.
 - A diagnostic sample (`demo_sample`) bypasses it, as it bypasses the stick settings.
 
+## Polling & Delay (2026-11-21)
+
+- Control Settings' last row opens the Polling & Delay page: the Polling Rate, `60hz (Vanilla)`
+  (the default) or `Frame Timed`, and the Input Delay, a knob of 0 to 30 milliseconds:
+  `input-delay-2026-11-21.md`.
+- Reset To Default on the Stick Settings page leaves both, as it leaves the trigger threshold.
+
 ## The file
 
 - `controller_config.json` beside `config.json` (the folder the game runs from, or
   `SKATE2_SAVE_ROOT`), apart from the profile, so loading or replacing a profile leaves the sticks
-  as they are. Exiting Options writes it when a stick setting or the trigger threshold changed.
+  as they are. Exiting Options writes it when a stick setting, the trigger threshold, the input
+  delay or the polling rate changed.
   Keys: `left_stick_multiplier` (a decimal), `left_stick_deadzone` and `left_stick_anti_deadzone`
-  (percent), the same for `right_stick`, and `trigger_threshold` (percent). A missing file or key
-  is the default (a stick's is vanilla, the threshold's 20); a value past its range is kept to it.
+  (percent), the same for `right_stick`, `trigger_threshold` (percent), `input_delay_ms` and
+  `polling_60hz` (1 or 0). A missing file or key is the default (a stick's is vanilla, the
+  threshold's 20, the delay's 0, the polling rate's 1); a value past its range is kept to it.
   Updates never replace the file.

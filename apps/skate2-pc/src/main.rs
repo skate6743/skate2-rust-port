@@ -21,6 +21,7 @@ mod windows_pad_platform;
 mod local_calendar;
 mod sdl_pads;
 mod pad_sticks;
+mod pad_delay;
 #[cfg(not(windows))]
 mod sdl_pad_platform;
 #[cfg(windows)]
@@ -225,6 +226,7 @@ mod game_root;
 mod game_update;
 mod dlc_link;
 mod skate3_link;
+mod song_picker;
 mod input_fuzz;
 mod live_skating_client;
 mod live_skating_view;

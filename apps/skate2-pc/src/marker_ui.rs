@@ -322,6 +322,12 @@ pub(crate) struct MarkerUi {
     /// (`eHUDVisibilityFlag_GameSettings`, `HudManagerSetVisibleOverride` once toggled) and
     /// `MiniMap::Show` (0x826bcc50) the minimap.
     free_skate_settings: Option<(bool, bool)>,
+    /// A profile free skate's challenge HUD for the next update: a teleporter's prompt and popup
+    /// (`SelectedLiveSession::take_free_skate_hud`).
+    free_skate_hud: Option<skate2_core::FreeSkateHud>,
+    /// The teleporter prompt the action overlay shows in a free skate, which an object's prompt
+    /// waits behind.
+    free_skate_prompt: Option<(i32, skate2_core::challenge::signup_hud::SignUpHudView)>,
     minimap_before_bail: bool,
     /// What the career's HUD manager bound the free-skate components to.
     hud_binding: skate2_core::challenge::hud::HudBinding,
@@ -354,6 +360,18 @@ pub(crate) struct MarkerUi {
 impl MarkerUi {
     pub(crate) fn set_free_skate_settings(&mut self, settings: Option<(bool, bool)>) {
         self.free_skate_settings = settings;
+    }
+    /// A profile free skate's teleporter prompt and popup, which the next update shows.
+    pub(crate) fn set_free_skate_hud(&mut self, hud: Option<skate2_core::FreeSkateHud>) {
+        // Screen states an update has not shown yet stay ahead of the newer ones.
+        self.free_skate_hud = match (self.free_skate_hud.take(), hud) {
+            (Some(mut pending), Some(mut hud)) => {
+                pending.signup_screen.append(&mut hud.signup_screen);
+                hud.signup_screen = pending.signup_screen;
+                Some(hud)
+            }
+            (_, hud) => hud,
+        };
     }
     /// The Stick Settings pages' boxes: the playing controller's sticks as its pad reports them.
     pub(crate) fn set_stick_preview(&mut self, sticks: Option<[i16; 4]>) {
@@ -538,7 +556,23 @@ impl MarkerUi {
 
     /// The lobby chat's prompt while it is open (its line with the cursor and the characters
     /// left), or the single player hub's nickname prompt, as the Online options show theirs.
-    pub(crate) fn update_online_chat(&mut self, prompt: Option<&skate2_core::online::chat::ChatPrompt>, nickname: Option<&skate2_core::ui::profile_name::Prompt>) -> RenderResult<()> {
+    pub(crate) fn update_online_chat(&mut self, prompt: Option<&skate2_core::online::chat::ChatPrompt>, nickname: Option<&skate2_core::ui::profile_name::Prompt>,
+        song: Option<&skate2_core::ui::custom_songs::SongPrompt>) -> RenderResult<()> {
+        // The music player's Add Song: its prompts for the song's names, or why a file was not
+        // added.
+        if let Some(song) = song {
+            let (description, buttons) = match &song.field {
+                Some((text, cursor)) => {
+                    let mut field = text.clone();
+                    field.insert((*cursor).min(field.len()), '|');
+                    let error = song.error.as_deref().unwrap_or("");
+                    (format!("#{}\n\n{field}\n\n{error}", song.message), vec!["#Enter: Confirm".to_owned(), "#Esc: Cancel".to_owned()])
+                }
+                None => (format!("#{}", song.message), vec!["#Enter: OK".to_owned()]),
+            };
+            let dialog = ("#Add Song".to_owned(), description, 0);
+            return self.chat_popup.update(&self.assets, Some(&dialog), Some(buttons.as_slice()));
+        }
         if let Some(prompt) = nickname {
             let mut field = prompt.text.clone();
             field.insert(prompt.cursor, '|');
@@ -1103,6 +1137,8 @@ impl MarkerUi {
             zone_key: DEFAULT_ZONE,
             minimap_enabled: true,
             free_skate_settings: None,
+            free_skate_hud: None,
+            free_skate_prompt: None,
             minimap_before_bail: true,
             hud_binding: Default::default(),
             editor,
@@ -1157,11 +1193,36 @@ impl MarkerUi {
             self.apply_career_hud_screens(career, !pause.visible)?;
             self.career = Some(career.clone());
         }
-        if career.is_none() && (facts.prop_tick!=self.previous.prop_tick || facts.prop!=self.previous.prop) {
+        // A free skate's action overlay: a teleporter's prompt as its sign-up HUD set it, each
+        // state in order as the career's screen takes them, and an object's prompt while no
+        // teleporter's is up.
+        let free_skate = self.free_skate_hud.take().filter(|_| career.is_none());
+        let had_prompt = self.free_skate_prompt.is_some();
+        match free_skate.as_ref() {
+            Some(hud) => {
+                for (state, view) in &hud.signup_screen {
+                    self.action_overlay.set_state(&self.assets, *state, view)?;
+                    self.free_skate_prompt = (*state > 0).then(|| (*state, view.clone()));
+                }
+            }
+            None if had_prompt && career.is_none() => {
+                self.free_skate_prompt = None;
+                self.action_overlay.set_state(&self.assets, 0, &Default::default())?;
+            }
+            None => self.free_skate_prompt = None,
+        }
+        // An object's prompt comes back as the teleporter's leaves.
+        let prompt_left = had_prompt && self.free_skate_prompt.is_none() && facts.prop.is_some();
+        if career.is_none() && self.free_skate_prompt.is_none()
+            && (prompt_left || facts.prop_tick!=self.previous.prop_tick || facts.prop!=self.previous.prop)
+        {
             let view=skate2_core::challenge::signup_hud::SignUpHudView {dmo:facts.prop.map(|p|p.params),..Default::default()};
             self.action_overlay.set_state(&self.assets,if facts.prop.is_some(){4}else{0},&view)?;
         }
-        self.progression_popup.update(&self.assets, career.and_then(|c| c.dialog.as_ref()), career.and_then(|c| c.dialog_options.as_deref()))?;
+        let free_dialog = free_skate.as_ref().and_then(|hud| hud.dialog.as_ref());
+        let free_options = free_skate.as_ref().and_then(|hud| hud.dialog_options.as_deref());
+        self.progression_popup.update(&self.assets, career.and_then(|c| c.dialog.as_ref()).or(free_dialog),
+            career.and_then(|c| c.dialog_options.as_deref()).or(free_options))?;
         self.sign_up_choice.update_sign_up_choice(&self.assets, career.and_then(|c| c.sign_up_choice.as_ref()))?;
         self.signup_poster.update(&self.assets, career.and_then(|c| c.poster.as_ref()), renderer.dimensions())?;
         self.update_unlock_overlay(career.and_then(|c| c.unlock_overlay.as_ref()))?;

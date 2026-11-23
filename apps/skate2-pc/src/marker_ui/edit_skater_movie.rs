@@ -1321,7 +1321,12 @@ fn layout_popup(popup:&mut Clip,assets:&Assets,selection:usize,
             .ok_or("popup body font missing")?;
         // sk8popup::Refresh: a description of "#", or one that localizes to "#" or "# ", leaves
         // the body empty and puts mMenuPickerOnlySpacing (15) under the menu picker.
-        let localized = assets.localize(description)?;
+        // PC: a label, a line break and a second label are a notice and what it adds (an online
+        // game lost and its reason), each read as a description is, the second under the first.
+        let localized = match description.split_once('\n').filter(|_| !description.starts_with('#')) {
+            Some((notice, added)) => format!("{}\n{}", assets.localize(notice)?, assets.localize(added)?),
+            None => assets.localize(description)?,
+        };
         let literal = description.starts_with('#') && description.len() > 2;
         let menu_only = description == "#" || (!literal && matches!(localized.as_str(), "#" | "# "));
         let body_text = if menu_only { String::new() } else { localized };

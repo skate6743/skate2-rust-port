@@ -24,14 +24,21 @@ pub(crate) struct SdlPadPlatform {
     focused: bool,
     /// PC: the stick settings on each sample, and each slot's sample as its pad reported it.
     sticks: PadSticks,
+    /// PC: Control Settings' Polling Rate and Input Delay (`crate::pad_delay`).
+    read: crate::pad_delay::ReadTime,
 }
 impl SdlPadPlatform {
     pub(crate) fn new(demo_sample: Option<XboxPadSample>, sdl: Option<SdlPads>) -> Self {
-        Self { demo_sample, sdl, requested: [STILL; 4], focused: false, sticks: PadSticks::default() }
+        Self { demo_sample, sdl, requested: [STILL; 4], focused: false, sticks: PadSticks::default(), read: Default::default() }
     }
-    /// The stick settings the next samples take.
+    /// The stick settings, the polling rate and the input delay the next samples take.
     pub(crate) fn set_stick_settings(&mut self, settings: skate2_core::stick_settings::ControllerSettings) {
         self.sticks.set_settings(settings);
+        self.read = crate::pad_delay::ReadTime::of(settings, self.read.slot);
+    }
+    /// The timer instant of the tick whose poll comes next.
+    pub(crate) fn set_poll_slot(&mut self, slot: Option<std::time::Instant>) {
+        self.read.slot = slot;
     }
     /// A slot's sticks as its pad last reported them: left x and y, then right.
     pub(crate) fn raw_sticks(&self, slot: usize) -> Option<[i16; 4]> {
@@ -86,7 +93,8 @@ impl PadPlatform for SdlPadPlatform {
                 });
             }
         }
-        let Some((packet, sample)) = self.sdl.as_mut().and_then(|sdl| sdl.claim(index)) else {
+        let then = self.read.instant(std::time::Instant::now());
+        let Some((packet, sample)) = self.sdl.as_mut().and_then(|sdl| sdl.claim(index, then)) else {
             self.sticks.clear(index);
             return Ok(PadStateResult {
                 status: DEVICE_NOT_CONNECTED,
@@ -120,7 +128,7 @@ impl PadPlatform for SdlPadPlatform {
             });
         }
         // As DS4Windows showed its pads on Windows: type and subtype gamepad, no wireless flag.
-        Ok(if self.sdl.as_mut().and_then(|sdl| sdl.claim(index)).is_some() {
+        Ok(if self.sdl.as_mut().and_then(|sdl| sdl.claim(index, None)).is_some() {
             PadCapabilitiesResult {
                 status: 0,
                 device_type: Some(1),

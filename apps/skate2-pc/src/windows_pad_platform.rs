@@ -1,6 +1,10 @@
 //! Windows API boundary only; native mapping, polling cadence and caches live in core. The one
 //! host-side cache: a slot XInput found empty is asked again after a second (`poll_xinput`).
-use crate::{pad_sticks::PadSticks, sdl_pads::SdlPads};
+use crate::{
+    pad_delay::{ReadTime, XinputHistory},
+    pad_sticks::PadSticks,
+    sdl_pads::SdlPads,
+};
 use skate2_core::{
     PadCapabilitiesResult, PadPlatform, PadStateResult, PadVibration, XboxPadSample,
 };
@@ -24,6 +28,10 @@ pub(crate) struct WindowsPadPlatform {
     sticks: PadSticks,
     /// When XInput last found each slot empty.
     empty_since: [Option<Instant>; 4],
+    /// PC: Control Settings' Polling Rate and Input Delay, and XInput's slots over the last
+    /// moments while a poll reads the past (`crate::pad_delay`).
+    read: ReadTime,
+    history: Option<XinputHistory>,
 }
 impl WindowsPadPlatform {
     pub(crate) fn new(demo_sample: Option<XboxPadSample>, sdl: Option<SdlPads>) -> Self {
@@ -34,6 +42,8 @@ impl WindowsPadPlatform {
             focused: false,
             sticks: PadSticks::default(),
             empty_since: [None; 4],
+            read: ReadTime::default(),
+            history: None,
         }
     }
     /// One XInput call for a slot, or its status code. An XInput call on an empty slot looks
@@ -57,9 +67,20 @@ impl WindowsPadPlatform {
         }
         result.map_err(|error| error.kind().to_u32())
     }
-    /// The stick settings the next samples take.
+    /// The stick settings, the polling rate and the input delay the next samples take.
     pub(crate) fn set_stick_settings(&mut self, settings: skate2_core::stick_settings::ControllerSettings) {
         self.sticks.set_settings(settings);
+        self.read = ReadTime::of(settings, self.read.slot);
+        // A diagnostic sample stands in for the pad: nothing reads XInput's past.
+        if !self.read.past() || self.demo_sample.is_some() {
+            self.history = None;
+        } else if self.history.is_none() {
+            self.history = Some(XinputHistory::start());
+        }
+    }
+    /// The timer instant of the tick whose poll comes next.
+    pub(crate) fn set_poll_slot(&mut self, slot: Option<Instant>) {
+        self.read.slot = slot;
     }
     /// A slot's sticks as its pad last reported them: left x and y, then right.
     pub(crate) fn raw_sticks(&self, slot: usize) -> Option<[i16; 4]> {
@@ -127,6 +148,7 @@ impl PadPlatform for WindowsPadPlatform {
                 });
             }
         }
+        let then = self.read.instant(Instant::now());
         let state = match self.poll_xinput(index, || xinput::get_state(index)) {
             Ok(state) => {
                 if let Some(sdl) = &mut self.sdl {
@@ -148,9 +170,13 @@ impl PadPlatform for WindowsPadPlatform {
                         state.packet_number
                     );
                 }
-                (state.packet_number, self.sticks.apply(index, sample))
+                // A poll that reads the past takes the slot as it was then, once the history's
+                // thread has read it.
+                let past = then.zip(self.history.as_ref()).and_then(|(then, history)| history.as_of(usize::try_from(index).ok()?, then));
+                let (packet, sample) = past.unwrap_or((state.packet_number, sample));
+                (packet, self.sticks.apply(index, sample))
             }
-            Err(status) => match self.sdl.as_mut().and_then(|sdl| sdl.claim(index)) {
+            Err(status) => match self.sdl.as_mut().and_then(|sdl| sdl.claim(index, then)) {
                 Some((packet, sample)) => {
                     if index == 0 && std::env::var_os("SKATE2_TRACE_XINPUT").is_some() {
                         eprintln!("sdl slot=0 packet={packet} sample={sample:?}");
@@ -206,7 +232,7 @@ impl PadPlatform for WindowsPadPlatform {
             }
             // DS4Windows showed these pads as a wired Xbox 360 gamepad: type and
             // subtype gamepad, no wireless flag.
-            Err(_) if self.sdl.as_mut().and_then(|sdl| sdl.claim(index)).is_some() => {
+            Err(_) if self.sdl.as_mut().and_then(|sdl| sdl.claim(index, None)).is_some() => {
                 PadCapabilitiesResult {
                     status: 0,
                     device_type: Some(1),

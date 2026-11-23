@@ -178,8 +178,9 @@ game's state:
   `GameJoined` names the host, and `HostChanged` tells every member of a new one, after the old
   host's `PlayerLeave`. A hand to a member that left as it crossed changes nothing; the server
   then tells the asker alone that it is still the host. A member silent for 10 seconds is dropped; one that
-  sends neither a replay frame nor `Busy` for 2 seconds (a frozen or paused game) is kicked for
-  inactivity ([facts.md](facts.md)).
+  sends neither a replay frame nor `Busy` (a frozen or paused game) is kicked for inactivity,
+  after 5 seconds while it plays a challenge and after a minute anywhere else
+  ([facts.md](facts.md)).
 - **Lobby state machine**: lobby skate → `GameReset(LoadChallenge)` with the seed and the
   participants (the members in the game's world: the server holds their recipe and a replay
   frame; one still joining stays in lobby skate) → every participant's `ChallengeLoaded` → `GameReset(Challenge)` → the round's
@@ -238,6 +239,23 @@ game's state:
   server's messages so far make it the host, and stops the moment it asks to hand the game on;
   the host changes only by its own hand or when it leaves), so its connection is dropped
   (`leave::KICKED_FOR_HOST_REQUEST`). One that arrives after its sender left the game is ignored.
+- **Challenge options** (PC port addition, protocol 17): the host sets them in lobby skate
+  (`GameRequest(SET_CHALLENGE_OPTION)`, told to every member and to later joiners as
+  `ChallengeOption`). A Spot Battle's Infinite Rounds lifts its last round; the host ends such a
+  battle with `GameRequest(END_CHALLENGE)` (`ChallengeEnded` to every member, then the
+  participants' facts carry it to one tick, `FactsNotes::ended`). See
+  `docs/evidence/spot-battle-infinite-rounds-2026-11-22.md`. A 1-Up's Round Lock
+  (`option::ROUND_LOCK`, the setting a round's number or 0) starts every round at one of the
+  1-Up's round starts; it goes when the game's challenge changes. See
+  `docs/evidence/one-up-round-lock-2026-11-23.md`.
+- **Joining a Spot Battle in play** (PC port addition, protocol 17): a member who joins one, or
+  whose skater was not in the game's world at its start, plays it from its next turn, where the
+  original left such a member in the pre-game lobby until the challenge's end. The participants
+  hear that a member waits (`ChallengeJoining`); the first whose battle ends a turn sends the
+  battle's state (`Carry`), and the server loads the battle again, a new challenge of the game,
+  for its participants and the waiting members, with that state for all (`ChallengeCarry`
+  ahead of `GameReset(LoadChallenge)`). A member who left the battle (Leave Challenge, or taken
+  out of it) waits for its end. See `docs/evidence/spot-battle-joining-2026-11-22.md`.
 - **Freeskate activities** (the original's game host peer held their proposals): a
   `GameProposal(Propose)` in an online free skate's lobby skate, with no change of location
   counting down, no other proposal open and at least two members in the game's world, the
@@ -667,7 +685,9 @@ to the lobby:
   whose screen plays its outro (and comes back with its intro), under the dimmer; the quick
   match's "Matching up with skaters..." loading popup (popup 38, no options, not cancellable;
   the `MatchingUpSkaters` screen is debug-menu only); the sign-in, no-match, no-server,
-  disconnected and kicked notices.
+  disconnected and kicked notices. A notice of a game lost ends with `Reason: <name>` (PC port
+  addition, `docs/evidence/online-disconnects-2026-11-22.md`); a ban's reads as a connection
+  that timed out.
 - **Lobby and challenges**: no AI skaters (`AISkaterManager::LoadGame` notes the network game,
   whether the game is joined from the main menu or from a game in play), and, a port change as
   in Party Play, no pedestrians or traffic.
@@ -733,7 +753,11 @@ to the lobby:
   Player List (n/7) (the original prints a literal 5; the total here is the other players of a
   full eight-player game), each player's menu with Make Host (PC port addition) and Kick Player,
   each with its Yes/No confirmation, to the host alone, Host Options
-  (Match Setup and Change Location over the hub in their host states, Session Access);
+  (Match Setup and Change Location over the hub in their host states, Session Access, and in a
+  challenge game Challenge Options with the challenge type's settings: a Spot Battle's Infinite
+  Rounds, and a 1-Up's Round Lock, whose popup lists Off and each of the 1-Up's rounds), End
+  Challenge at the top of the host's menu while a battle without a last round
+  plays, with its own confirmation (PC port additions);
   Start Challenge only in a challenge lobby with another player, outside a challenge and a
   change. The original closes Host Options while a game is on and offers Kick Player only with
   no challenge on; the port keeps both open to the host while a challenge runs (PC port
@@ -877,6 +901,26 @@ to the lobby:
   LB held moves the view to the next player who can be watched, in the game's join order and
   followed by user id (a player who left is simply not in the order), and after the last one back
   to the local skater. While watching, the menu follows LB with its marker rows disabled.
+- **Skate During Turn Wait** (PC port addition): Online Settings' last row, off unless
+  `online-config.json`'s `skate_during_turn_wait` is true. While a turn-based round shows another
+  player's turn from that player's camera (no scene playing, no Spectate, the round running and
+  the challenge not teleporting the local skater), the local skater is unpinned and skates on its
+  own pad and game camera; the challenge's pin (`cMsgPinPlayer`) comes back once that stops. Its
+  camera draws in a corner at the left of the screen, just above the trick display and over the
+  HUD, so the watched player's gap and trick notices go under it (`apps/skate2-pc`
+  `gpu_renderer/pip.rs`: 30% of the window's width at the window's aspect, a second eye into its
+  own targets, without PostFX; fog, shadows, audio and world streaming follow the main view);
+  no corner shows while the pause menu, Options or the online hub is up. A waiting player sends
+  no facts and the round reads it at its last ones, so nothing it does counts. The replay frames
+  it sends meanwhile carry a flag (`remote_skater::TURN_WAIT_FLAG`, bit 0x0800 of the
+  presentation's flags word, which no presentation uses), and the other consoles leave a skater
+  whose frames carry it undrawn and unheard: the player whose turn it is sees nothing of it.
+  Through the wait the game's session marker is the wait's own (LB with the D-pad sets it and
+  goes to it, under an online free skate's rules, within the game's boundaries), kept from one
+  wait of the round to the next; the challenge's marker (a Spot Battle and S.K.A.T.E. have
+  none) is held back meanwhile, takes the challenge's own messages, and stands again the moment
+  the wait ends. Collision stays loaded around the online game area, whose boundary still
+  breadcrumbs it.
 - **Edit Skater** (PC port addition): the online free skate's pause menu has Edit Skater above
   Game Settings, as the single-player hub's, enabled while the local skater is in the game's
   world with no round, travel, change of location or freeskate activity it proposed or accepted

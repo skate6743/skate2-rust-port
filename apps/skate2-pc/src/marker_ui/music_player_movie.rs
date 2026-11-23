@@ -119,14 +119,12 @@ impl MusicPlayerMovie {
     /// `SetState` for a screen: its label, `UpdateMode`, every field, the selection and the
     /// button help.
     fn set_state(&mut self, assets: &Assets, snapshot: &Snapshot) -> RenderResult<()> {
-        let (label, help): (&str, &[(&str, &str)]) = match snapshot.state {
-            AptState::Ambient => ("ambient", &[("B", "ID_COMMON_BACK")]),
-            AptState::Player => ("musicplayer", &[("B", "ID_COMMON_BACK"), ("A", "ID_MUSIC_PLAYER_EDIT")]),
-            AptState::Edit => (
-                "editplaylist",
-                &[("B", "ID_COMMON_BACK"), ("A", "ID_MUSIC_PLAYER_PLAY"), ("X", "ID_MUSIC_PLAYER_SONG_ONOFF")],
-            ),
+        let label = match snapshot.state {
+            AptState::Ambient => "ambient",
+            AptState::Player => "musicplayer",
+            AptState::Edit => "editplaylist",
         };
+        let help = button_help(snapshot);
         if snapshot.state != AptState::Edit {
             self.tabs = snapshot.state;
         }
@@ -135,7 +133,7 @@ impl MusicPlayerMovie {
         player.goto(assets, label)?;
         player.named(&["mTabAmbient"])?.goto(assets, if tabs == AptState::Ambient { "on" } else { "off" })?;
         player.named(&["mTabMusicplayer"])?.goto(assets, if tabs == AptState::Player { "on" } else { "off" })?;
-        map_movie::configure_button_items(player.named(&["mButtonHelp"])?, assets, help, 0xffff_ffec)?;
+        map_movie::configure_button_items(player.named(&["mButtonHelp"])?, assets, &help, 0xffff_ffec)?;
         // ChangeState: every control and row unselected but the new state's first.
         for control in ["mSlider", "mPlaylist", "mShuffle"] {
             let selected = controls(snapshot).get(snapshot.selected) == Some(&control);
@@ -160,6 +158,10 @@ impl MusicPlayerMovie {
             self.select(assets, snapshot, snapshot.selected, true)?;
         }
         let player = self.root.named(&["mMusicPlayer"])?;
+        // PC port: Remove Song comes and goes with a custom song's highlight.
+        if previous.selected_custom != snapshot.selected_custom {
+            map_movie::configure_button_items(player.named(&["mButtonHelp"])?, assets, &button_help(snapshot), 0xffff_ffec)?;
+        }
         if previous.volume != snapshot.volume {
             let selected = snapshot.state != AptState::Edit && controls(snapshot).get(snapshot.selected) == Some(&"mSlider");
             edit_skater_movie::slider_value(player.named(&["mSlider"])?, assets, &percent(assets, snapshot)?, snapshot.volume, selected)?;
@@ -298,6 +300,23 @@ impl MusicPlayerMovie {
     }
 }
 
+/// The screen's button help, rightmost first. PC port: the player screen's Add Song (X), and
+/// the edit list's Remove Song (Y) while a custom song is highlighted.
+fn button_help(snapshot: &Snapshot) -> Vec<(&'static str, &'static str)> {
+    let mut help = vec![("B", "ID_COMMON_BACK")];
+    match snapshot.state {
+        AptState::Ambient => {}
+        AptState::Player => help.extend([("A", "ID_MUSIC_PLAYER_EDIT"), ("X", "#Add Song")]),
+        AptState::Edit => {
+            help.extend([("A", "ID_MUSIC_PLAYER_PLAY"), ("X", "ID_MUSIC_PLAYER_SONG_ONOFF")]);
+            if snapshot.selected_custom {
+                help.push(("Y", "#Remove Song"));
+            }
+        }
+    }
+    help
+}
+
 /// `GetSelectionItem`'s controls for the player and ambient screens.
 fn controls(snapshot: &Snapshot) -> &'static [&'static str] {
     match snapshot.state {
@@ -324,9 +343,16 @@ fn shuffle(assets: &Assets, snapshot: &Snapshot) -> RenderResult<String> {
 
 /// `GetSongInfo`'s title in `songText` and artist in `artistText`; the strings are `#` literals.
 fn song_texts(item: &mut Clip, assets: &Assets, song: u32) -> RenderResult<()> {
-    let (artist, title, _) = skate2_audio::system::AudioSystem::music_player_song_info(song, |id| {
-        assets.localized.get(&id).map(|units| String::from_utf16_lossy(units))
-    });
+    // PC port: a custom song shows the names typed for it (literals, as the game's are).
+    let (artist, title) = match skate2_core::ui::custom_songs::info(song) {
+        Some((artist, title)) => (format!("#{artist}"), format!("#{title}")),
+        None => {
+            let (artist, title, _) = skate2_audio::system::AudioSystem::music_player_song_info(song, |id| {
+                assets.localized.get(&id).map(|units| String::from_utf16_lossy(units))
+            });
+            (artist, title)
+        }
+    };
     let literal = |s: &str| s.strip_prefix('#').unwrap_or(s).encode_utf16().collect::<Vec<u16>>();
     item.named(&["songText"])?.text = Some(literal(&title));
     item.named(&["artistText"])?.text = Some(literal(&artist));

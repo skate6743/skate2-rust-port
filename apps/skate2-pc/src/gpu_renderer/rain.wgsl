@@ -438,8 +438,23 @@ fn after_rain_sky(direction:vec3<f32>,clear:vec3<f32>)->vec3<f32> {
     let angle=acos(clamp(dot(direction,centre),-1.,1.));
     let band=(angle-.705)/.055;
     let fade=smoothstep(.025,.16,direction.y)*(1.-smoothstep(.70,.90,direction.y));
-    let spectrum=vec3<f32>(exp(-pow((band-.86)/.24,2.)),exp(-pow((band-.50)/.25,2.)),exp(-pow((band-.16)/.24,2.)));
-    return colour+spectrum*fade*.095;
+    let bow=rainbow_colour(band);
+    let edge=smoothstep(-.14,.06,band)*(1.-smoothstep(.94,1.14,band));
+    // The bow tints the sky more than it lights it: each colour less a share of its own
+    // brightness, so yellow and green stay colours over a pale sky.
+    let tint=bow-vec3<f32>(.55*dot(bow,vec3<f32>(.2126,.7152,.0722)));
+    // The sky inside a primary bow is a little brighter than the sky outside it.
+    let inside=(1.-smoothstep(-.25,.15,band))*.010;
+    return max(vec3<f32>(0.),colour+(tint*edge*.20+vec3<f32>(inside))*fade);
+}
+
+// A primary rainbow's colours across its width, from the inner edge (0) to the outer (1):
+// violet, indigo, blue, green, yellow, orange, red.
+fn rainbow_colour(band:f32)->vec3<f32> {
+    var stops=array<vec3<f32>,7>(vec3<f32>(.48,.16,.95),vec3<f32>(.22,.26,1.),vec3<f32>(.05,.62,1.),
+        vec3<f32>(.10,.92,.22),vec3<f32>(1.,.92,.08),vec3<f32>(1.,.50,.04),vec3<f32>(1.,.10,.08));
+    let at=clamp(band,0.,.9999)*6.;let index=i32(at);let part=at-f32(index);
+    return mix(stops[index],stops[index+1],mix(part,part*part*(3.-2.*part),.5));
 }
 
 @fragment fn fs_compose(v:Vertex)->@location(0) vec4<f32> {

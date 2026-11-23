@@ -610,4 +610,6 @@ target\release\skate2-pc.exe --live-skating                               (play 
 
 `SKATE2_TRACE_CAREER_LUA=1` prints Lua `print` output. `SKATE2_DIAGNOSTIC_SPAWN_LOCATION=<BAM_Sim.loc
 name>` picks the boot spawn. Inspect a save with `python tools/career/dump_signpost_save.py <SKATER.P>`.
-Each store commit leaves a `SKATER.P.<pid>.<n>.bak` beside the save (existing store behaviour).
+A store commit replaces `SKATER.P` in one rename and leaves nothing beside it
+(`docs/evidence/save-replacement-2026-11-22.md`); builds before 2026-11-22 left a
+`SKATER.P.<pid>.<n>.bak` per commit.

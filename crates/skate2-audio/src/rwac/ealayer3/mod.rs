@@ -13,6 +13,7 @@
 
 mod core;
 mod generated_transforms;
+pub mod mpeg;
 mod tables;
 
 use self::core::{Layer3Core, GRANULE, SCRATCH};

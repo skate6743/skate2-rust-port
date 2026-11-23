@@ -38,6 +38,25 @@ graphic again. Edit Deck (A on the Custom Deck: Color and Add a graphic) is as i
   third and fourth custom rows, which hold a skin's tattoo choices and nothing for a cloth;
   `defaultcharacter` reads the same two rows of its constants, zero on every other mesh.
 - The tint is a colour filter's: the colour on screen, squared.
+- A griptape wears a tint as a surface does (2026-11-21, `grip_surface::worn`). The diffuse squared
+  times the tint over the mean is the share of the light the griptape sends back, and at the
+  picker's intensity 1 a full colour sent all of it back; past 1, up to 6.25 times it, which the
+  bloom showed as a light of its own. Now:
+  - a tint whose brightest channel is at or under 0.2 is worn as it is (the row's colours are);
+  - past that the brightest channel bends toward 0.5 and never passes it
+    (`0.2 + 0.3 * (1 - exp(-(tint - 0.2) / 0.3))`: 0.48 at the picker's intensity 1), the other
+    channels keeping their ratio to it;
+  - past the picker's intensity 1 the colour grows purer instead of brighter, each channel moved
+    away from the colour's own grey by up to 0.4 of its distance at the greatest intensity (2.5),
+    so a grey stays a grey and a hot pink loses the green in it;
+  - the diffuse squared counts for no more than 1.5 times its mean over the top face, so a bright
+    mark in the griptape takes the colour and does not shine. The programs read that ceiling from
+    the fourth lane of the third custom row, which was 1 before.
+  - Seen in a scripted run with `SKATE2_DIAGNOSTIC_GRIP_TINT=6.25,1.05,3.15` (a hot pink at the
+    picker's greatest intensity) on the Custom Deck in direct sun: the griptape's pixels average
+    191, 22, 142 of 255 and peak at 219, 26, 156, none at the top of the range. The tint goes on
+    every deck with a griptape, whatever the skater's own colour. Edit Griptape's own menu was
+    not walked again on this build.
 - The row holds the tops' seven colours. A griptape wears each at four tenths of the colour a
   garment's filter has (red is 0.31, 0.04, 0.04 on screen), which a garment's colours are too
   vivid for. White is no colour: the deck's own griptape, where the row stands for a deck with

@@ -1,6 +1,7 @@
 //! `FrontEndState_MusicPlayer` (FE state 30, screen 35: `musicplayer/musicplayertest.swf`), the
 //! movie's script, and `MusicPlayerManager` over the profile's `tMusicPlayer`. The music system
 //! is the audio crate's: this side queues `MusicSystem` calls and is told the playing song.
+use super::custom_songs;
 use super::pause_menu::PauseMenuInput;
 use crate::native_skater_random::rw_math::{global_next, RwRandomLockError};
 pub use skate2_formats::skater_profile::{ProfileMusicPlayer, ProfileSettings, MUSIC_PLAYER_PLAYLISTS};
@@ -214,6 +215,58 @@ impl Manager {
         self.profile.shuffle = shuffle;
         Ok(())
     }
+    /// PC port (`custom_songs`): a custom song joins the catalogue, after the custom songs it
+    /// already holds and before the game's songs, and the current playlist while it has room: in
+    /// the catalogue's order (`SortPlaylist`), or last in a shuffled one.
+    pub fn add_custom_song(&mut self, song: u32) {
+        if !self.catalogue.contains(&song) {
+            let at = self.catalogue.iter().position(|&held| !custom_songs::is_custom(held)).unwrap_or(self.catalogue.len());
+            self.catalogue.insert(at, song);
+        }
+        let playlist = self.profile.current_playlist;
+        let count = self.playlist(playlist).len();
+        if self.position(playlist, song).is_none()
+            && let Some(p) = self.songs_mut(playlist)
+            && count < p.songs.len()
+        {
+            p.songs[count] = song;
+            p.num_songs = count as i32 + 1;
+            if !self.profile.shuffle {
+                self.sort_playlist(playlist);
+                self.profile.current_song_index = self.position(playlist, self.current_song).map_or(self.profile.current_song_index, |i| i as i32);
+            }
+        }
+    }
+    /// PC port: a custom song leaves the catalogue and every playlist. A playlist it leaves empty
+    /// takes the game's songs again; when it was playing, the current playlist's first song plays.
+    pub fn remove_custom_song(&mut self, song: u32) {
+        self.catalogue.retain(|&held| held != song);
+        let game: Vec<u32> = self.catalogue.iter().copied().filter(|&held| !custom_songs::is_custom(held)).collect();
+        for playlist in 0..MUSIC_PLAYER_PLAYLISTS as i32 {
+            let before = self.playlist(playlist).len();
+            let mut list: Vec<u32> = self.playlist(playlist).iter().copied().filter(|&held| held != song).collect();
+            if list.len() == before {
+                continue;
+            }
+            if list.is_empty() {
+                list.clone_from(&game);
+            }
+            if let Some(p) = self.songs_mut(playlist) {
+                let count = list.len().min(p.songs.len());
+                p.songs.fill(0);
+                p.songs[..count].copy_from_slice(&list[..count]);
+                p.num_songs = count as i32;
+            }
+        }
+        if self.current_song == song {
+            if let Some(&first) = self.current_playlist().first() {
+                self.play(first);
+            }
+        } else {
+            self.profile.current_song_index =
+                self.position(self.profile.current_playlist, self.current_song).map_or(-1, |i| i as i32);
+        }
+    }
     /// `FrontEndState_MusicPlayer::IsSongInPlayList` 0x8265c020.
     #[must_use]
     pub fn is_song_in_playlist(&self, playlist: i32, song_index: i32) -> bool {
@@ -303,6 +356,19 @@ pub struct Snapshot {
     pub edit_items: [Option<(u32, bool)>; EDIT_LIST_SIZE],
     /// `mDefaultSongList.length`, the scroller's item count.
     pub catalogue_len: usize,
+    /// PC port: the edit list's highlighted song is a custom song (Remove Song).
+    pub selected_custom: bool,
+}
+
+/// PC port: what the screen did about custom songs since the last take.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomSongChanges {
+    /// Add Song was pressed.
+    pub add: bool,
+    /// The songs Remove Song took out of the music player.
+    pub removed: Vec<u32>,
+    /// A playlist's songs changed.
+    pub playlists: bool,
 }
 
 #[derive(Default)]
@@ -324,6 +390,8 @@ pub struct Controller {
     ready: bool,
     /// An Off profile's `UpdateMusicMode(1)`, which `OnLoaded` runs once the screen links.
     world_on_load: bool,
+    /// PC port: Add Song, Remove Song and playlist changes the session has not taken yet.
+    custom: CustomSongChanges,
 }
 impl Controller {
     #[must_use]
@@ -340,6 +408,32 @@ impl Controller {
     }
     pub fn take_sounds(&mut self) -> Vec<&'static str> {
         std::mem::take(&mut self.sounds)
+    }
+    /// PC port: Add Song, Remove Song and playlist changes since the last call.
+    pub fn take_custom_song_changes(&mut self) -> CustomSongChanges {
+        std::mem::take(&mut self.custom)
+    }
+    /// PC port: a sound of the screen's that the session asks for (Add Song's refusals).
+    pub fn play_sound(&mut self, sound: &'static str) {
+        self.sounds.push(sound);
+    }
+    /// PC port: Add Song put a song in the catalogue and the current playlist.
+    pub fn song_added(&mut self, manager: &Manager) {
+        self.catalogue_changed(manager);
+        if self.view.state == AptState::Player {
+            self.refresh_playlist(manager);
+        }
+    }
+    /// PC port: the catalogue grew or shrank: the edit list keeps to it.
+    fn catalogue_changed(&mut self, manager: &Manager) {
+        self.view.catalogue_len = manager.catalogue().len();
+        if self.view.state == AptState::Edit {
+            let max = self.max_scroll();
+            self.view.first_index = self.view.first_index.min(self.view.catalogue_len.saturating_sub(max));
+            let selected = self.selected[AptState::Edit.index()].min(max.saturating_sub(1));
+            self.set_selection(selected);
+            self.update_edited_playlist(manager);
+        }
     }
     /// The screen's `IntroComplete`: `OnScreenReady` makes it ready for input.
     pub fn acknowledge_intro(&mut self) {
@@ -386,6 +480,17 @@ impl Controller {
         manager: &mut Manager,
         settings: &mut ProfileSettings,
     ) -> Result<bool, RandomError> {
+        let result = self.receive_input(input, manager, settings);
+        self.view.selected_custom =
+            self.view.state == AptState::Edit && custom_songs::is_custom(manager.song_id_from_index(self.current_index));
+        result
+    }
+    fn receive_input(
+        &mut self,
+        input: PauseMenuInput,
+        manager: &mut Manager,
+        settings: &mut ProfileSettings,
+    ) -> Result<bool, RandomError> {
         if !self.visible() || !self.ready {
             return Ok(false);
         }
@@ -408,12 +513,31 @@ impl Controller {
             }
             return Ok(false);
         }
+        // PC port: Remove Song (Y) on a custom song of the edit list.
+        if input.option && self.edit {
+            let song = manager.song_id_from_index(self.current_index);
+            if custom_songs::is_custom(song) {
+                self.sounds.push("FE_SOUND_CORE_Y_BUTTON");
+                manager.remove_custom_song(song);
+                self.custom.removed.push(song);
+                self.custom.playlists = true;
+                self.reorder = true;
+                self.dirty = true;
+                self.catalogue_changed(manager);
+            }
+            return Ok(false);
+        }
         if input.misc && self.screen == Screen::On {
             if self.edit {
                 self.sounds.push("FE_SOUND_CORE_X_BUTTON");
                 manager.toggle_song_in_playlist(manager.profile.current_playlist, self.current_index);
                 self.reorder = true;
                 self.dirty = true;
+                self.custom.playlists = true;
+            } else {
+                // PC port: Add Song (X) on the player screen.
+                self.sounds.push("FE_SOUND_CORE_X_BUTTON");
+                self.custom.add = true;
             }
             // ReceiveInput returns false: AptMisc reaches UpdateInput.
             if self.view.state == AptState::Edit {
@@ -787,6 +911,83 @@ mod tests {
         }
         assert_eq!((c.snapshot().first_index, c.snapshot().selected), (2, 10));
         assert_eq!(c.current_index, 12);
+    }
+
+    #[test]
+    fn add_song_is_asked_for_on_the_player_screen_and_a_custom_song_is_removed_in_the_edit_list() {
+        const MINE: u32 = 0xCC00_0001;
+        const OTHER: u32 = 0xCC00_0002;
+        let mut settings = ProfileSettings::default();
+        let mut m = manager(profile_music_mode::MUSIC_PLAYER);
+        let mut c = Controller::default();
+        c.open(&mut m, &settings);
+        c.acknowledge_intro();
+        // X on the player screen asks for Add Song and changes nothing.
+        c.update(press(|i| i.misc = true), &mut m, &mut settings).unwrap();
+        let changes = c.take_custom_song_changes();
+        assert!(changes.add && changes.removed.is_empty() && !changes.playlists);
+        assert_eq!(m.current_playlist().len(), 20);
+        // The added song comes before the game's in the catalogue and the current playlist, and a
+        // second one after it; the song that plays keeps its index.
+        m.set_current_song(20);
+        m.profile.current_song_index = 1;
+        m.add_custom_song(MINE);
+        m.add_custom_song(OTHER);
+        c.song_added(&m);
+        assert_eq!((m.catalogue().len(), c.snapshot().catalogue_len), (22, 22));
+        assert_eq!(m.catalogue()[..3], [MINE, OTHER, 10]);
+        assert_eq!(m.current_playlist()[..4], [MINE, OTHER, 10, 20]);
+        assert_eq!(m.profile.current_song_index, 3, "the index follows the song that plays");
+        assert!(m.playlist(1).iter().all(|&song| song != MINE), "the other playlists do not take it");
+        m.remove_custom_song(OTHER);
+        m.take_requests();
+        c.song_added(&m);
+        // In the edit list the custom song's row is the first and offers Remove Song; a song of
+        // the game's does not.
+        c.update(press(|i| i.select = true), &mut m, &mut settings).unwrap();
+        assert_eq!(c.snapshot().edit_items[0], Some((MINE, true)));
+        assert!(c.snapshot().selected_custom);
+        c.update(press(|i| i.down = true), &mut m, &mut settings).unwrap();
+        assert!(!c.snapshot().selected_custom);
+        c.update(press(|i| i.option = true), &mut m, &mut settings).unwrap();
+        assert_eq!(m.catalogue().len(), 21, "Y on a song of the game's does nothing");
+        c.update(press(|i| i.up = true), &mut m, &mut settings).unwrap();
+        assert!(c.snapshot().selected_custom);
+        // X takes it out of the playlist, and puts it back.
+        c.update(press(|i| i.misc = true), &mut m, &mut settings).unwrap();
+        assert!(c.take_custom_song_changes().playlists);
+        assert_eq!(m.current_playlist().len(), 20);
+        c.update(press(|i| i.misc = true), &mut m, &mut settings).unwrap();
+        assert_eq!(m.current_playlist().len(), 21);
+        // Y removes it from the catalogue and every playlist; the list's first row is the game's.
+        m.set_current_song(MINE);
+        m.take_requests();
+        c.update(press(|i| i.option = true), &mut m, &mut settings).unwrap();
+        let changes = c.take_custom_song_changes();
+        assert_eq!(changes.removed, [MINE]);
+        assert_eq!((m.catalogue().len(), c.snapshot().catalogue_len), (20, 20));
+        assert!(m.current_playlist().iter().all(|&song| song != MINE));
+        assert_eq!((c.snapshot().first_index, c.snapshot().selected), (0, 0));
+        assert_eq!(c.snapshot().edit_items[0], Some((10, true)));
+        assert!(!c.snapshot().selected_custom);
+        // It was playing: the playlist's first song plays (the song `ToggleSongInPlayList` moved
+        // into the row it took the custom song from, until the list is sorted on leaving).
+        assert_eq!(m.take_requests(), [MusicRequest::IPodTrigger { trigger: ipod_trigger::START, song: 200 }]);
+        assert_eq!(m.profile.current_song_index, 0);
+    }
+
+    #[test]
+    fn a_playlist_of_one_removed_custom_song_takes_the_games_songs_again() {
+        const MINE: u32 = 0xCC00_0002;
+        let mut m = manager(profile_music_mode::MUSIC_PLAYER);
+        m.add_custom_song(MINE);
+        let list = &mut m.profile.playlists[0];
+        list.songs = [0; skate2_formats::skater_profile::MUSIC_PLAYER_SONGS];
+        list.songs[0] = MINE;
+        list.num_songs = 1;
+        m.remove_custom_song(MINE);
+        assert_eq!(m.current_playlist().len(), 20);
+        assert_eq!(m.current_playlist()[..2], [10, 20]);
     }
 
     #[test]

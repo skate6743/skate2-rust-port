@@ -10,7 +10,7 @@
 
 use crate::challenge::unlockables::{category, string_hash};
 use skate2_formats::{
-    big::{BigArchive, BigEntryKey},
+    big::{BigArchive, BigEntryKey, BigFormat},
     localization::{Histogram, LanguageCategory},
     mount::{ArchiveSource, MountSet, MountedBig},
     stfs::StfsPackage,
@@ -119,8 +119,23 @@ fn holds_content(archive: &BigArchive) -> bool {
     })
 }
 
+fn holds_marker(archive: &BigArchive, pack: &KnownPack) -> bool {
+    names(archive).any(|name| name.replace('/', "\\").eq_ignore_ascii_case(pack.marker))
+}
+
 fn known(archives: &[MountedBig]) -> Option<&'static KnownPack> {
-    KNOWN.iter().find(|pack| archives.iter().any(|archive| names(archive.archive()).any(|name| name.replace('/', "\\").eq_ignore_ascii_case(pack.marker))))
+    KNOWN.iter().find(|pack| archives.iter().any(|archive| holds_marker(archive.archive(), pack)))
+}
+
+/// The pack an extracted archive is: one in the format of Skate 2's packs (`BIG4`) holding a
+/// known pack's entry. Skate 3's Maloof Money Cup and Filmer packs hold entries of the same names
+/// (`data\db\dlc_maloof_money_cup.vlt`, `data\unlocks\filmpack.unlock`) in that game's `EB`
+/// archives, with its vaults, scenes and cameras, and are none of Skate 2's.
+fn extracted_pack(archive: &BigArchive) -> Option<&'static KnownPack> {
+    if !matches!(archive.format, BigFormat::Named { .. }) {
+        return None;
+    }
+    KNOWN.iter().find(|pack| holds_marker(archive, pack))
 }
 
 impl DlcPack {
@@ -167,9 +182,9 @@ impl DlcPack {
             });
         }
         let archive = MountedBig::open_source(ArchiveSource::File(path.to_owned())).map_err(|_| DlcError::NotDlc)?;
-        let archives = vec![archive];
         // An extracted archive could be any game's: only the packs Skate 2 was sold with link.
-        known(&archives).map(|pack| Self::known(path, pack, archives)).ok_or(DlcError::NotDlc)
+        let pack = extracted_pack(archive.archive()).ok_or(DlcError::NotDlc)?;
+        Ok(Self::known(path, pack, vec![archive]))
     }
 
     fn known(path: &Path, pack: &KnownPack, archives: Vec<MountedBig>) -> Self {
@@ -324,6 +339,42 @@ mod tests {
             "the category is compared whole, untrimmed"
         );
         assert_eq!(parse_unlocks(b"GESTURES,\tgesture_flex\t"), [(category::GESTURES, string_hash("gesture_flex"))]);
+    }
+
+    fn archive(format: BigFormat, names: &[&str]) -> BigArchive {
+        let entry = |name: &&str| skate2_formats::big::BigEntry {
+            key: BigEntryKey::Name((*name).to_owned()),
+            offset: 0,
+            stored_size: 0,
+            unpacked_size: 0,
+            header_index: 0,
+        };
+        BigArchive { format, declared_archive_size: 0, header_size: 0, entries: names.iter().map(entry).collect() }
+    }
+
+    #[test]
+    fn an_extracted_archive_is_a_pack_in_skate_2s_format_alone() {
+        let named = BigFormat::Named { integer_width: 4 };
+        let pack = extracted_pack(&archive(named, &["data/db/dlc_maloof_money_cup.vlt", "data\\scene\\ice_003.bin"]));
+        assert_eq!(pack.map(|pack| pack.title), Some("Maloof Money Cup Pack"));
+        assert!(extracted_pack(&archive(named, &["data\\db\\dlc_other.vlt"])).is_none());
+        // Skate 3's Maloof Money Cup and Filmer packs.
+        let eb = BigFormat::Eb { version: 3, flags: 0x0050_0600 };
+        assert!(extracted_pack(&archive(eb, &["data\\db\\dlc_maloof_money_cup.vlt", "data\\scene\\ice_002.bin", ".\\maloofmc.ver"])).is_none());
+        assert!(extracted_pack(&archive(eb, &["data\\unlocks\\filmpack.unlock", ".\\filmerpk.ver"])).is_none());
+    }
+
+    /// An archive extracted from Skate 3's Maloof Money Cup or Filmer pack, when
+    /// `SKATE3_PACK_ARCHIVE` names it: none of Skate 2's packs.
+    #[test]
+    #[ignore = "needs SKATE3_PACK_ARCHIVE"]
+    fn skate_3s_extracted_archive_is_no_pack_of_skate_2s() {
+        let Some(path) = std::env::var_os("SKATE3_PACK_ARCHIVE") else { return };
+        let path = Path::new(&path);
+        assert_eq!(DlcPack::open(path).err(), Some(DlcError::NotDlc));
+        let pack = crate::skate3::dlc::Pack::open(path);
+        eprintln!("{}: {:?}", path.display(), pack.as_ref().map(|pack| &pack.title));
+        assert!(!matches!(pack, Err(crate::skate3::dlc::PackError::NotSkate3 | crate::skate3::dlc::PackError::Read(_))));
     }
 
     #[test]

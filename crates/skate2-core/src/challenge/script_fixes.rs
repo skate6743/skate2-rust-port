@@ -10,6 +10,10 @@ pub(crate) const SPOT_BATTLE_TIMER_EXPIRED: u64 = 0x6C94_E9C3_7482_DE81;
 pub(crate) const SPOT_BATTLE_SEQUENCE_COMPLETE: u64 = 0x01A1_0F67_9F02_A963;
 /// Its `countdown` `stateenter`, which starts the next turn.
 pub(crate) const SPOT_BATTLE_COUNTDOWN_ENTER: u64 = 0x5170_0D28_7965_7162;
+/// Its `setup` `stateenter`, which goes on to the flythrough, and its `reset` `stateenter`, which
+/// sets the battle's first round up.
+pub(crate) const SPOT_BATTLE_SETUP_ENTER: u64 = 0x8ABF_7CB1_DBB6_F3C4;
+pub(crate) const SPOT_BATTLE_RESET_ENTER: u64 = 0x7706_5C3F_6237_701A;
 /// Skate 2's Death Race (`r_2_2_dr_ur_02_ol`) `run_heat` trigger entry, which Skate 3's race
 /// graph (`race_shared`) keeps under the same key.
 pub(crate) const DEATH_RACE_TRIGGER_ENTER: u64 = 0x23FF_AF72_EBB4_C8F0;
@@ -126,6 +130,115 @@ function h_skate3_23FFAF72EBB4C8F0(self, message, vars)
 end
 "#;
 
+/// PC port (user request): the host ended a Spot Battle that runs under Infinite Rounds
+/// (`ChallengeSystem::end_infinite_rounds` calls it with the graph's state at the same tick on
+/// every console).
+///
+/// The battle ends where its script ends it, at the `countdown` that would start the next turn
+/// (`CurrentRound` past `NumRounds`, which reads 0 from here). So the turn in play ends first, as
+/// the script ends it when its player leaves, with no one marked gone: `challenge_running`'s
+/// `playerdisconnected` (`C6964B10D9CE89DC`) takes the run's timer and its HUD away and changes
+/// to `end_turn`, and `countdown`'s (`2526D9824B97BDD8`) does the same with the countdown's.
+/// `end_turn` then stops the vote and goes on to `countdown`. A Skate 3 game's two seconds
+/// before a run ends (`EndRunTimerID`, above) go too: `end_turn` takes any timer's end for its
+/// own. Any other state is on its way to `countdown` or past the battle's end already.
+///
+/// Before the first turn (`reset` leaves `ActivePlayerID` nil until the first `countdown`) the
+/// script's own end would read the turn player it has not got: the end waits, and the function
+/// says so by returning false.
+pub(crate) const END_SOURCE: &str = r#"
+function pc_end_spot_battle(self, state, vars)
+    if vars.ActivePlayerID == nil then
+        return false
+    end
+    if state == "challenge_running" then
+        if vars.EndRunTimerID ~= nil then
+            ChallengeTimer.RemoveCountdownTimer(vars.EndRunTimerID)
+            vars.EndRunTimerID = nil
+        end
+        if vars.MainTimerID ~= nil and vars.MainTimerID ~= 0 then
+            ChallengeTimer.RemoveCountdownTimer(vars.MainTimerID)
+            vars.MainTimerID = 0
+            HUD2.Show(self.Name, HUD2.eHUDComponent.TimerHUD, false)
+        end
+        ChangeState("end_turn")
+    elseif state == "countdown" then
+        if vars.CountdownTimerID ~= nil and vars.CountdownTimerID ~= 0 then
+            ChallengeTimer.RemoveCountdownTimer(vars.CountdownTimerID)
+            vars.CountdownTimerID = 0
+            HUD2.Show(self.Name, HUD2.eHUDComponent.CountdownHUD, false)
+        end
+        ChangeState("end_turn")
+    end
+    return true
+end
+"#;
+
+/// PC port (user request): a Spot Battle restarted for a player who joined it in play
+/// (`OnlineChallenge::restore`, `runtime::spot_battle_join`).
+///
+/// `pc_spot_battle_setup` runs the battle's `setup` `stateenter` with its flythrough left out:
+/// where the handler changes to `nis_flythrough` (whose scene's end changes to `reset`), the
+/// battle goes to `reset` at once. The players have seen the spot.
+///
+/// `pc_spot_battle_restore` runs after `reset`'s `stateenter`, which has set a first round up
+/// (`initial` gave every player a score of 0, its own index as its rank and its turn, and
+/// `LeaderboardHUDInit` has made the board's rows), and puts the carried state in its place: the
+/// round, the turn order with the turns this round has had, each player's score, rank and bonus
+/// objective, the board's rows as `sequencecomplete` sets them, and the highest vote. `Order`
+/// and `Ranking` each list every player once (the players carried, then the ones who joined);
+/// a state that does not fit the battle's players leaves the first round as it is. The round's
+/// number has not changed, so its central message waits for the next one.
+pub(crate) const JOIN_SOURCE: &str = r#"
+function pc_spot_battle_setup(handler, self, message, vars)
+    local changeState = ChangeState
+    ChangeState = function(state)
+        if state == "nis_flythrough" then
+            changeState("reset")
+        else
+            changeState(state)
+        end
+    end
+    local ok, problem = pcall(handler, self, message, vars)
+    ChangeState = changeState
+    if not ok then
+        error(problem)
+    end
+end
+
+function pc_spot_battle_restore(self, vars, carry)
+    local players = vars.NumPlayers
+    if table.getn(carry.Order) ~= players or table.getn(carry.Ranking) ~= players then
+        return false
+    end
+    vars.CurrentRound = carry.Round
+    vars.RoundNumberChanged = false
+    vars.CurrentPlayerIndex = carry.Played
+    for position = 1, players do
+        local player = carry.Order[position]
+        vars.PlayerOrderMap[position] = player
+        vars.PlayerData[player].PlayerOrder = position
+    end
+    for rank = 1, players do
+        local player = carry.Ranking[rank]
+        local data = vars.PlayerData[player]
+        vars.PlayerRankMap[rank] = player
+        data.Rank = rank
+        data.Score = carry.Score[player] or 0
+        data.IsBonusObjectiveComplete = carry.Bonus[player] == true
+        HUD2.LeaderboardHUDSetInt(self.Name, player - 1, data.Score)
+    end
+    for player = 1, players do
+        HUD2.LeaderboardHUDSetRank(self.Name, player - 1, vars.PlayerData[player].Rank)
+    end
+    if carry.VotePlayer ~= nil then
+        vars.HighestVote.Score = carry.VoteScore
+        vars.HighestVote.PlayerID = carry.VotePlayer
+    end
+    return true
+end
+"#;
+
 /// S.K.A.T.E.'s and 1-Up's `check_players` `stateenter`, which every challenge of the type
 /// shares, each with its `global` `playerdisconnected`.
 pub(crate) const SKATE_CHECK_PLAYERS: u64 = 0x330B_4986_37FF_1BE1;
@@ -136,12 +249,17 @@ pub(crate) const ONE_UP_PLAYER_DISCONNECTED: u64 = 0x784E_E510_5BA6_A161;
 /// linked Skate 3 data folder's graph joins with (`skate3/1up/d6052b5c5ff8304a`).
 pub(crate) const SKATE3_ONE_UP_END_RUN_TIMER: u64 = 0x8279_8540_E62D_81B7;
 
+/// Skate 3's own 1-Up graph's `setup_round` `stateenter` (its `3A771A0DE883277C`), under the key
+/// a linked Skate 3 data folder's graph joins with (`skate3/1up/3a771a0de883277c`).
+pub(crate) const SKATE3_ONE_UP_SETUP_ROUND: u64 = 0xC00A_2C12_93F4_FB42;
+
 /// PC port: the handlers every game runs through `h_fix_<key>` of [`FIXES_SOURCE`], each with
 /// the other shipped handler its wrapper calls (itself where it calls no other).
-pub(crate) const FIXED_HANDLERS: [(u64, u64); 3] = [
+pub(crate) const FIXED_HANDLERS: [(u64, u64); 4] = [
     (SKATE_CHECK_PLAYERS, SKATE_PLAYER_DISCONNECTED),
     (ONE_UP_CHECK_PLAYERS, ONE_UP_PLAYER_DISCONNECTED),
     (SKATE3_ONE_UP_END_RUN_TIMER, SKATE3_ONE_UP_END_RUN_TIMER),
+    (SKATE3_ONE_UP_SETUP_ROUND, SKATE3_ONE_UP_SETUP_ROUND),
 ];
 
 /// PC port: corrections that wrap a shipped handler.
@@ -164,6 +282,15 @@ pub(crate) const FIXED_HANDLERS: [(u64, u64); 3] = [
 /// (`CentralMessageHALIDDidNotBeatHighScore`), "... is out for the Round." to the others. The
 /// letter says as much, so that message is left out and the next run starts after the second
 /// the handler waits when it has nothing to show. An elimination's message and wait stay.
+///
+/// PC port (user request): the host's Round Lock. Skate 3's 1-Up starts each round at the next
+/// of its `StartLocationRotation` (`setup_round` adds one to `CurrentStartIndex` and to
+/// `CurrentWaitIndex`, back to the first past the last; `setup_run` then puts the run's player
+/// at the start of that index, the others at the wait of theirs, and `UseStaticCameras` takes
+/// the camera of the start's index). With the lock at a round (`Online.RoundLock()`, the same
+/// on every console from the 1-Up's load), `setup_round` leaves `CurrentStartIndex` at that
+/// round's start every round, and `CurrentWaitIndex` with it where the 1-Up has a wait of that
+/// number, so everyone plays every round where that round is played.
 pub(crate) const FIXES_SOURCE: &str = r#"
 local function CheckPlayers(handler, playerDisconnected, self, message, vars)
     local skaters = vars.SkatersList
@@ -193,6 +320,17 @@ end
 
 function h_fix_5D7772E746ED13EC(self, message, vars)
     CheckPlayers(h_5D7772E746ED13EC, h_784EE5105BA6A161, self, message, vars)
+end
+
+function h_fix_C00A2C1293F4FB42(self, message, vars)
+    h_C00A2C1293F4FB42(self, message, vars)
+    local round = Online.RoundLock()
+    if round >= 1 and round <= self.StartLocationRotation.Count then
+        vars.CurrentStartIndex = round
+        if round <= self.WaitLocationRotation.Count then
+            vars.CurrentWaitIndex = round
+        end
+    end
 end
 
 function h_fix_82798540E62D81B7(self, message, vars)
@@ -290,6 +428,140 @@ mod tests {
         assert!(matches!(corrected(SKATE_PREPARE_FOLLOWER, &chunk_with(&changed)), Cow::Borrowed(_)));
         let twice = [FOLLOWER_SEARCH, FOLLOWER_SEARCH].concat();
         assert!(matches!(corrected(SKATE_PREPARE_FOLLOWER, &chunk_with(&twice)), Cow::Borrowed(_)));
+    }
+
+    /// The host's end of an infinite Spot Battle over stand-ins for the natives it calls, in
+    /// `state` with the given vars: what it returns, the state it changes to, the timers it
+    /// removes and the HUD components it hides.
+    fn end_spot_battle(state: &str, vars: &str) -> (bool, Option<String>, String, String) {
+        use super::super::lua::{Lua, Value};
+        let mut lua = Lua::<()>::new();
+        let stubs = format!(
+            "removed, hidden = '', ''
+             ChallengeTimer = {{ RemoveCountdownTimer = function(id) removed = removed .. id .. ' ' end }}
+             HUD2 = {{ eHUDComponent = {{ TimerHUD = 'timer', CountdownHUD = 'countdown' }},
+                       Show = function(name, component, shown) if not shown then hidden = hidden .. name .. ':' .. component .. ' ' end end }}
+             function ChangeState(state) changed = state end
+             data = {{ Name = 'battle' }}
+             vars = {{ {vars} }}"
+        );
+        let setup = lua.load_source(stubs.as_bytes(), "stubs").expect("stubs compile");
+        lua.call(&mut (), &setup, &[]).expect("stubs run");
+        let main = lua.load_source(END_SOURCE.as_bytes(), "end_spot_battle").expect("the end compiles");
+        lua.call(&mut (), &main, &[]).expect("the end defines itself");
+        let function = lua.get_global("pc_end_spot_battle");
+        let (data, vars) = (lua.get_global("data"), lua.get_global("vars"));
+        let returned = lua.call(&mut (), &function, &[data, Value::string(state), vars]).expect("the end runs");
+        let taken = !matches!(returned.first(), Some(Value::Boolean(false)));
+        let changed = match lua.get_global("changed") {
+            Value::Nil => None,
+            state => Some(lua.display(&state)),
+        };
+        let text = |lua: &Lua<()>, name: &str| lua.display(&lua.get_global(name)).trim().to_owned();
+        (taken, changed, text(&lua, "removed"), text(&lua, "hidden"))
+    }
+
+    #[test]
+    fn the_host_s_end_ends_the_turn_in_play() {
+        let turn = |timers: &str| format!("ActivePlayerID = 2, {timers}");
+        assert_eq!(
+            end_spot_battle("challenge_running", &turn("MainTimerID = 7, CountdownTimerID = 0")),
+            (true, Some("end_turn".into()), "7".into(), "battle:timer".into()),
+            "a run ends as its player's leave ends it"
+        );
+        assert_eq!(
+            end_spot_battle("challenge_running", &turn("MainTimerID = 0, EndRunTimerID = 9")),
+            (true, Some("end_turn".into()), "9".into(), String::new()),
+            "a Skate 3 run already ending loses its two seconds, which end_turn would take for its own timer"
+        );
+        assert_eq!(
+            end_spot_battle("countdown", &turn("MainTimerID = 0, CountdownTimerID = 4")),
+            (true, Some("end_turn".into()), "4".into(), "battle:countdown".into())
+        );
+        assert_eq!(
+            end_spot_battle("countdown", &turn("MainTimerID = 0, CountdownTimerID = 0")),
+            (true, Some("end_turn".into()), String::new(), String::new()),
+            "a turn still on its way to its spot has no countdown yet"
+        );
+        for state in ["end_turn", "wait_for_players", "challenge_finished", "highlight_reel", "leaderboard"] {
+            assert_eq!(end_spot_battle(state, &turn("MainTimerID = 3, CountdownTimerID = 0")), (true, None, String::new(), String::new()), "{state}");
+        }
+    }
+
+    /// A restarted battle's `setup` and `reset` over stand-ins: three players, the battle as
+    /// `initial` and `reset` leave it, then the carried state.
+    fn restored(carry: &str) -> (Option<String>, String) {
+        use super::super::lua::{Lua, Value};
+        let mut lua = Lua::<()>::new();
+        let stubs = format!(
+            "board = ''
+             HUD2 = {{ LeaderboardHUDSetInt = function(name, player, score) board = board .. 's' .. player .. '=' .. score .. ' ' end,
+                       LeaderboardHUDSetRank = function(name, player, rank) board = board .. 'r' .. player .. '=' .. rank .. ' ' end }}
+             function ChangeState(state) changed = state end
+             function h_setup(self, message, vars) vars.EnableVoting = true ChangeState('nis_flythrough') end
+             data = {{ Name = 'battle' }}
+             vars = {{ NumPlayers = 3, CurrentRound = 1, RoundNumberChanged = true, CurrentPlayerIndex = 0,
+                      PlayerOrderMap = {{ 1, 2, 3 }}, PlayerRankMap = {{ 1, 2, 3 }}, HighestVote = {{ Score = -1, PlayerID = -1 }},
+                      PlayerData = {{ {{ Score = 0, Rank = 1, PlayerOrder = 1, IsBonusObjectiveComplete = false }},
+                                     {{ Score = 0, Rank = 2, PlayerOrder = 2, IsBonusObjectiveComplete = false }},
+                                     {{ Score = 0, Rank = 3, PlayerOrder = 3, IsBonusObjectiveComplete = false }} }} }}
+             carry = {{ {carry} }}"
+        );
+        let setup = lua.load_source(stubs.as_bytes(), "stubs").expect("stubs compile");
+        lua.call(&mut (), &setup, &[]).expect("stubs run");
+        let main = lua.load_source(JOIN_SOURCE.as_bytes(), "join").expect("the join compiles");
+        lua.call(&mut (), &main, &[]).expect("the join defines itself");
+        let (data, vars, carry) = (lua.get_global("data"), lua.get_global("vars"), lua.get_global("carry"));
+        let message = Value::Table(lua.create_table());
+        let (wrapper, handler) = (lua.get_global("pc_spot_battle_setup"), lua.get_global("h_setup"));
+        lua.call(&mut (), &wrapper, &[handler, data.clone(), message, vars.clone()]).expect("setup runs");
+        let changed = match lua.get_global("changed") {
+            Value::Nil => None,
+            state => Some(lua.display(&state)),
+        };
+        let restore = lua.get_global("pc_spot_battle_restore");
+        lua.call(&mut (), &restore, &[data, vars, carry]).expect("the restore runs");
+        let summary = lua
+            .load_source(
+                b"local v = vars
+                  local text = 'round ' .. v.CurrentRound .. ' played ' .. v.CurrentPlayerIndex .. ' order'
+                  for i = 1, v.NumPlayers do text = text .. ' ' .. v.PlayerOrderMap[i] end
+                  text = text .. ' ranks'
+                  for i = 1, v.NumPlayers do text = text .. ' ' .. v.PlayerRankMap[i] end
+                  text = text .. ' scores'
+                  for i = 1, v.NumPlayers do text = text .. ' ' .. v.PlayerData[i].Score .. '/' .. v.PlayerData[i].Rank .. (v.PlayerData[i].IsBonusObjectiveComplete and '+' or '') end
+                  text = text .. ' vote ' .. v.HighestVote.Score .. ' by ' .. v.HighestVote.PlayerID .. (v.RoundNumberChanged and ' new round' or '') .. ' | ' .. board
+                  summary = text",
+                "summary",
+            )
+            .expect("the summary compiles");
+        lua.call(&mut (), &summary, &[]).expect("the summary runs");
+        (changed, lua.display(&lua.get_global("summary")).trim().to_owned())
+    }
+
+    /// Players 1 and 2 were in round 2, player 2 ahead on 900 with the bonus objective and the
+    /// highest vote, and player 1 had had this round's turn; player 3 joined. The joiner goes
+    /// last in the round, behind the players it joins on the board.
+    #[test]
+    fn a_restarted_battle_goes_on_from_its_state_with_the_joiner_last() {
+        let (changed, state) = restored(
+            "Round = 2, Played = 1, Order = { 1, 2, 3 }, Ranking = { 2, 1, 3 }, Score = { [1] = 400, [2] = 900 }, Bonus = { [2] = true }, VoteScore = 3, VotePlayer = 2",
+        );
+        assert_eq!(changed.as_deref(), Some("reset"), "no flythrough the second time");
+        assert_eq!(state, "round 2 played 1 order 1 2 3 ranks 2 1 3 scores 400/2 900/1+ 0/3 vote 3 by 2 | s1=900 s0=400 s2=0 r0=2 r1=1 r2=3");
+    }
+
+    #[test]
+    fn a_state_that_does_not_fit_the_players_leaves_the_first_round() {
+        let (_, state) = restored("Round = 2, Played = 1, Order = { 1, 2 }, Ranking = { 2, 1 }, Score = { [1] = 400, [2] = 900 }, Bonus = {}");
+        assert_eq!(state, "round 1 played 0 order 1 2 3 ranks 1 2 3 scores 0/1 0/2 0/3 vote -1 by -1 new round |");
+    }
+
+    #[test]
+    fn the_host_s_end_waits_for_the_first_turn() {
+        for state in ["setup", "reset", "nis_flythrough", "wait_for_players", "countdown"] {
+            assert_eq!(end_spot_battle(state, "MainTimerID = 0, CountdownTimerID = 0"), (false, None, String::new(), String::new()), "{state}");
+        }
     }
 
     /// The shipped handler under stand-ins for its natives: an online round of four followers
@@ -505,6 +777,57 @@ mod tests {
         assert_eq!(skate3_one_up_end_run(9, false, false, true), (None, None, Some("setup_run".into())), "the end-of-run timer is the handler's own");
     }
 
+    /// Skate 3's `setup_round` under the host's Round Lock, over a stand-in for the shipped
+    /// handler's turn through the starts and waits: the start and wait indices of each round.
+    fn skate3_one_up_rounds(lock: u32, starts: u32, waits: u32, rounds: usize) -> Vec<(f32, f32)> {
+        use super::super::lua::{Lua, Value};
+        let mut lua = Lua::<()>::new();
+        let stubs = format!(
+            "function h_{SKATE3_ONE_UP_SETUP_ROUND:016X}(self, message, vars)
+                 vars.CurrentStartIndex = vars.CurrentStartIndex + 1
+                 if self.StartLocationRotation.Count < vars.CurrentStartIndex then
+                     vars.CurrentStartIndex = 1
+                 end
+                 vars.CurrentWaitIndex = vars.CurrentWaitIndex + 1
+                 if self.WaitLocationRotation.Count < vars.CurrentWaitIndex then
+                     vars.CurrentWaitIndex = 1
+                 end
+             end
+             Online = {{ RoundLock = function() return {lock} end }}
+             data = {{ StartLocationRotation = {{ Count = {starts} }}, WaitLocationRotation = {{ Count = {waits} }} }}
+             vars = {{ CurrentStartIndex = 0, CurrentWaitIndex = 0 }}
+             message = {{}}"
+        );
+        let setup = lua.load_source(stubs.as_bytes(), "stubs").expect("stubs compile");
+        lua.call(&mut (), &setup, &[]).expect("stubs run");
+        let main = lua.load_source(FIXES_SOURCE.as_bytes(), "script_fixes").expect("source compiles");
+        lua.call(&mut (), &main, &[]).expect("wrappers define themselves");
+        let wrapper = lua.get_global(&format!("h_fix_{SKATE3_ONE_UP_SETUP_ROUND:016X}"));
+        let read = lua.load_source(b"start = vars.CurrentStartIndex wait = vars.CurrentWaitIndex", "read").expect("read compiles");
+        (0..rounds)
+            .map(|_| {
+                let args = [lua.get_global("data"), lua.get_global("message"), lua.get_global("vars")];
+                lua.call(&mut (), &wrapper, &args).expect("wrapper runs");
+                lua.call(&mut (), &read, &[]).expect("read runs");
+                match (lua.get_global("start"), lua.get_global("wait")) {
+                    (Value::Number(start), Value::Number(wait)) => (start, wait),
+                    other => panic!("indices {other:?}"),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_round_lock_starts_every_skate3_1up_round_at_its_round() {
+        assert_eq!(SKATE3_ONE_UP_SETUP_ROUND, super::super::keys::hash64("skate3/1up/3a771a0de883277c"));
+        assert!(FIXED_HANDLERS.contains(&(SKATE3_ONE_UP_SETUP_ROUND, SKATE3_ONE_UP_SETUP_ROUND)));
+        assert_eq!(skate3_one_up_rounds(0, 3, 3, 4), [(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (1.0, 1.0)], "without a lock the rounds take the starts in turn");
+        assert_eq!(skate3_one_up_rounds(2, 3, 3, 3), [(2.0, 2.0); 3], "every round at round 2's start and wait");
+        assert_eq!(skate3_one_up_rounds(1, 3, 3, 2), [(1.0, 1.0); 2]);
+        assert_eq!(skate3_one_up_rounds(3, 3, 2, 3), [(3.0, 1.0), (3.0, 2.0), (3.0, 1.0)], "a 1-Up with fewer waits keeps their turn");
+        assert_eq!(skate3_one_up_rounds(5, 3, 3, 2), [(1.0, 1.0), (2.0, 2.0)], "a round the 1-Up has not got locks nothing");
+    }
+
     /// Skate 3's split trigger rule over a stand-in for Skate 2's trigger entry (which records
     /// the racer's `LastLapGateIndex` it is called with): a racer at `last` hits volume `volume`
     /// of a leg whose split triggers are volumes 101 to 103.
@@ -679,7 +1002,8 @@ mod tests {
              ChallengeSpeech = { StartThrowdownChallenge = function() end }
              VisualIndicators = { AddIndicator = function() end }
              Pause = { EnablePauseMenuAndBackpack = function() end }";
-        for (check, disconnect) in FIXED_HANDLERS {
+        // The wrappers of a linked Skate 3 data folder's handlers call themselves alone.
+        for (check, disconnect) in FIXED_HANDLERS.into_iter().filter(|(check, disconnect)| check != disconnect) {
             let chunks = shipped_handlers(&[check, disconnect]);
             let chunks: Vec<&[u8]> = chunks.iter().map(Vec::as_slice).collect();
             let run = |call: &str, disconnected: &[i32], absent: &[i32]| {

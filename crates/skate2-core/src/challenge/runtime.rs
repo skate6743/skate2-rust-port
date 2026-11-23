@@ -388,6 +388,9 @@ fn execute_scripted_handler(lua: &mut Lua<World>, world: &mut World, graph: usiz
     if !world.attached.contains(&handler) {
         attach(lua, world, handler);
     }
+    if spot_battle_join(lua, world, graph, handler, args) {
+        return;
+    }
     let name = if skate3_handler(lua, world, graph, handler) {
         format!("h_skate3_{handler:016X}")
     } else if fixed_handler(lua, world, handler) {
@@ -403,6 +406,188 @@ fn execute_scripted_handler(lua: &mut Lua<World>, world: &mut World, graph: usiz
         eprintln!("career script error in {context}: {e}");
         world.output(Output::ScriptError { context, error: e.to_string() });
     }
+}
+
+/// PC port (user request): a Spot Battle takes in a player who joins it in play, by starting
+/// again from its state between two turns (`docs/evidence/spot-battle-joining-2026-11-22.md`).
+/// True where the handler's call was made, or left out, here.
+///
+/// While a player waits (`OnlineChallenge::carry_wanted`), the `countdown` `stateenter` that
+/// would start the next turn starts none: the battle's state goes to `OnlineChallenge::carry`
+/// and the battle holds in `countdown` (`parked`) until the server loads it again. A battle its
+/// host has ended goes on to its end instead.
+///
+/// A battle that starts from a carried state (`OnlineChallenge::restore`) runs `setup` without
+/// its flythrough and ends `reset` with that state in place (`script_fixes::JOIN_SOURCE`).
+fn spot_battle_join(lua: &mut Lua<World>, world: &mut World, graph: usize, handler: u64, args: &[Value]) -> bool {
+    use super::script_fixes::{JOIN_SOURCE, SPOT_BATTLE_COUNTDOWN_ENTER, SPOT_BATTLE_RESET_ENTER, SPOT_BATTLE_SETUP_ENTER};
+    let Some(online) = world.online.as_ref() else { return false };
+    let [data, message, vars] = args else { return false };
+    match handler {
+        SPOT_BATTLE_COUNTDOWN_ENTER if online.parked => true,
+        SPOT_BATTLE_COUNTDOWN_ENTER if online.carry_wanted && !online.host_ended => {
+            let Some(carry) = capture_spot_battle(lua, vars) else { return false };
+            if let Some(online) = world.online.as_mut() {
+                online.carry = Some(carry);
+                online.carry_wanted = false;
+                online.parked = true;
+            }
+            true
+        }
+        SPOT_BATTLE_SETUP_ENTER | SPOT_BATTLE_RESET_ENTER if online.restore.is_some() => {
+            let chunk = hash64("PC port: spot_battle_join");
+            if world.attached.insert(chunk) {
+                let loaded = lua.load_source(JOIN_SOURCE.as_bytes(), "spot_battle_join").and_then(|main| lua.call(world, &main, &[]).map(|_| ()));
+                if let Err(e) = loaded {
+                    world.output(Output::ScriptError { context: "attach spot_battle_join".to_owned(), error: e.to_string() });
+                }
+            }
+            let shipped = lua.get_global(&format!("h_{handler:016X}"));
+            let called = if handler == SPOT_BATTLE_SETUP_ENTER {
+                let setup = lua.get_global("pc_spot_battle_setup");
+                lua.call(world, &setup, &[shipped, data.clone(), message.clone(), vars.clone()]).map(|_| ())
+            } else {
+                lua.call(world, &shipped, args).and_then(|_| {
+                    let Some(carry) = world.online.as_mut().and_then(|online| online.restore.take()) else { return Ok(()) };
+                    let table = carry_table(lua, &carry);
+                    let reference = lua.reference(table.clone());
+                    let restore = lua.get_global("pc_spot_battle_restore");
+                    let restored = lua.call(world, &restore, &[data.clone(), vars.clone(), table]).map(|_| ());
+                    lua.unreference(reference);
+                    restored
+                })
+            };
+            if let Err(e) = called {
+                let context = format!("{}/{}", world.activities.activities[graph].name, handler_name(&world.db, handler));
+                eprintln!("career script error in {context}: {e}");
+                world.output(Output::ScriptError { context, error: e.to_string() });
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The battle's state as its script's vars hold it at a turn's end: the players still in it, in
+/// turn order and by rank. `None` where the vars are not a battle's between two turns.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "the script's numbers are small whole ones")]
+fn capture_spot_battle(lua: &Lua<World>, vars: &Value) -> Option<super::players::SpotBattleCarry> {
+    let Value::Table(vars) = vars else { return None };
+    let vars = lua.table(*vars);
+    let number = |value: Value| if let Value::Number(n) = value { Some(n) } else { None };
+    let set = |value: Value| matches!(value, Value::Boolean(true));
+    if set(vars.get_str("LockOut")) {
+        return None;
+    }
+    let count = number(vars.get_str("NumPlayers"))? as usize;
+    let round = number(vars.get_str("CurrentRound"))? as i32;
+    let index = number(vars.get_str("CurrentPlayerIndex"))? as usize;
+    let (Value::Table(data), Value::Table(order), Value::Table(ranks)) = (vars.get_str("PlayerData"), vars.get_str("PlayerOrderMap"), vars.get_str("PlayerRankMap")) else {
+        return None;
+    };
+    // A player's score, bonus objective and whether it left.
+    let player = |id: usize| -> Option<(i32, bool, bool)> {
+        let Value::Table(row) = lua.table(data).get_int(id) else { return None };
+        let row = lua.table(row);
+        Some((number(row.get_str("Score"))? as i32, set(row.get_str("IsBonusObjectiveComplete")), set(row.get_str("IsDisconnected"))))
+    };
+    let mut carry = super::players::SpotBattleCarry { round, ..Default::default() };
+    for position in 1..=count {
+        let id = number(lua.table(order).get_int(position))? as usize;
+        if player(id)?.2 {
+            continue;
+        }
+        if position <= index {
+            carry.played += 1;
+        }
+        carry.order.push(id as i32 - 1);
+    }
+    for rank in 1..=count {
+        let id = number(lua.table(ranks).get_int(rank))? as usize;
+        let (score, bonus, gone) = player(id)?;
+        if !gone {
+            carry.ranking.push((id as i32 - 1, score, bonus));
+        }
+    }
+    // `votingcomplete` keeps the voted player as its index plus one.
+    if let Value::Table(vote) = vars.get_str("HighestVote") {
+        let vote = lua.table(vote);
+        if let (Some(score), Some(voted)) = (number(vote.get_str("Score")), number(vote.get_str("PlayerID")))
+            && voted >= 1.0
+        {
+            carry.vote = Some((score as i32, voted as i32 - 1));
+        }
+    }
+    Some(carry)
+}
+
+/// A carried state as `pc_spot_battle_restore` reads it: the script's own one-based players.
+#[expect(clippy::cast_precision_loss, reason = "players, rounds and scores as the script's numbers")]
+fn carry_table(lua: &mut Lua<World>, carry: &super::players::SpotBattleCarry) -> Value {
+    let root = lua.create_table();
+    let reference = lua.reference(Value::Table(root));
+    let player = |index: i32| Value::Number((index + 1) as f32);
+    let key = |index: i32| usize::try_from(index + 1).unwrap_or(0);
+    lua.table_mut(root).set_str("Round", Value::Number(carry.round as f32));
+    lua.table_mut(root).set_str("Played", Value::Number(carry.played as f32));
+    let order = lua.create_table();
+    lua.table_mut(root).set_str("Order", Value::Table(order));
+    for (position, &index) in carry.order.iter().enumerate() {
+        lua.table_mut(order).set_int(position + 1, player(index));
+    }
+    let ranking = lua.create_table();
+    lua.table_mut(root).set_str("Ranking", Value::Table(ranking));
+    let score = lua.create_table();
+    lua.table_mut(root).set_str("Score", Value::Table(score));
+    let bonus = lua.create_table();
+    lua.table_mut(root).set_str("Bonus", Value::Table(bonus));
+    for (rank, &(index, points, done)) in carry.ranking.iter().enumerate() {
+        lua.table_mut(ranking).set_int(rank + 1, player(index));
+        lua.table_mut(score).set_int(key(index), Value::Number(points as f32));
+        if done {
+            lua.table_mut(bonus).set_int(key(index), Value::Boolean(true));
+        }
+    }
+    if let Some((points, index)) = carry.vote {
+        lua.table_mut(root).set_str("VoteScore", Value::Number(points as f32));
+        lua.table_mut(root).set_str("VotePlayer", player(index));
+    }
+    lua.unreference(reference);
+    Value::Table(root)
+}
+
+/// PC port: runs `script_fixes::END_SOURCE`'s `pc_end_spot_battle(data, state, vars)` for the
+/// graph, with the tables and the `ChangeState` a handler of it runs with
+/// (`cStateGraph::HandleLocalMessage`); the source loads once. What it returns: whether the
+/// battle took the end (true as well where the script cannot say, so no one asks again).
+pub fn end_spot_battle(lua: &mut Lua<World>, world: &mut World, graph: usize) -> bool {
+    use super::script_fixes::END_SOURCE;
+    let Some(state) = world.activities.graph(graph).current_name().map(str::to_owned) else { return true };
+    let chunk = hash64("PC port: end_spot_battle");
+    if world.attached.insert(chunk) {
+        let loaded = lua.load_source(END_SOURCE.as_bytes(), "end_spot_battle").and_then(|main| lua.call(world, &main, &[]).map(|_| ()));
+        if let Err(e) = loaded {
+            world.output(Output::ScriptError { context: "attach end_spot_battle".to_owned(), error: e.to_string() });
+        }
+    }
+    world.closure = Some(graph);
+    let (data, vars) = build_activity_tables(lua, world, graph);
+    let references = [lua.reference(data.clone()), lua.reference(vars.clone())];
+    let function = lua.get_global("pc_end_spot_battle");
+    let taken = match lua.call(world, &function, &[data, Value::string(&state), vars]) {
+        Ok(returned) => !matches!(returned.first(), Some(Value::Boolean(false))),
+        Err(e) => {
+            let context = format!("{}/{state}/end_spot_battle", world.activities.activities[graph].name);
+            eprintln!("career script error in {context}: {e}");
+            world.output(Output::ScriptError { context, error: e.to_string() });
+            true
+        }
+    };
+    for reference in references {
+        lua.unreference(reference);
+    }
+    world.closure = None;
+    taken
 }
 
 /// PC port: whether the handler is one a linked Skate 3 data folder's game of its type runs

@@ -69,7 +69,25 @@ impl<T, C> SelectedLiveSession<T, C> {
             spectatable: game.remotes.keys().copied().filter(|&user_id| self.online_can_spectate(user_id)).collect(),
             activities: self.online_hub_activities(),
             proposal: self.online_proposal_pending(),
+            spot_battle: game.attributes.challenge_type == challenge::OWN_THE_SPOT,
+            infinite_rounds: game.infinite_rounds,
+            endless_in_play: game.endless_in_play(),
+            // PC port: a 1-Up's round starts (a linked Skate 3 data folder's 1-Up, which runs
+            // Skate 3's graph), and the host's Round Lock among them.
+            one_up_rounds: if game.attributes.challenge_type == challenge::ONE_UP {
+                crate::skate3::linked().map_or(0, |data| data.one_up_rounds(game.attributes.challenge_key))
+            } else {
+                0
+            },
+            round_lock: game.round_lock,
         })
+    }
+
+    /// PC port addition: whether End Challenge is offered, as the hub's root menu offers it (the
+    /// host's, while a Spot Battle under Infinite Rounds plays). The StartHub lists it too.
+    pub(in super::super) fn online_end_challenge_offered(&self) -> bool {
+        let Some(game) = self.online.game.as_ref() else { return false };
+        self.online.user_id.is_some_and(|local| game.host() == Some(local)) && game.endless_in_play()
     }
 
     /// `PickCurrentState` 0x82688470 out of an online game: in a single player or free skate game
@@ -294,7 +312,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                     self.online.client = None;
                     self.online.sign_in = SignIn::Offline;
                     self.online.user_id = None;
-                    self.open_online_popup(Popup::Notice("ID_ONLINE_SIGNIN_CANCELLED"));
+                    self.open_online_popup(Popup::Notice("ID_ONLINE_SIGNIN_CANCELLED".to_owned()));
                 }
                 // OK: `HandleErrorState` closes every popup and pops to the game (`PopToState(0)`,
                 // or `OnlineFeManager::Exit` 0x8266c418), the hub and its screens with them.
@@ -347,20 +365,42 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// location the skater is in by its boundary, tested nearest location first (`DoFindFreeskate`
     /// 0x82778950, `FindClosestFreeskateByDistance` 0x82778120, `LoadBoundary` 0x8274e7e0), else
     /// the one whose boundary is nearest; none without a location.
+    ///
+    /// The locations are those of the world the skater is in: an additional world's (a
+    /// downloadable content's, a linked Skate 3 data's map) are no locations of `BAM_Sim.loc`, and
+    /// lie over ground the main world has too, so in one of them the search is among its own, and
+    /// in the main world among the main world's.
     fn online_free_skate_here(&mut self) -> Result<Option<u64>, SelectedLiveError> {
+        use super::super::world_travel::TravelWorld;
         let Some(actor) = self.inner.player.as_ref().and_then(|player| player.selected.actor.as_deref()) else { return Ok(None) };
         let position = super::super::local_skater_position(self.inner.world.as_ref().map(|world| &world.world), actor)?;
-        let locations = self.online_challenge_list(challenge::ONLINE_FREE_SKATE)?;
-        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
-        let mut nearest: Vec<(f32, u64, String)> = locations
-            .iter()
-            .filter_map(|location| {
-                let transform = table.find(&location.location)?.transform;
-                let name = db.attribute(CHALLENGES, location.key, CHALLENGE_NAME)?.text(0)?.to_owned();
-                let (x, z) = (transform[12] - position[0], transform[14] - position[2]);
-                Some((x.mul_add(x, z * z), location.key, name))
-            })
-            .collect();
+        let here = self.loaded_additional_world().map(str::to_owned);
+        let mut nearest: Vec<(f32, u64, String)> = Vec::new();
+        for location in self.online_challenge_list_all(challenge::ONLINE_FREE_SKATE)? {
+            let world = self.online_challenge_world(location.key)?.and_then(|(key, file)| match TravelWorld::of_location(&file, key) {
+                TravelWorld::Additional { file, .. } => Some(file),
+                TravelWorld::Main | TravelWorld::Keep => None,
+            });
+            let in_this_world = match (&here, &world) {
+                (None, None) => true,
+                (Some(here), Some(world)) => here.eq_ignore_ascii_case(world),
+                _ => false,
+            };
+            if !in_this_world {
+                continue;
+            }
+            let Ok((_, transform)) = self.online_key_location(location.key) else { continue };
+            let name = match Self::skate3_online_spot(location.key) {
+                Some(spot) => spot.name,
+                None => {
+                    let (db, _) = self.freeskate.data.as_ref().ok_or_else(|| error("data absent"))?;
+                    let Some(name) = db.attribute(CHALLENGES, location.key, CHALLENGE_NAME).and_then(|name| name.text(0)) else { continue };
+                    name.to_owned()
+                }
+            };
+            let (x, z) = (transform[12] - position[0], transform[14] - position[2]);
+            nearest.push((x.mul_add(x, z * z), location.key, name));
+        }
         nearest.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("assets absent"))?.mounts);
         let mut best = nearest.first().map(|&(_, key, _)| key);
@@ -382,6 +422,26 @@ impl<T, C> SelectedLiveSession<T, C> {
         Ok(best)
     }
 
+    /// Diagnostics (`SKATE2_DIAGNOSTIC_FREE_SKATE_HERE`): the free skate Free Skate Here would
+    /// ask for from where the skater is, by its challenge's name; no search is made.
+    pub fn diagnostic_free_skate_here(&mut self) -> String {
+        let key = match self.online_free_skate_here() {
+            Ok(Some(key)) => key,
+            Ok(None) => return "none".to_owned(),
+            Err(failure) => return format!("failed: {failure:?}"),
+        };
+        let name = match Self::skate3_online_spot(key) {
+            Some(spot) => Some(spot.name),
+            None => self
+                .freeskate
+                .data
+                .as_ref()
+                .and_then(|(db, _)| db.attribute(CHALLENGES, key, CHALLENGE_NAME))
+                .and_then(|name| name.text(0).map(str::to_owned)),
+        };
+        format!("{key:016x} {}", name.unwrap_or_default())
+    }
+
     fn online_hub_action(&mut self, action: Action) -> Result<(), SelectedLiveError> {
         match action {
             Action::None => {}
@@ -401,7 +461,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                         });
                     });
                 }
-                None => self.open_online_popup(Popup::Notice("ID_ONLINE_MATCHMAKING_NOSERVER")),
+                None => self.open_online_popup(Popup::Notice("ID_ONLINE_MATCHMAKING_NOSERVER".to_owned())),
             },
             Action::CustomFreeskate => {
                 let screen = self.online_freeskate_screen(None)?;
@@ -453,6 +513,13 @@ impl<T, C> SelectedLiveSession<T, C> {
             }
             Action::MakeHost(user_id) => {
                 self.online_make_host(user_id);
+                self.close_online_hub()?;
+            }
+            // PC port: the menu stays, and reads the new setting once the server says it.
+            Action::SetInfiniteRounds(on) => self.online_set_infinite_rounds(on),
+            Action::SetRoundLock(round) => self.online_set_round_lock(round),
+            Action::EndChallenge => {
+                self.online_end_challenge();
                 self.close_online_hub()?;
             }
             Action::ActivitySignUp(key) => self.online_open_activity_signup(key),

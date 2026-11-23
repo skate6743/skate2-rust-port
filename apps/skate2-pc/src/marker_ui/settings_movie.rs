@@ -16,7 +16,7 @@ use super::{
 };
 use crate::gpu_renderer::RenderResult;
 use skate2_core::{
-    stick_settings::{DEADZONES, TRIGGER_THRESHOLDS},
+    stick_settings::{DEADZONES, INPUT_DELAYS, TRIGGER_THRESHOLDS},
     ui::{
         apt_timeline::{DisplayEntry, PlacementIdentity},
         options::{BRIGHTNESSES, FIELD_OF_VIEWS, FrameRateCap, Labelled, Page, Row, Snapshot},
@@ -226,13 +226,13 @@ impl SettingsMovie {
             .iter()
             .map(|&row| options_row(assets, &state, row))
             .collect::<RenderResult<Vec<_>>>()?;
-        // PC port: the Field of View, Brightness and Trigger Threshold rows add X, which puts them
-        // back to the game's own (the threshold to its default).
+        // PC port: the Field of View, Brightness, Trigger Threshold and Input Delay rows add X,
+        // which puts them back to the game's own (the threshold to its default, the delay to none).
         let on_knob = |snapshot: &Snapshot| {
             snapshot
                 .rows()
                 .get(snapshot.selected)
-                .is_some_and(|row| matches!(row, Row::FieldOfView | Row::Brightness | Row::TriggerThreshold))
+                .is_some_and(|row| matches!(row, Row::FieldOfView | Row::Brightness | Row::TriggerThreshold | Row::InputDelay))
         };
         let knob = on_knob(&state);
         let was_knob = previous.page == state.page && on_knob(previous);
@@ -412,18 +412,24 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
         Row::RainVolume => Some(i32::from(state.modes.rain_volume)),
         _ => None,
     };
-    if matches!(row, Row::FieldOfView | Row::Brightness | Row::TriggerThreshold) {
+    if matches!(row, Row::FieldOfView | Row::Brightness | Row::TriggerThreshold | Row::InputDelay) {
         // Its percent after its title and its knob along the morph line, whose ends are the ends
         // of its range: the game's own a quarter (Field of View) or a third (Brightness) of the way
-        // along, and the Trigger Threshold's none at its start.
+        // along, and the Trigger Threshold's none at its start. The Input Delay's is its
+        // milliseconds, none at its start.
         let (percent, range) = match row {
             Row::Brightness => (state.values.brightness, BRIGHTNESSES),
             Row::TriggerThreshold => (state.sticks.trigger_threshold, TRIGGER_THRESHOLDS),
+            Row::InputDelay => (state.sticks.input_delay, INPUT_DELAYS),
             _ => (state.values.field_of_view, FIELD_OF_VIEWS),
         };
         let (low, high) = (i32::from(*range.start()), i32::from(*range.end()));
         let value = (i32::from(percent) - low) * 100 / (high - low);
-        return Ok(EditSkaterRow { kind: row.kind().into(), title: format!("{title} {percent}%"), value, ..Default::default() });
+        let title = match row {
+            Row::InputDelay => format!("{title} {percent} ms"),
+            _ => format!("{title} {percent}%"),
+        };
+        return Ok(EditSkaterRow { kind: row.kind().into(), title, value, ..Default::default() });
     }
     let (subtitle, value) = if let Some(value) = volume {
         let percent = localizer::localized_format_string(assets, "ID_COMMON_PERCENT", &[localizer::AptArgument::Integer(value * 10)])?;
@@ -444,11 +450,13 @@ fn options_row(assets: &Assets, state: &Snapshot, row: Row) -> RenderResult<Edit
             Row::Hud => on_off(state.hud),
             Row::ShowLobbyChat => on_off(state.show_lobby_chat),
             Row::ShowGhostPlayers => on_off(state.show_ghost_players),
+            Row::SkateDuringTurnWait => on_off(state.skate_during_turn_wait),
             // GetStringValue 0x82643d48: ID_GAMESETTINGS_CAMERA_HIGH for 1, _LOW for 0.
             Row::CameraAngle => if state.camera_high { "ID_GAMESETTINGS_CAMERA_HIGH" } else { "ID_GAMESETTINGS_CAMERA_LOW" },
             // Its Off-board Y Axis reads Normal with mInvertYAxis set.
             Row::OffboardYAxis => if state.invert_y { "ID_GAMESETTINGS_AXIS_NORMAL" } else { "ID_GAMESETTINGS_AXIS_INVERTED" },
             Row::Vibration => on_off(state.vibration),
+            Row::PollingRate => state.sticks.polling.label(),
             Row::PhysicsMode => state.modes.physics.label(),
             Row::Difficulty => state.modes.difficulty.label(),
             Row::Weather => state.modes.weather.label(),
@@ -619,11 +627,12 @@ mod tests {
                 state.selected = 0;
                 movie.update(&assets, state, main.as_mut()).unwrap();
                 tick(&mut movie, &mut main, &assets, 90);
-                // Display Settings starts higher by its Brightness knob's gap under Fullscreen and by
-                // the 45 its knob reaches past seven selector rows (`LONGEST_LIST`).
+                // Display Settings starts higher by its Brightness knob's gap under Fullscreen, by
+                // the 45 its knob reaches past seven selector rows (`LONGEST_LIST`) and by the row
+                // of its eighth selector, Anti-Aliasing.
                 assert_eq!(
                     child(&mut movie.root, "mItem1").unwrap().entry.matrix.ty,
-                    anchor.ty - MORPH_UNDER_SELECTOR_GAP - 45. + 58.
+                    anchor.ty - MORPH_UNDER_SELECTOR_GAP - 45. - 58. + 58.
                 );
                 for selected in [0, 1, 0] {
                     state.selected = selected;
@@ -813,7 +822,12 @@ mod tests {
                 tick(&mut movie, &mut main, &assets, 30);
                 for index in 0..state.rows().len() {
                     let right = drawn_right(child(&mut movie.root, &format!("mItem{index}")).unwrap(), &assets);
-                    assert!(right + STICK_GAP <= STICK_LEFT, "{page:?} row {index} with row {selected} highlighted reaches {right}");
+                    // A highlighted knob shows its arrows, sprites 64 wide with clear margins: the
+                    // right one's quad reaches into the gap (to x 793.85) while what it draws ends
+                    // short of it, so that row is held to the boxes' edge itself.
+                    let arrows = index == selected && state.rows()[index].kind() == "morph";
+                    let limit = if arrows { STICK_LEFT } else { STICK_LEFT - STICK_GAP };
+                    assert!(right <= limit, "{page:?} row {index} with row {selected} highlighted reaches {right}");
                 }
             }
             state.selected = 0;
@@ -850,22 +864,90 @@ mod tests {
                 }
             }
         }
-        // Another page takes the boxes away. Control Settings ends with the Trigger Threshold's
-        // knob, its percent after its title.
+        // Another page takes the boxes away.
         state.page = Page::Control;
         movie.update(&assets, state, None).unwrap();
         assert!(movie.root.named(&["mStickBoxL"]).is_err());
+    }
+
+    /// PC port: Control Settings ends with the Trigger Threshold's knob, its percent after its
+    /// title, and the Polling & Delay page's row; that page holds the Polling Rate's selector and
+    /// the Input Delay's knob, its milliseconds after its title. Every title is in glyphs its
+    /// font has and within its field.
+    #[test]
+    #[ignore = "requires external SKATE2_GAME_ROOT"]
+    fn control_settings_and_polling_and_delay_lay_out_their_rows() {
+        let game = std::path::PathBuf::from(std::env::var_os("SKATE2_GAME_ROOT").unwrap());
+        let mut mounts = MountSet::new();
+        for spec in SKATE2_ARCHIVES.iter() {
+            mounts.push(MountedBig::open(spec.path_under(&game), spec.use_external_header).unwrap());
+        }
+        let assets = Assets::load(&mounts).unwrap();
+        let mut movie = SettingsMovie::new(&assets).unwrap();
+        let mut main = None;
+        let mut state = Snapshot { page: Page::Options, ..Default::default() };
+        movie.update(&assets, state, None).unwrap();
+        movie.link(&assets, None).unwrap();
+        tick(&mut movie, &mut main, &assets, 90);
+        state.sticks = skate2_core::stick_settings::ControllerSettings::DEFAULT;
+        for page in [Page::Control, Page::PollingDelay] {
+            state.page = page;
+            state.selected = 0;
+            movie.update(&assets, state, None).unwrap();
+            tick(&mut movie, &mut main, &assets, 30);
+            for (index, row) in state.rows().iter().enumerate() {
+                if row.kind() == "morph" || row.title().starts_with("ID_") {
+                    continue;
+                }
+                let field = movie.root.named(&[&format!("mItem{index}"), "mTitle", "TEXTLABEL"]).unwrap();
+                let title = mapped(field, &assets);
+                assert_eq!(title, row.title(), "{page:?}");
+                let skate2_formats::apt::Character::Text(text) = field.definition(&assets).unwrap() else {
+                    panic!("{title}: not text");
+                };
+                let Some(skate2_formats::apt::Character::Font { name, .. }) =
+                    assets.movies[field.asset].movie.characters[text.font_id as usize].as_ref()
+                else {
+                    panic!("{title}: font absent");
+                };
+                let font = assets.apt_font(name).unwrap();
+                let width: f32 = title
+                    .encode_utf16()
+                    .map(|unit| font.metrics.mapped_glyph(unit).map_or(0., |glyph| glyph.advance * font.scale[0] * text.height))
+                    .sum();
+                let room = text.bounds.right - text.bounds.left;
+                assert!(width <= room, "{title}: {width} wide in a field {room} wide");
+            }
+        }
+        state.page = Page::Control;
+        movie.update(&assets, state, None).unwrap();
         tick(&mut movie, &mut main, &assets, 30);
         let last = state.rows().len() - 1;
-        assert_eq!(state.rows()[last], Row::TriggerThreshold);
+        assert_eq!(state.rows()[last - 1..], [Row::TriggerThreshold, Row::PollingDelay]);
         for selected in [0, last] {
             state.selected = selected;
             movie.update(&assets, state, None).unwrap();
             tick(&mut movie, &mut main, &assets, 30);
-            let knob = movie.root.named(&[&format!("mItem{last}")]).unwrap();
+            let knob = movie.root.named(&[&format!("mItem{}", last - 1)]).unwrap();
             assert_eq!(knob.asset, 16);
             assert_eq!(mapped(knob.named(&["mTitle", "TEXTLABEL"]).unwrap(), &assets), "Trigger Threshold 20%");
         }
+        // Polling & Delay: the Polling Rate's selector, then the Input Delay's knob, its
+        // milliseconds after its title.
+        state.page = Page::PollingDelay;
+        state.selected = 0;
+        movie.update(&assets, state, None).unwrap();
+        tick(&mut movie, &mut main, &assets, 30);
+        assert_eq!(state.rows(), [Row::PollingRate, Row::InputDelay]);
+        let knob = movie.root.named(&["mItem1"]).unwrap();
+        assert_eq!(knob.asset, 16);
+        assert_eq!(mapped(knob.named(&["mTitle", "TEXTLABEL"]).unwrap(), &assets), "Added Input Delay 0 ms");
+        state.sticks.input_delay = *INPUT_DELAYS.end();
+        state.selected = 1;
+        movie.update(&assets, state, None).unwrap();
+        tick(&mut movie, &mut main, &assets, 30);
+        let knob = movie.root.named(&["mItem1"]).unwrap();
+        assert_eq!(mapped(knob.named(&["mTitle", "TEXTLABEL"]).unwrap(), &assets), "Added Input Delay 30 ms");
     }
 
     /// PC port: the Online Settings page's titles, Show Ghost Players in pregame lobby among them,
@@ -885,7 +967,7 @@ mod tests {
         movie.update(&assets, Snapshot { page: Page::Options, ..Default::default() }, None).unwrap();
         movie.link(&assets, None).unwrap();
         tick(&mut movie, &mut main, &assets, 90);
-        let online = Snapshot { page: Page::Online, show_lobby_chat: true, show_ghost_players: true, ..Default::default() };
+        let online = Snapshot { page: Page::Online, show_lobby_chat: true, show_ghost_players: true, skate_during_turn_wait: true, ..Default::default() };
         let skate3 = skate2_core::ui::gameplay_modes::PcGameplayModes {
             physics: skate2_core::ui::gameplay_modes::PhysicsMode::Skate3,
             ..Default::default()

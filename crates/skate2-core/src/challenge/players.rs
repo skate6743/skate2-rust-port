@@ -36,6 +36,23 @@ pub const GM_ONLINE_CHALLENGE: i32 = 5;
 /// (`0x8288a570`), it does not follow SkaterManager's spectator camera index.
 pub(crate) const OFFLINE_LOCAL_PLAYER_ID: i32 = 0;
 
+/// PC port (user request): a Spot Battle's state between two turns, by challenge player index:
+/// what a battle restarted for a player who joins it in play carries over
+/// (`docs/evidence/spot-battle-joining-2026-11-22.md`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpotBattleCarry {
+    /// `CurrentRound`.
+    pub round: i32,
+    /// `PlayerOrderMap`: the players in turn order.
+    pub order: Vec<i32>,
+    /// `CurrentPlayerIndex`: how many of `order`, from its first, have had this round's turn.
+    pub played: usize,
+    /// `PlayerRankMap` with each player's `Score` and `IsBonusObjectiveComplete`, best first.
+    pub ranking: Vec<(i32, i32, bool)>,
+    /// `HighestVote`: its score and player.
+    pub vote: Option<(i32, i32)>,
+}
+
 /// `ChallengeOnlineManager` and the network game's players while an online challenge runs
 /// (`Simulation::IsNetworkGame`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -58,6 +75,27 @@ pub struct OnlineChallenge {
     pub turn_restart: bool,
     /// The round tick the challenge runs, the same on every console.
     pub tick: u32,
+    /// PC port (user request): the host's Infinite Rounds, as the battle loaded with it on every
+    /// console. The script's `NumRounds` then reads as no number of rounds reaches, so no round
+    /// is its last (`World::field_override`).
+    pub infinite_rounds: bool,
+    /// PC port (user request): the host's Round Lock, as the 1-Up loaded with it on every console:
+    /// the round start (from 1) every round begins at, or 0 for the 1-Up's own turn through them
+    /// (`Online.RoundLock`, `script_fixes::SKATE3_ONE_UP_SETUP_ROUND`).
+    pub round_lock: u32,
+    /// PC port: the host ended such a battle, taken at the same tick on every console
+    /// (`ChallengeSystem::end_infinite_rounds`). `NumRounds` then reads 0, and the next turn the
+    /// script would start ends the battle as its last round's end does.
+    pub host_ended: bool,
+    /// PC port (user request): a player waits to join this Spot Battle. The `countdown` that
+    /// would start the next turn starts none: the battle's state goes to `carry`, for the server
+    /// to restart the battle from, and the battle holds there (`parked`).
+    pub carry_wanted: bool,
+    pub carry: Option<SpotBattleCarry>,
+    pub parked: bool,
+    /// The state a battle restarted for a joiner starts from, by its own table's indices: its
+    /// `setup` skips the flythrough and its `reset` ends with this state in place.
+    pub restore: Option<SpotBattleCarry>,
 }
 
 /// `Simulation::GetLocalPlayerID` (`0x8289e458`): the network game's local player, else

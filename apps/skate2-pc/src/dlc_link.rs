@@ -90,11 +90,15 @@ fn open(path: &Path) -> Opened {
 
 impl DlcLinks {
     /// Launch: every file `config.json` links that opens as a pack not yet linked mounts after the
-    /// game's archives, in the order linked; any other leaves the file.
+    /// game's archives, in the order linked; any other leaves the file. One that is Skate 3's
+    /// pack (an archive extracted from its Maloof Money Cup pack holds the entry Skate 2's is
+    /// known by, and was once linked as it) joins the Skate 3 packs `config.json` links, which
+    /// [`Skate3Link::mount_linked`] reads after this.
     pub(crate) fn mount_linked(mounts: &Arc<MountSet>) -> Self {
         let mut links = Self { mounts: Arc::clone(mounts), linked: Vec::new(), picker: None };
         let mut config = GameConfig::load();
         let mut kept = Vec::new();
+        let mut skate3 = Vec::new();
         for path in &config.linked_dlc {
             match DlcPack::open(Path::new(path)) {
                 Ok(pack) if links.linked.iter().all(|linked| linked.identity != pack.identity) => {
@@ -103,11 +107,23 @@ impl DlcLinks {
                     links.linked.push(mount(mounts, pack, path.clone()));
                 }
                 Ok(pack) => eprintln!("downloadable content {path}: {} is linked by another file, unlinked", pack.title),
-                Err(error) => eprintln!("downloadable content {path} {error}: unlinked"),
+                Err(error @ DlcError::Read(_)) => eprintln!("downloadable content {path} {error}: unlinked"),
+                Err(error) => match Skate3Pack::open(Path::new(path)) {
+                    Ok(pack) => {
+                        eprintln!("downloadable content {path} is Skate 3's {}: linked with Skate 3's packs", pack.title);
+                        skate3.push(path.clone());
+                    }
+                    Err(_) => eprintln!("downloadable content {path} {error}: unlinked"),
+                },
             }
         }
         if kept != config.linked_dlc {
             config.linked_dlc = kept;
+            for path in skate3 {
+                if !config.skate3_dlc.contains(&path) {
+                    config.skate3_dlc.push(path);
+                }
+            }
             if let Err(error) = config.save() {
                 eprintln!("config.json could not be saved: {error}");
             }

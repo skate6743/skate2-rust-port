@@ -5,6 +5,7 @@
 pub mod aems;
 pub mod collision;
 pub mod csis;
+pub mod custom_song;
 pub mod formats;
 pub mod global_effects;
 pub mod grain_player;

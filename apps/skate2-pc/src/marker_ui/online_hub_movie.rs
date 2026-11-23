@@ -362,11 +362,26 @@ impl OnlineHubMovie {
         }
         match popup {
             Some(shown) => {
+                // PC port addition: Round Lock's options, Off and each round by its number.
+                let rounds: Vec<String> = match shown {
+                    Popup::RoundLock(lock) => std::iter::once(format!("#{}", skate2_core::ui::online_hub::ROUND_LOCK_OPTION_OFF))
+                        .chain((1..=lock.rounds).map(|round| format!("#{round}")))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let rounds: Vec<&str> = rounds.iter().map(String::as_str).collect();
+                let round_lock_title = format!("#{}", skate2_core::ui::online_hub::ROUND_LOCK_TITLE);
                 let (title, description, options, selected): (&str, String, &[&str], usize) = match shown {
                     Popup::Kick(kick) => {
                         let text = String::from_utf16(&localizer::format_string_text(assets, "ID_MESSENGER_KICK_CONFIRM", std::slice::from_ref(&kick.name))?)?;
                         ("ID_COMMON_WARNING_TITLE", format!("#{text}"), &["ID_COMMON_YES", "ID_COMMON_NO"], kick.selected)
                     }
+                    Popup::RoundLock(lock) => (
+                        round_lock_title.as_str(),
+                        format!("#{}", skate2_core::ui::online_hub::ROUND_LOCK_QUESTION),
+                        rounds.as_slice(),
+                        lock.selected,
+                    ),
                     // PC port addition: Make Host's confirmation, as Kick Player's.
                     Popup::MakeHost(popup) => (
                         "ID_COMMON_WARNING_TITLE",
@@ -374,9 +389,16 @@ impl OnlineHubMovie {
                         &["ID_COMMON_YES", "ID_COMMON_NO"],
                         popup.selected,
                     ),
+                    // PC port addition: End Challenge's confirmation, as Kick Player's.
+                    Popup::EndChallenge(popup) => (
+                        "ID_COMMON_WARNING_TITLE",
+                        "#Are you sure you want to end the challenge?".to_owned(),
+                        &["ID_COMMON_YES", "ID_COMMON_NO"],
+                        popup.selected,
+                    ),
                     Popup::Matching => ("ID_EANATION", "ID_ONLINE_MATCHING_SKATERS".to_owned(), &[], 0),
                     Popup::SigningIn => ("ID_EANATION", "ID_ONLINE_SIGNING_IN".to_owned(), &[], 0),
-                    Popup::Notice(text) => ("ID_EANATION", (*text).to_owned(), &["ID_COMMON_OK"], 0),
+                    Popup::Notice(text) => ("ID_EANATION", text.clone(), &["ID_COMMON_OK"], 0),
                 };
                 match self.popup.as_mut() {
                     // One closing opens again.
@@ -389,7 +411,7 @@ impl OnlineHubMovie {
                     }
                 }
                 let clip = self.popup.as_mut().ok_or("hub popup absent")?;
-                super::edit_skater_movie::configure_popup(clip, assets, selected, title, &description, options, matches!(shown, Popup::SigningIn))?;
+                super::edit_skater_movie::configure_popup(clip, assets, selected, title, &description, options, matches!(shown, Popup::SigningIn | Popup::RoundLock(_)))?;
             }
             None => {
                 if let Some(clip) = self.popup.as_mut() {

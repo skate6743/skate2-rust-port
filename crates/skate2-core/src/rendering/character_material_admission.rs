@@ -108,10 +108,10 @@ pub struct CharacterMaterialView<'a> {
     /// GetCustomColour82cff8c8: base, highlight; untouched fourth lanes are one.
     pub colours: [[f32; 4]; 2],
     pub tattoos: [[f32; 4]; 2],
-    /// PC port: Edit Griptape's colour on a deck mesh: what its diffuse squared is multiplied by
-    /// (`GripSurface::gain`) within the rectangle of its first texture coordinate set that holds
-    /// its top face alone.
-    pub grip: Option<([f32; 3], [f32; 4])>,
+    /// PC port: Edit Griptape's colour on a deck mesh: what its diffuse squared is multiplied by,
+    /// then the most of it that counts (`GripSurface::gain`), within the rectangle of its first
+    /// texture coordinate set that holds its top face alone.
+    pub grip: Option<([f32; 4], [f32; 4])>,
     pub normal: Option<&'a NativeTexture>,
     pub decal: Option<&'a NativeTexture>,
     pub decal2: Option<&'a NativeTexture>,
@@ -536,6 +536,9 @@ impl CharacterMaterialAdmission {
                 .grip
                 .zip(custom_colours.iter().find(|c| c.key == GRIP_COLOUR_KEY))
                 .map(|(surface, colour)| (surface.gain(colour.base_rgb_bits.map(f32::from_bits)), surface.rectangle));
+            if let (Some(surface), Some(tint)) = (entry.grip, diagnostic_grip_tint()) {
+                grip = Some((surface.gain(tint), surface.rectangle));
+            }
             // The chosen LOD material vector is the same ordered material map
             // consumed by RebindToMaterials. Each instance maps one RModel mesh.
             if let Some(material) = lod
@@ -672,6 +675,17 @@ impl CharacterMaterialAdmission {
         self.ropa.cloth_disabled()
     }
 }
+/// `SKATE2_DIAGNOSTIC_GRIP_TINT=<red>,<green>,<blue>`: every deck's griptape wears that tint (a
+/// colour on screen, squared, as Edit Griptape's picker stores one), whatever its skater's own.
+fn diagnostic_grip_tint() -> Option<[f32; 3]> {
+    static TINT: std::sync::OnceLock<Option<[f32; 3]>> = std::sync::OnceLock::new();
+    *TINT.get_or_init(|| {
+        let text = std::env::var("SKATE2_DIAGNOSTIC_GRIP_TINT").ok()?;
+        let mut lanes = text.split(',').map(|lane| lane.trim().parse::<f32>().ok());
+        Some([lanes.next()??, lanes.next()??, lanes.next()??])
+    })
+}
+
 fn diffuse_guid(
     material: &crate::presentation::PresentationMaterial,
 ) -> Result<u64, CharacterMaterialError> {

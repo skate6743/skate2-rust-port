@@ -42,6 +42,9 @@ use std::{
 /// One tick's `SubmitFrame`: what each presentation's `DoSimSubmit` recorded.
 pub struct PresentationSubmission {
     pub(crate) camera: CameraSubmission,
+    /// PC port addition, Skate During Turn Wait: the local game camera while `camera` shows another
+    /// player's, for the corner the local skater's own view draws in.
+    pub(crate) pip_camera: Option<CameraSubmission>,
     pub(crate) skaters: Vec<SkaterFrame>,
     pub(crate) living_world: LivingWorldSubmission,
     /// The completed simulation ticks this submission follows.
@@ -107,6 +110,10 @@ pub struct PresentationRestorer {
     /// The recorded game camera a replay restores beside the scene's camera, which the scene's
     /// camera reads (`CameraPresentation::GetReplayMatrix`) but does not show.
     recorded_camera: CameraRestore,
+    /// The local game camera beside a shown camera of another player (PC port addition,
+    /// Skate During Turn Wait), and whether the last restore had one.
+    pip_camera: CameraRestore,
+    pip_shown: bool,
     skaters: Vec<SkaterRestore>,
     living_world: LivingWorldRestore,
     /// The frame and fraction bits the last restore showed.
@@ -129,6 +136,8 @@ impl PresentationRestorer {
             delivery: Duration::ZERO,
             camera: CameraRestore::new(),
             recorded_camera: CameraRestore::new(),
+            pip_camera: CameraRestore::new(),
+            pip_shown: false,
             skaters: Vec::new(),
             living_world: LivingWorldRestore::default(),
             restored: None,
@@ -310,6 +319,16 @@ impl PresentationRestorer {
             );
             self.camera.view().map_or([0.0; 3], |view| view.position)
         };
+        // The local game camera beside another player's, blended as the shown one is; a first
+        // frame of it (the frame before had none) stands where it is.
+        self.pip_shown = false;
+        if scene_camera.is_none()
+            && let Some(pip) = next.pip_camera.as_ref()
+        {
+            let before = previous.and_then(|frame| frame.pip_camera.as_ref()).unwrap_or(pip);
+            self.pip_camera.restore(pip, Some(before), fraction, true);
+            self.pip_shown = true;
+        }
         let clock = ClothClock { frame, fraction };
         let mut retained = std::mem::take(&mut self.skaters);
         for skater in &next.skaters {
@@ -350,6 +369,13 @@ impl PresentationRestorer {
     /// The camera the last restore left (`RenderMan::UpdateCamera`).
     pub fn camera(&self) -> Option<CameraView> {
         self.camera.view()
+    }
+
+    /// The local game camera the last restore left beside another player's shown camera (PC port
+    /// addition, Skate During Turn Wait); none when the restored frame showed the game camera.
+    #[must_use]
+    pub fn pip_camera(&self) -> Option<CameraView> {
+        if self.pip_shown { self.pip_camera.view() } else { None }
     }
 
     /// `CameraPresentation::GetReplayMatrix` (`0x826cf400`) in a replay: the recorded game

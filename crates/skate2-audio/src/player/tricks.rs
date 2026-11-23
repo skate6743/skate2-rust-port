@@ -46,10 +46,9 @@ const FLIPS_RANGES: [i32; 27] = [
 const SKATE3_INTERFACE: &str = "skate3:SK8_AEMS_skateboard.csi";
 const SKATE3_BANK: &str = "skate3:Sk8_Air_Flip_Tricks.abk";
 const SKATE3_FILES: [&str; 2] = ["SK8_AEMS_skateboard.csi", "Sk8_Air_Flip_Tricks.abk"];
-/// TU3 `CheckForBoardFlips` 0x824cbfb8's last `Class_Flips` member: `aud_senseofspeed`'s
-/// 0xD9BE1F2F1A72FEE8.
-const SENSE_OF_SPEED: Collection = Collection::new(class::AUD_SENSEOFSPEED, 0xD7ED_BD36_2D7D_2152);
-const FLIPS_SENSE_OF_SPEED: u64 = 0xD9BE_1F2F_1A72_FEE8;
+/// TU3 `CheckForBoardFlips` 0x824cc4d0..0x824cc520's last `Class_Flips` member: the flip's entry
+/// in the effect table of `GlobalAttributeCollection` +0x8C (`contacts::SKATE3_EFFECTS`).
+const FLIPS_EFFECT: u64 = 0xD9BE_1F2F_1A72_FEE8;
 
 pub struct Tricks {
     /// `m_pDMixIO` (objectID 0x40010050 + the state's instance).
@@ -175,7 +174,11 @@ impl Tricks {
             // TU3 0x824cc3d0..c564: its constructor (0x824afad8) keeps the first twelve members,
             // then takes its own flags and volumes, each clamped. Member 16 is the physics' not
             // rewinding (+0xE0, Skate 2's mIsRewinding +0xDC), which the module needs to play.
-            let sense = ctx.skate3.unwrap_or(ctx.vault).i32(SENSE_OF_SPEED, FLIPS_SENSE_OF_SPEED);
+            // The volumes are Skate 3's own (its `TrickVol` is not Skate 2's).
+            let skate3 = ctx.skate3.unwrap_or(ctx.vault);
+            let [volume_x, volume_y, volume_z] = BOARD_FLIPS_VOL.map(|key| skate3.i32(TRICKS, key));
+            let trick_volume = skate3.i32(TRICKS, TRICK_VOL);
+            let effect = skate3.i32(super::contacts::SKATE3_EFFECTS, FLIPS_EFFECT);
             let (unit, level, flag) = (|v: i32| v.clamp(0, 1000), |v: i32| v.clamp(0, 0x7FFF), |v: i32| v.clamp(0, 1));
             let data = vec![
                 0,
@@ -205,7 +208,7 @@ impl Tricks {
                 flag(local),
                 flag(local),
                 level(flange),
-                level(sense),
+                level(effect),
             ];
             self.board_flip = Some(ctx.aems.create_object_in(SKATE3_INTERFACE, "Class_Flips", data));
             return;

@@ -662,7 +662,7 @@ pub use selected_session_boot_owner::public_facade::AudioDynamicObject;
 pub use selected_session_boot_owner::public_facade::{AudioFrame, AudioFrontEnd, AudioSkater, BailVisual, SecurityPresentation};
 pub use selected_session_boot_owner::public_facade::{SelectedSkaterVisual, SkaterNameTag};
 pub use selected_session_boot_owner::public_facade::{
-    AudioPedestrian, CareerHud, EndOptionsView, FrontendArguments, PhotoSelectView, PressADialog, SelectedBootProgress, SelectedCommandStartPolicy, SelectedControlledBootPolicy,
+    AudioPedestrian, CareerHud, EndOptionsView, FreeSkateHud, FrontendArguments, PhotoSelectView, PressADialog, SelectedBootProgress, SelectedCommandStartPolicy, SelectedControlledBootPolicy,
     SelectedFrameNumerics, SelectedGestureAllocation, SelectedGravityPolicy, SelectedLiveError,
     SelectedLivePending, SelectedLiveSession, SelectedLiveStage, SelectedQueuedFrameOutcome,
     SelectedQueuedFramePolicy, SelectedRootWPolicy, SelectedSceneCharacterVisual, SelectedSpawnPolicy,

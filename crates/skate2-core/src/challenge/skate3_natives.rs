@@ -119,6 +119,14 @@ fn get_team(_: &mut Lua<World>, _: &mut World, _: &NativeCall) -> R {
     Ok(vec![Value::Number(1.0)])
 }
 
+/// `Online.RoundLock()` (PC port addition, no native of the original's): the host's Round Lock
+/// for the challenge in play, the round start every round of a 1-Up begins at, or 0 without one.
+fn round_lock(_: &mut Lua<World>, world: &mut World, _: &NativeCall) -> R {
+    #[expect(clippy::cast_precision_loss, reason = "a round's number")]
+    let round = world.online.as_ref().map_or(0, |online| online.round_lock) as f32;
+    Ok(vec![Value::Number(round)])
+}
+
 /// `Teams.GetName(team)` (`0x828383b8`), read only by a team game.
 fn team_name(_: &mut Lua<World>, _: &mut World, _: &NativeCall) -> R {
     Ok(vec![Value::string("")])
@@ -143,7 +151,7 @@ pub(super) fn multiplier_active(world: &World, activity: &super::activity::Activ
 }
 
 /// The natives, by module and name.
-const NATIVES: [(&str, &str, NativeFn<World>); 21] = [
+const NATIVES: [(&str, &str, NativeFn<World>); 22] = [
     ("Objectives", "ActivateChallengeStartObjectives", activate_challenge_start_objectives),
     ("HUD2", "ShowCustomCentralMessage", show_custom_central_message),
     ("HUD2", "ShowTeamCentralMessage", show_team_central_message),
@@ -155,6 +163,7 @@ const NATIVES: [(&str, &str, NativeFn<World>); 21] = [
     ("HUD2", "LeaderboardHUDSetTeamScore", none),
     ("HighlightReel", "GetNumberOfHighlights", super::players::get_number_of_highlights),
     ("Online", "GetTeam", get_team),
+    ("Online", "RoundLock", round_lock),
     // `0x82846340`: a network game whose attributes play teams; the port's games play none.
     ("Online", "IsTeamChallenge", no),
     ("Teams", "GetName", team_name),

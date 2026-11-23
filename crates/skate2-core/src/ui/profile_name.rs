@@ -50,6 +50,12 @@ impl Prompt {
         }
         prompt
     }
+    /// PC music player: an artist or title for Add Song, holding `text` to edit; Escape closes it.
+    pub fn song(text: &str) -> Self {
+        let mut prompt = Self { limit: super::custom_songs::NAME_LIMIT, cancellable: true, ..Self::default() };
+        prompt.input(TextInput::Insert(text.trim().to_owned()));
+        prompt
+    }
     pub fn cancellable(&self) -> bool {
         self.cancellable
     }

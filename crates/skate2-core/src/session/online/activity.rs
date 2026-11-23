@@ -441,7 +441,7 @@ impl<T, C> SelectedLiveSession<T, C> {
 
     /// Popup 51 over FE state 67.
     pub(super) fn online_activity_popup(&self) -> Option<Popup> {
-        self.online.activity.sign_up.as_ref().filter(|sign_up| sign_up.popup).map(|_| Popup::Notice("ID_ONLINE_NEED_MORE_PLAYERS"))
+        self.online.activity.sign_up.as_ref().filter(|sign_up| sign_up.popup).map(|_| Popup::Notice("ID_ONLINE_NEED_MORE_PLAYERS".to_owned()))
     }
 
     /// Screen 108's intro completed.

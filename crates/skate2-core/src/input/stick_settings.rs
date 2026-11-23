@@ -13,6 +13,14 @@
 //! crouch) and its conversion (`try_convert_xbox_pad`, the byte over 255) has no threshold of its
 //! own, so a finger resting on a trigger holds it. A trigger at or under the threshold reads as let
 //! go, and past it the rest of its travel maps onto the whole range, so a full pull stays full.
+//!
+//! PC port addition (user request): an input delay in milliseconds, which the pad platforms keep
+//! (`skate2-pc`'s `pad_delay`): the game reads each pad as it was that long before the poll.
+//!
+//! PC port addition (user request): the polling rate, when each tick's one poll reads the pads
+//! ([`Polling`]). The game polls once per 60 Hz timer period at every frame rate; the original
+//! reads the pads on the timer itself, a sixtieth of a second apart, and the port's tick reads
+//! them when it runs, which follows the frames (`docs/evidence/input-delay-2026-11-21.md`).
 use crate::input_pad::XboxPadSample;
 use std::ops::RangeInclusive;
 
@@ -24,6 +32,8 @@ pub const DEADZONES: RangeInclusive<u8> = 0..=50;
 pub const TRIGGER_THRESHOLDS: RangeInclusive<u8> = 0..=90;
 /// The triggers' threshold without a saved one.
 pub const DEFAULT_TRIGGER_THRESHOLD: u8 = 20;
+/// The input delays the pads take, in milliseconds.
+pub const INPUT_DELAYS: RangeInclusive<u8> = 0..=30;
 
 /// One stick's settings: the multiplier in hundredths, the deadzone and the anti-deadzone in
 /// percent of the stick's travel from its centre.
@@ -94,13 +104,43 @@ impl StickSettings {
     }
 }
 
-/// Both sticks' settings and the triggers' threshold, which `controller_config.json` keeps.
+/// When a tick's poll reads the pads: Control Settings' Polling Rate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Polling {
+    /// As the original's timer reads them (`timerThread` 0x8298a2c4), and without a saved
+    /// setting: each tick takes the pads as they were at its own 60 Hz timer instant, a sixtieth
+    /// of a second after the tick before's, whenever the frames let the tick run.
+    #[default]
+    Vanilla,
+    /// As the port read them before the setting: at the moment the tick runs, which follows the
+    /// frames' pacing. Measured, the reads stay a sixtieth of a second apart while the frame rate
+    /// is capped or far above 60, and come 11 to 25 ms apart at an uncapped 70 frames a second.
+    FrameTimed,
+}
+
+impl Polling {
+    /// The Polling Rate row's value.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Vanilla => "60hz (Vanilla)",
+            Self::FrameTimed => "Frame Timed",
+        }
+    }
+}
+
+/// Both sticks' settings, the triggers' threshold, the input delay and the polling rate, which
+/// `controller_config.json` keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControllerSettings {
     pub left: StickSettings,
     pub right: StickSettings,
     /// The percent of a trigger's travel at or under which it reads as let go.
     pub trigger_threshold: u8,
+    /// How many milliseconds before each poll the game reads a pad's state from.
+    pub input_delay: u8,
+    /// When each tick's poll reads the pads.
+    pub polling: Polling,
 }
 
 impl Default for ControllerSettings {
@@ -111,13 +151,14 @@ impl Default for ControllerSettings {
 
 impl ControllerSettings {
     /// A pad's sample as the pad reported it.
-    pub const VANILLA: Self = Self { left: StickSettings::VANILLA, right: StickSettings::VANILLA, trigger_threshold: 0 };
+    pub const VANILLA: Self =
+        Self { left: StickSettings::VANILLA, right: StickSettings::VANILLA, trigger_threshold: 0, input_delay: 0, polling: Polling::Vanilla };
     /// The settings without saved ones: the sticks vanilla, the triggers past their default
     /// threshold.
     pub const DEFAULT: Self = Self { trigger_threshold: DEFAULT_TRIGGER_THRESHOLD, ..Self::VANILLA };
 
     /// A pad's sample with both sticks and both triggers as these settings hand them to the game;
-    /// its buttons as they were.
+    /// its buttons as they were. The input delay is the pad platform's to keep.
     #[must_use]
     pub fn apply(&self, sample: XboxPadSample) -> XboxPadSample {
         let (left_x, left_y) = self.left.apply(sample.left_x, sample.left_y);

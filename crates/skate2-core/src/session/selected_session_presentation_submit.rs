@@ -85,9 +85,13 @@ impl<T, C> SelectedLiveSession<T, C> {
             }
         }
         skaters.extend(self.online_submitted_frames());
+        // PC port addition, Skate During Turn Wait: the local game camera, before another player's
+        // takes its place, for the corner the local skater's own view draws in.
+        let pip_camera = self.online_turn_wait_preview().then(|| camera.clone());
         self.online_camera_submission(&mut camera);
         Ok(Some(PresentationSubmission {
             camera,
+            pip_camera,
             skaters,
             living_world,
             tick: self.completed_frames,

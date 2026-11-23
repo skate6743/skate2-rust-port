@@ -1,5 +1,8 @@
-Fixed an issue with trigger thresholds being too sensitive (this caused issues with tricking from manuals)
-Added Skate 3 360 Pop Shuvit bounce from Pre-patch version to Physics Settings (credits to S4M)
-Experimental griptape coloring has been added (press Y on a deck to apply a color)
-Fixed parity mistakes with superdudes on Skate 3 Physics mode
-Skate 3 1-Ups have been fixed with full Skate 3 round and timer logic implemented
+Added new Challenge Options menu, which lets the host change attributes depending on gamemode (Spot Battle has Infinite Rounds option, and 1-Ups have a Round Locker option)
+Joining a Spot Battle in progress now puts you straight into the challenge on next round instead of having to wait for whole challenge to end
+Disconnect thresholds have been changed hopefully fixing some issues people were having
+Added new Delay options to Controller Settings for those who preferred a bit of input delay from RPCS3
+Parity fixes for Skate 3 physics, which should make some manuals feel better
+Custom songs can now be added to ingame playlist by pressing X in the Music Player
+Fixed props spawning and "Freeskate Here" option at DLC maps
+Fixed loads of crashes

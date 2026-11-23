@@ -10,8 +10,9 @@ use crate::frames::{AckState, FrameReceiver, encode_for};
 use crate::moderation::{self, BanList, PanelKey};
 use crate::panel;
 use crate::protocol::{
-    ClientMessage, GameAttributes, GameResult, LobbyInfo, MAX_LOBBIES, MAX_PLAYERS, Phase, PlayNow, PlayNowMode, PlayerInfo, PlayerStats,
-    ServerMessage, challenge, leave, play_now, proposal, refuse, request, reset, timer, valid_chat, valid_nickname,
+    ClientMessage, GameAttributes, GameResult, IDLE_INACTIVITY, INACTIVITY, LobbyInfo, MAX_LOBBIES, MAX_PLAYERS, Phase, PlayNow, PlayNowMode, PlayerInfo,
+    PlayerStats,
+    ServerMessage, challenge, leave, option, play_now, proposal, refuse, request, reset, timer, valid_chat, valid_nickname,
 };
 use crate::stats;
 use crate::transport::{self, Endpoint, PROTOCOL_VERSION, kind, read_header};
@@ -24,14 +25,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// What a message asks that only the game host peer may: start the challenge, make the game
-/// private or public, kick a player, hand the game to another player, set the next challenge, or
-/// change challenge or location.
+/// private or public, kick a player, hand the game to another player, set a challenge option, end
+/// the challenge, set the next challenge, or change challenge or location.
 fn host_only(message: &ClientMessage) -> Option<&'static str> {
     match message {
         ClientMessage::GameRequest { request: request::START_GAME, .. } => Some("start the challenge"),
         ClientMessage::GameRequest { request: request::CHANGE_PRIVATE_STATUS, .. } => Some("change the game's privacy"),
         ClientMessage::GameRequest { request: request::KICK_PLAYER, .. } => Some("kick a player"),
         ClientMessage::GameRequest { request: request::MAKE_HOST, .. } => Some("hand the game to another player"),
+        ClientMessage::GameRequest { request: request::SET_CHALLENGE_OPTION, .. } => Some("set a challenge option"),
+        ClientMessage::GameRequest { request: request::END_CHALLENGE, .. } => Some("end the challenge"),
         ClientMessage::ResetAttributes(_) => Some("set the next challenge"),
         ClientMessage::RequestChange { .. } => Some("change the challenge"),
         _ => None,
@@ -256,6 +259,23 @@ struct Game {
     /// The freeskate activity the challenge is, from its load until the game is back in lobby
     /// skate: no matchmaking or lobby browser offers the game meanwhile.
     activity: Option<u64>,
+    /// The host's Infinite Rounds (`option::INFINITE_ROUNDS`, PC port addition): a Spot Battle
+    /// started with it on has no last round.
+    infinite_rounds: bool,
+    /// The host's Round Lock (`option::ROUND_LOCK`, PC port addition): the round start every
+    /// round of a 1-Up begins at, from 1; 0 without one.
+    round_lock: u32,
+    /// The session of the challenge the host ended (`request::END_CHALLENGE`), told once.
+    ended: Option<u32>,
+    /// The session of the Spot Battle whose participants were told a player waits to join it
+    /// (`ChallengeJoining`, PC port addition): the first state one of them sends restarts it.
+    joining: Option<u32>,
+    /// The members who left the challenge in play, or were taken out of it: they wait for its
+    /// end and join no restart of it.
+    left_challenge: BTreeSet<u64>,
+    /// A restart took the place of a battle its host had ended: the battle it loads is ended
+    /// again as it starts.
+    end_again: bool,
 }
 
 impl Game {
@@ -309,6 +329,35 @@ impl Game {
 
     fn full(&self) -> bool {
         self.members.len() >= usize::from(self.attributes.max_players)
+    }
+
+    /// How long the member may send neither a replay frame nor `Busy`, and the reason it is kicked
+    /// with after that: [`INACTIVITY`] while the challenge in play has it as a participant, else
+    /// [`IDLE_INACTIVITY`].
+    fn inactivity(&self, user_id: u64) -> (Duration, u8) {
+        match &self.phase {
+            GamePhase::Challenge { participants, .. } if participants.contains(&user_id) => (INACTIVITY, leave::KICKED_FOR_INACTIVITY),
+            _ => (IDLE_INACTIVITY, leave::KICKED_FOR_IDLE),
+        }
+    }
+
+    /// Whether the game plays a challenge that has no end of its own (PC port addition): a Spot
+    /// Battle with Infinite Rounds, from its load until the game is back in lobby skate. Its host
+    /// alone ends it.
+    fn endless(&self) -> bool {
+        self.infinite_rounds && self.attributes.challenge_type == challenge::OWN_THE_SPOT && !matches!(self.phase, GamePhase::LobbySkate)
+    }
+
+    /// The members a Spot Battle in play takes in at its next turn (PC port addition): those
+    /// whose skater is in the game's world and who play no part in it (they joined during it, or
+    /// were not yet in the world at its start), but for the ones who left it.
+    fn joiners(&self) -> Vec<u64> {
+        let participants = self.participants();
+        self.members
+            .iter()
+            .filter(|member| member.in_world && !participants.contains(&member.user_id) && !self.left_challenge.contains(&member.user_id))
+            .map(|member| member.user_id)
+            .collect()
     }
 
     /// The challenge's participants from its load until the game is back in lobby skate.
@@ -805,6 +854,12 @@ impl ServerCore {
                         kicked: BTreeSet::new(),
                         proposal: None,
                         activity: None,
+                        infinite_rounds: false,
+                        round_lock: 0,
+                        ended: None,
+                        joining: None,
+                        left_challenge: BTreeSet::new(),
+                        end_again: false,
                     },
                 );
                 (self.log)(&format!("game {game} created: type {} challenge {location:016x}", play.challenge_type));
@@ -942,6 +997,14 @@ impl ServerCore {
         };
         let recipes: Vec<(u64, Arc<Vec<u8>>)> =
             game.members.iter().filter_map(|member| Some((member.user_id, Arc::clone(member.recipe.as_ref()?)))).collect();
+        // The options the host set reach the joiner before any challenge it could load.
+        let options: Vec<ServerMessage> = [
+            game.infinite_rounds.then_some(ServerMessage::ChallengeOption { option: option::INFINITE_ROUNDS, value: 1 }),
+            (game.round_lock != 0).then_some(ServerMessage::ChallengeOption { option: option::ROUND_LOCK, value: game.round_lock }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         // A freeskate activity being proposed is shown to the joiner too, whom it takes if its
         // skater is in the game's world by the start.
         let pending = game.proposal.as_ref().map(|pending| ServerMessage::GameProposal {
@@ -957,6 +1020,9 @@ impl ServerCore {
         }
         self.send(id, &ServerMessage::PlayNowResult { result: play_now::JOINED });
         self.send(id, &joined);
+        for option in &options {
+            self.send(id, option);
+        }
         for (owner, data) in recipes {
             self.send(id, &ServerMessage::Recipe { user_id: owner, data: data.to_vec() });
         }
@@ -1051,6 +1117,10 @@ impl ServerCore {
                 if game.host() != Some(user_id) || !matches!(game.phase, GamePhase::LobbySkate) || game.change.is_some() || game.proposal.is_some() {
                     return;
                 }
+                // The Round Lock is one 1-Up's: each member lets it go with this change, as here.
+                if (challenge_type, challenge_key) != (game.attributes.challenge_type, game.attributes.challenge_key) {
+                    game.round_lock = 0;
+                }
                 game.change = Some((challenge_type, challenge_key, now + CHANGE_DELAY));
                 let delay = millis(CHANGE_DELAY);
                 self.broadcast(game_id, &ServerMessage::GameChange { challenge_type, challenge_key, delay }, None);
@@ -1108,10 +1178,14 @@ impl ServerCore {
                 }
                 let name = game.member(user_id).map(|member| member.name.clone()).unwrap_or_default();
                 (self.log)(&format!("{name} left game {game_id}'s challenge"));
+                if let Some(game) = self.games.get_mut(&game_id) {
+                    game.left_challenge.insert(user_id);
+                }
                 self.broadcast(game_id, &ServerMessage::ChallengeLeave { user_id }, None);
                 self.remove_participant(game_id, user_id, now);
             }
             ClientMessage::Stalled { user_id: stalled, tick } => self.stalled(game_id, user_id, stalled, tick, now),
+            ClientMessage::Carry { session, data } => self.restart_with(game_id, user_id, session, data, now),
             _ => {}
         }
     }
@@ -1144,6 +1218,7 @@ impl ServerCore {
         stalls.clear();
         let name = game.member(stalled).map(|member| member.name.clone()).unwrap_or_default();
         (self.log)(&format!("{name} left game {game_id}'s challenge: every other player's round waited on their facts at tick {tick}"));
+        game.left_challenge.insert(stalled);
         self.broadcast(game_id, &ServerMessage::ChallengeLeave { user_id: stalled }, None);
         self.remove_participant(game_id, stalled, now);
     }
@@ -1158,6 +1233,65 @@ impl ServerCore {
         member.in_world = true;
         let connection = member.connection;
         self.send(connection, &ServerMessage::ChatEnabled);
+        self.announce_joiners(game_id);
+    }
+
+    /// A Spot Battle in play takes in the members waiting to join it (PC port addition, user
+    /// request), where the original left them in its pre-game lobby until its end: its
+    /// participants hear that one waits (`ChallengeJoining`), once a battle, and the first whose
+    /// battle ends a turn sends the battle's state (`ClientMessage::Carry`), from which the
+    /// server starts it again with the waiting members in it (`restart_with`).
+    fn announce_joiners(&mut self, game_id: u32) {
+        let Some(game) = self.games.get_mut(&game_id) else { return };
+        let playing = matches!(game.phase, GamePhase::Challenge { all_complete: false, .. });
+        if !playing
+            || game.attributes.challenge_type != challenge::OWN_THE_SPOT
+            || game.activity.is_some()
+            || game.joining == Some(game.session)
+            || game.joiners().is_empty()
+        {
+            return;
+        }
+        game.joining = Some(game.session);
+        let session = game.session;
+        let connections: Vec<u32> = game.participants().iter().filter_map(|&participant| game.member(participant)).map(|member| member.connection).collect();
+        (self.log)(&format!("game {game_id}: a player waits to join challenge {session}"));
+        for connection in connections {
+            self.send(connection, &ServerMessage::ChallengeJoining);
+        }
+    }
+
+    /// `ClientMessage::Carry` (PC port addition): the battle's state at the turn it has just
+    /// ended, from the first participant to get there. The battle loads again, a new challenge
+    /// of the game, for its participants and every member waiting to join it, after `data` for
+    /// all of them to start from. The console that sent it holds its battle at that turn, so the
+    /// restart comes even if the waiting member has left since. A battle its host had ended is
+    /// ended again once it has started.
+    fn restart_with(&mut self, game_id: u32, user_id: u64, session: u32, data: Vec<u8>, now: Instant) {
+        let Some(game) = self.games.get_mut(&game_id) else { return };
+        if session != game.session
+            || game.joining != Some(session)
+            || !matches!(game.phase, GamePhase::Challenge { all_complete: false, .. })
+            || !game.participants().contains(&user_id)
+        {
+            return;
+        }
+        let mut participants = game.participants().to_vec();
+        let joiners = game.joiners();
+        participants.extend(&joiners);
+        participants.truncate(MAX_PLAYERS);
+        game.end_again = game.ended == Some(session);
+        game.session = game.session.wrapping_add(1);
+        game.joining = None;
+        game.left_challenge.clear();
+        let session = game.session;
+        let slots = game.slots(&participants);
+        let count = participants.len();
+        game.phase = GamePhase::Loading { participants, loaded: BTreeSet::new(), deadline: now + LOAD_TIMEOUT };
+        let seed = self.random.next_u32();
+        (self.log)(&format!("game {game_id}: challenge {session} loading, the battle before it with {} more, {count} in all", joiners.len()));
+        self.broadcast(game_id, &ServerMessage::ChallengeCarry(data), None);
+        self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::LOAD_CHALLENGE, seed, session, participants: slots, activity: 0 }, None);
     }
 
     /// A member's chat line, to every member of its game (the sender too). The game is the one
@@ -1240,6 +1374,8 @@ impl ServerCore {
                 }
                 let seed = self.random.next_u32();
                 game.session = game.session.wrapping_add(1);
+                game.left_challenge.clear();
+                game.end_again = false;
                 let session = game.session;
                 let slots = game.slots(&participants);
                 game.phase = GamePhase::Loading { participants, loaded: BTreeSet::new(), deadline: now + LOAD_TIMEOUT };
@@ -1272,6 +1408,51 @@ impl ServerCore {
                 }
                 self.send(target, &ServerMessage::Kicked { reason: leave::KICKED_BY_HOST });
                 self.leave_game(target, leave::KICKED_BY_HOST, now);
+            }
+            // PC port addition: the host's Challenge Options. An option changes in lobby skate
+            // only: each member hears it before the load of any challenge it could play (its
+            // messages come in order), so every console runs a challenge under the same options.
+            request::SET_CHALLENGE_OPTION => {
+                let Some(game) = self.games.get_mut(&game_id) else { return };
+                let (kind, setting) = (u8::try_from(value & 0xff).unwrap_or(0), value >> 8);
+                if !matches!(game.phase, GamePhase::LobbySkate) {
+                    return;
+                }
+                let told = match kind {
+                    option::INFINITE_ROUNDS => {
+                        let on = setting != 0;
+                        if game.attributes.challenge_type != challenge::OWN_THE_SPOT || game.infinite_rounds == on {
+                            return;
+                        }
+                        game.infinite_rounds = on;
+                        (self.log)(&format!("game {game_id}'s host turned infinite rounds {}", if on { "on" } else { "off" }));
+                        u32::from(on)
+                    }
+                    // A 1-Up's Round Lock, not while the game changes to another challenge, whose
+                    // request has let it go.
+                    option::ROUND_LOCK => {
+                        let Some(round) = u32::try_from(setting).ok().filter(|&round| round <= option::MAX_ROUND_LOCK) else { return };
+                        if game.attributes.challenge_type != challenge::ONE_UP || game.change.is_some() || game.round_lock == round {
+                            return;
+                        }
+                        game.round_lock = round;
+                        (self.log)(&format!("game {game_id}'s host set the round lock to {round}"));
+                        round
+                    }
+                    _ => return,
+                };
+                self.broadcast(game_id, &ServerMessage::ChallengeOption { option: kind, value: told }, None);
+            }
+            // PC port addition: the host ends a challenge that has no end of its own, once. Every
+            // member hears it; the participants' consoles carry it to the tick they all end at.
+            request::END_CHALLENGE => {
+                let Some(game) = self.games.get_mut(&game_id) else { return };
+                if !game.endless() || !matches!(game.phase, GamePhase::Challenge { .. }) || game.ended == Some(game.session) {
+                    return;
+                }
+                game.ended = Some(game.session);
+                (self.log)(&format!("game {game_id}'s host ended challenge {}", game.session));
+                self.broadcast(game_id, &ServerMessage::ChallengeEnded, None);
             }
             // PC port addition: the host hands the game to another member, the host from now on
             // for every member, in any phase. A member no longer in the game (gone as the request
@@ -1452,8 +1633,16 @@ impl ServerCore {
                     deadline: None,
                     stalls: BTreeMap::new(),
                 };
+                let end_again = std::mem::take(&mut game.end_again) && game.endless();
+                if end_again {
+                    game.ended = Some(session);
+                }
                 (self.log)(&format!("game {game_id}: challenge {session} started"));
                 self.broadcast(game_id, &ServerMessage::GameReset { kind: reset::CHALLENGE, seed, session, participants: slots, activity }, None);
+                if end_again {
+                    self.broadcast(game_id, &ServerMessage::ChallengeEnded, None);
+                }
+                self.announce_joiners(game_id);
             }
             GamePhase::Challenge { participants, rounds, complete, results, all_complete, deadline, .. } => {
                 if participants.is_empty() {
@@ -1545,6 +1734,10 @@ impl ServerCore {
         if let Some(attributes) = attributes
             && attributes.challenge_type == game.attributes.challenge_type
         {
+            // The Round Lock is one 1-Up's: each member lets it go with the new attributes.
+            if game.attributes.challenge_key != attributes.challenge_key {
+                game.round_lock = 0;
+            }
             game.attributes.challenge_key = attributes.challenge_key;
         }
         game.phase = GamePhase::LobbySkate;
@@ -1644,17 +1837,19 @@ impl ServerCore {
             self.advance(game, now);
         }
         // A game that stops sending replay frames, without saying it has none to send, is
-        // frozen or paused: `KR_KickedForInactivity`.
-        let inactive: Vec<(u32, String)> = self
+        // frozen or paused: `KR_KickedForInactivity`, after as long as its place in the game
+        // allows (`Game::inactivity`).
+        let inactive: Vec<(u32, String, Duration, u8)> = self
             .games
             .values()
-            .flat_map(|game| game.members.iter().filter(|member| now.saturating_duration_since(member.alive) >= INACTIVITY))
-            .map(|member| (member.connection, member.name.clone()))
+            .flat_map(|game| game.members.iter().map(move |member| (member, game.inactivity(member.user_id))))
+            .filter(|(member, (limit, _))| now.saturating_duration_since(member.alive) >= *limit)
+            .map(|(member, (limit, reason))| (member.connection, member.name.clone(), limit, reason))
             .collect();
-        for (id, name) in inactive {
-            (self.log)(&format!("{name} sent nothing for {} s: kicked for inactivity", INACTIVITY.as_secs()));
-            self.send(id, &ServerMessage::Kicked { reason: leave::KICKED_FOR_INACTIVITY });
-            self.leave_game(id, leave::KICKED_FOR_INACTIVITY, now);
+        for (id, name, limit, reason) in inactive {
+            (self.log)(&format!("{name} sent nothing for {} s: kicked for inactivity (reason {reason})", limit.as_secs()));
+            self.send(id, &ServerMessage::Kicked { reason });
+            self.leave_game(id, reason, now);
         }
         for connection in self.connections.values_mut() {
             for datagram in connection.endpoint.poll(now) {
@@ -1896,9 +2091,6 @@ impl ServerCore {
         }
     }
 }
-
-/// How long a member may send neither a replay frame nor `Busy` before it is kicked.
-const INACTIVITY: Duration = Duration::from_secs(2);
 
 /// How long after a member's recipe the server takes another of it.
 const RECIPE_SPACING: Duration = Duration::from_secs(2);

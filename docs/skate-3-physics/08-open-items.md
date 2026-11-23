@@ -14,7 +14,9 @@ What is not ported, not verified, or knowingly different. TU3 addresses.
 | Darkcatch effect values driven by the jitter mixer (effects whose "use attributes" flag is 0) | SFXObj_Jitter at AudioSystem+0x2D4, 0x824EF458 | those effects stay at plugin defaults (DistortionClip 100 = bypass, IIR gain 1 = flat) |
 | Skate 3's versions of the shared mixer channels | Skate 3's MixMapSK8.mxb: its player sub channels 0, 1, 4, 8 and 9 sum more MAIN events than Skate 2's (among them 42, 51, 139, 166, 188, 197, 219 and 220) and some of their shared events have other envelopes; its PLAYER mix control 13 is also scaled by mix control 95 (a curve of the physics controller's input 9) | the drop-in and darkcatch channels taken from Skate 3's map (`player/skate3_mix.rs`) read Skate 2's versions of these, as every other skater sound does |
 | Reverb mixer inputs | UpdateNicotine 0x824df468 has 7 inputs | the port keeps Skate 2's 4-input mix data |
-| Class_Flips hippy special cases | TU3 +0x1F6 byte / +mNumBails byte → type 3 | the port keeps its `was_hippy` levels |
+| Foot catch type 3 | PlayFootCatch 0x824b9268: the latch at SFXObj_Contacts +0x1F6 (CheckForWheelHits 0x824b8838..8850, a rising controller +0x32E with +0x174 clear) and a hippy jump both pick catch type 3 (`aud_general/wheels` 0x3AC5AA2D2010B49C, cues 1176 to 1178), a hippy jump at its strength's level | the port keeps Skate 2's `was_hippy` levels on types 0 to 2 |
+| Skate 3's own foot scrapes | PlayFootScrapeSound 0x824b97a8: every scrape is `sk8_foley.bnk` cue `aud_contacts/default` 0x733C45DF5B638ECB[foot] (95, 94) through effect bus 1 | outside a darkcatch the port plays Skate 2's foot scrapes |
+| The flip class's effect bus | Class_Flips member 27 (6 for flips) | the port's AEMS player sends no module voice to an effect bus, and bus 6 takes its values from the jitter mixer (below) |
 | Score output records with no consumer | ScoreHolder::FillPhysOut 0x82da6630, Sequence::FillPhysOut 0x82da4a48, TrickScoringSettings::LookupTrick 0x82da25b8, TrickDatabase::CollectTrickData 0x82da1bf0 | not yet diffed (`20-scoring-audit.md`) |
 
 ## Knowingly different (timing)

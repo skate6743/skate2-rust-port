@@ -327,7 +327,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
     }
     pub fn extras_text_entry_active(&self) -> bool {
-        if self.online_chat_open() || self.online_nickname_prompt_open() {
+        if self.custom_song_prompt_open() || self.online_chat_open() || self.online_nickname_prompt_open() {
             return true;
         }
         if self.main_menu.as_ref().is_some_and(|m|m.name_prompt.is_some() && m.settled && m.intro_complete) {
@@ -347,6 +347,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             })
     }
     pub fn extras_text_input(&mut self, input: TextInput) {
+        if self.custom_song_prompt_open() {
+            self.custom_song_text_input(input);
+            return;
+        }
         if self.online_chat_open() {
             self.online_chat_input(input);
             return;

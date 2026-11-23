@@ -104,6 +104,11 @@ pub trait AttribHost {
     fn pointers(&mut self) -> &mut Pointers;
     /// `GetFieldProviderFromDataProviders` input for an activity.
     fn data_providers(&self, activity: usize) -> Vec<(u64, u64)>;
+    /// PC port: a number the host gives a script in place of a field its data defines (a Spot
+    /// Battle's `NumRounds` under the host's Infinite Rounds); `None` leaves the data's.
+    fn field_override(&self, _field: u64) -> Option<f32> {
+        None
+    }
 }
 
 /// `LuaBindUtil::LoadMetatable` (`0x82aab490`) followed by
@@ -186,7 +191,10 @@ fn data_provider_index<H: AttribHost>(lua: &mut Lua<H>, host: &mut H, call: &Nat
     // defines the field.
     let provider = providers.iter().copied().find(|&(class, _)| host.attrib_db().definition(class, key).is_some());
     Ok(vec![match provider {
-        Some((class, collection)) => push_field(lua, host, class, collection, key, call.arg(1)),
+        Some((class, collection)) => match host.field_override(key) {
+            Some(number) => Value::Number(number),
+            None => push_field(lua, host, class, collection, key, call.arg(1)),
+        },
         None => Value::Nil,
     }])
 }

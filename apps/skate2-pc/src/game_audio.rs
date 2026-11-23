@@ -947,6 +947,11 @@ impl GameAudio {
         lock(&self.system).music_player_song_ids()
     }
 
+    /// PC port: the music player's custom songs, each one's id and file.
+    pub(crate) fn set_custom_songs(&self, songs: &[(u32, std::path::PathBuf)]) {
+        lock(&self.system).set_custom_songs(songs);
+    }
+
     /// The profile's current playlist, then the front end's `MusicSystem` calls in order.
     pub(crate) fn music_player(&self, playlist: (&[u32], i32), requests: Vec<MusicRequest>) {
         let mut system = lock(&self.system);

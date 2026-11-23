@@ -235,7 +235,7 @@ impl<T,C> SelectedLiveSession<T,C> {
     pub fn serialize_replay_editor(&self)->Result<Vec<u8>,String> {
         let editor=self.replay_editor.as_ref().ok_or("Replay Editor is not open")?;
         let snapshot=editor.controller.snapshot();
-        let hulls=editor.loaded_hulls.as_ref().or_else(||self.career.as_ref().map(|c|&c.system)).or(self.freeskate.hulls.as_ref());
+        let hulls=editor.loaded_hulls.as_ref().or_else(||self.career.as_ref().map(|c|&c.system)).or(self.freeskate.system());
         let default=crate::challenge::dynamic_hull::DynamicHulls::default();
         let hulls=hulls.map(|s|&s.world().dynamic_hulls).unwrap_or(&default);
         let mut packed=hulls.pack();packed[4..8].copy_from_slice(&hulls.game_type_flags.to_be_bytes());

@@ -328,6 +328,16 @@ pub struct FrontendArguments {
     pub demo_sponsor: String,
 }
 
+/// What the HUD shows of a profile free skate's challenge system: a teleporter's prompt, as the
+/// sign-up HUD's screen states since the last take, and the popup a teleporter's script has
+/// open with its options.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FreeSkateHud {
+    pub signup_screen: Vec<(i32, SignUpHudView)>,
+    pub dialog: Option<(String, String, usize)>,
+    pub dialog_options: Option<Vec<String>>,
+}
+
 /// What the HUD shows of the running career.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CareerHud {
@@ -669,6 +679,9 @@ pub(crate) struct CareerSession {
     end_options_opened_by_nis: bool,
     /// Party Play's game, absent in the career.
     party: Option<PartyState>,
+    /// A profile free skate's challenge system (game mode signature 2): its global activities
+    /// run, and nothing of the career's own presentation, scenes or saving does.
+    free_skate: bool,
     /// An online challenge's random stream, seeded by the server's `GameReset` and lent to the
     /// system while it updates in place of the Simulation's.
     pub(super) online_random: Option<crate::native_skater_random::SimulationCommandRandom>,
@@ -824,6 +837,7 @@ impl CareerSession {
             end_options_wait_outro: false,
             end_options_opened_by_nis: false,
             party: None,
+            free_skate: false,
             online_random: None,
             change_game: None,
             change_game_ready: false,
@@ -1505,6 +1519,12 @@ impl CareerSession {
         #[expect(clippy::cast_precision_loss, reason = "the message's (float) field")]
         let index = player as f32;
         self.system.post(Event::Challenge(Message::new("cMsgPlayerDisconnected", vec![("PlayerIndex", crate::challenge::system::Field::Number(index))])));
+    }
+
+    /// PC port: the host's end of an infinite Spot Battle, at this tick on every console
+    /// (`ChallengeSystem::end_infinite_rounds`); false while the battle cannot take it yet.
+    pub(super) fn online_host_ended(&mut self) -> bool {
+        self.system.end_infinite_rounds()
     }
 
     /// The Party Play back end's selection.
@@ -2521,6 +2541,26 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// `SetScreenState` calls.
     fn collect_career_hud(&mut self) {
         let Some(career) = self.career.as_mut() else { return };
+        if career.free_skate {
+            // Of a free skate's challenge HUD the presentation shows the teleporters' prompt
+            // ([`Self::take_free_skate_hud`]); no other component has a screen there.
+            let world = career.system.world_mut();
+            let states = std::mem::take(&mut world.signup_hud.screen_states);
+            world.objective_hud.screen_states.clear();
+            world.tutorial_hud.screen_states.clear();
+            let huds = &mut world.turn_huds;
+            huds.leaderboard.screen_states.clear();
+            huds.abd.screen_states.clear();
+            huds.timer.screen_states.clear();
+            huds.big_black_timer.screen_states.clear();
+            huds.countdown.screen_states.clear();
+            huds.voting.screen_states.clear();
+            huds.throwdown.screen_states.clear();
+            huds.dpo.screen_states.clear();
+            huds.distance.screen_states.clear();
+            career.hud.signup_screen.extend(states);
+            return;
+        }
         let objective = career.active_objective();
         if objective != career.hud.objective && std::env::var_os("SKATE2_TRACE_CAREER").is_some() {
             eprintln!("career: objective {objective:?}");
@@ -2643,7 +2683,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// loader, whose later updates finish them (`GameModule::GameLoad` `0x8273be50` waits for
     /// `IsAllUnloaded` before the next game).
     pub(super) fn unload_career_dynamic_hulls(&mut self) -> Result<(), SelectedLiveError> {
-        let Some(system) = self.career.as_mut().map(|career| &mut career.system).or(self.freeskate.hulls.as_mut()) else {
+        let Some(system) = self.career.as_mut().map(|career| &mut career.system).or(self.freeskate.system_mut()) else {
             return Ok(());
         };
         system.game_unload_dynamic_hulls();
@@ -2655,25 +2695,82 @@ impl<T, C> SelectedLiveSession<T, C> {
         queue_dynamic_hull_requests(terrain.as_mut(), hulls)
     }
 
-    /// The free-skate game's challenge system for its dynamic hulls: the free-skate data, the
-    /// global locations, the profile's unlockables (`UnlockablesBackEnd::LoadData` `0x8255cd08`)
-    /// and dynamic hull states (`cChallengeDynamicHullManager::LoadData` `0x82db4330`), then
-    /// `GameLoad(2)`.
-    pub(super) fn free_skate_dynamic_hulls(&self) -> Result<ChallengeSystem, SelectedLiveError> {
-        let mounts = Arc::clone(&self.inner.assets.as_ref().ok_or_else(|| error("free skate assets absent"))?.mounts);
-        let (db, table) = self.freeskate.data.as_ref().ok_or_else(|| error("free skate data absent"))?;
-        let global = mounts.read_path(GLOBAL_LUA).map_err(error)?;
-        let mut system = ChallengeSystem::new_career(Arc::clone(db), &global).map_err(error)?;
-        for location in &table.locations {
-            system.world_mut().locations.insert(hash_value32(&location.name), location.transform);
-        }
+    /// A profile free skate's challenge system: `Sk8ChallengeSystem::GameLoad` (`0x825a6618`)
+    /// under `GenerateGameModeSignature` 2, with progression off as `StartGameModule`
+    /// (`0x82633da0`) leaves it outside `GM_SinglePlayer`. It holds the global locations, the
+    /// profile's unlockables (`UnlockablesBackEnd::LoadData` `0x8255cd08`), dynamic hull states
+    /// (`cChallengeDynamicHullManager::LoadData` `0x82db4330`) and progression
+    /// (`cSignPostManager::LoadData` `0x825e53d8`, which the game carries unchanged and never
+    /// saves). Of its activities the game type leaves the global ones flagged for it, the
+    /// properties' teleporters, each running while the progression holds it available
+    /// (`Sk8ChallengeSystem::IsChallengeActive` `0x825a2c78`).
+    ///
+    /// The progression's message settings stay at their defaults: the port's free skate reads
+    /// none of them from a profile.
+    pub(super) fn free_skate_challenges(&self) -> Result<CareerSession, SelectedLiveError> {
+        let assets = self.inner.assets.as_ref().ok_or_else(|| error("free skate assets absent"))?;
+        let almost_over = assets
+            .vault
+            .instance(PHYSICS_WIPEOUT, DEFAULT_COLLECTION)
+            .try_scalar_word(WIPEOUT_ALMOST_OVER, 0)
+            .map_err(error)?
+            .map_or(0.0, f32::from_bits);
+        let mut session = CareerSession::new(&assets.mounts, almost_over, self.host_calendar, None).map_err(error)?;
+        session.free_skate = true;
+        self.bind_challenge_players(&mut session, crate::challenge::players::GM_PROFILE_FREE_SKATE)?;
         let store = EditSkaterProfileStore::open(EditSkaterProfileStore::default_path().map_err(error)?).map_err(error)?;
         let unlocks = store.load_leaf(unlockables::SAVABLE, unlockables::DATA).map_err(error)?;
-        system.world_mut().unlockables.load(leaf_tuples(&unlocks));
+        session.system.world_mut().unlockables.load(leaf_tuples(&unlocks));
         let hulls = store.load_leaf(dynamic_hull::SAVABLE, dynamic_hull::DATA).map_err(error)?;
-        system.world_mut().dynamic_hulls.load(leaf_tuples(&hulls));
-        system.game_load_free_skate_dynamic_hulls();
-        Ok(system)
+        session.system.world_mut().dynamic_hulls.load(leaf_tuples(&hulls));
+        let progression = store.load_leaf(signpost_progress::SAVABLE, signpost_progress::DATA).map_err(error)?;
+        signpost_progress::load(session.system.world_mut(), leaf_tuples(&progression), None, None);
+        if std::env::var_os("SKATE2_TRACE_CAREER").is_some() {
+            let world = session.system.world();
+            eprintln!(
+                "free skate: SignPost {} ({} completed, {} available)",
+                if progression.is_some() { "loaded" } else { "fresh" },
+                world.signpost.completed.len(),
+                world.signpost.available.len()
+            );
+        }
+        session.system.set_boot_flow_executed();
+        session.system.game_load_free_skate();
+        session.system.loading_reset();
+        session.system.start_in_game(false);
+        Ok(session)
+    }
+
+    /// A profile free skate's teleporter prompt and popup for the presentation, while its
+    /// challenge system runs: the sign-up HUD's screen states since the last call and the popup
+    /// a teleporter's script has open.
+    pub fn take_free_skate_hud(&mut self) -> Option<FreeSkateHud> {
+        let session = self.freeskate.challenges.as_mut()?;
+        Some(FreeSkateHud {
+            signup_screen: std::mem::take(&mut session.hud.signup_screen),
+            dialog: session.hud.dialog.clone(),
+            dialog_options: session.hud.dialog_options.clone(),
+        })
+    }
+
+    /// A profile free skate's front-end input for its challenge system, as the career's takes
+    /// it (`StateManagerFrontEnd::ReceiveInput` `0x82656af8`, `SignUpHUD::UpdateInput`): an open
+    /// popup's, else the D-pad up of a teleporter's prompt. True while either holds the D-pad,
+    /// which then does not reach the objects' prompt.
+    pub(super) fn free_skate_challenge_input(&mut self, input: crate::ui::pause_menu::PauseMenuInput, hud_dpad: [bool; 5]) -> bool {
+        let Some(session) = self.freeskate.challenges.as_mut() else { return false };
+        if session.popup_input(input) {
+            return true;
+        }
+        if hud_dpad[4] {
+            session.system.sign_up_dpad_released();
+        }
+        let hud = &session.system.world().signup_hud;
+        let prompt = hud.visible && hud.teleport.is_some();
+        if prompt && hud_dpad[0] {
+            session.system.sign_up_dpad_up();
+        }
+        prompt
     }
 
     /// An online game's challenge system for its dynamic hulls: a network game's `GameLoad(8)`,
@@ -2687,8 +2784,9 @@ impl<T, C> SelectedLiveSession<T, C> {
         Ok(system)
     }
 
-    /// Free skate's dynamic hull manager `Update` (`0x82db4dd0`) at the local skater's tester,
-    /// then its loader's; without one, the loader finishes a quit's unloads.
+    /// An online free skate's dynamic hull manager `Update` (`0x82db4dd0`) at the local skater's
+    /// tester, then its loader's (a profile free skate's whole challenge system updates in
+    /// [`Self::career_step`]); without one, the loader finishes a quit's unloads.
     fn try_update_free_skate_dynamic_hulls(&mut self) -> Result<(), SelectedLiveError> {
         if self.freeskate.hulls.is_none() {
             return self.try_update_unowned_dynamic_hulls();
@@ -2769,6 +2867,14 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// system then reads the challenge's own random stream, and the local skater's simulation
     /// messages stay with it.
     pub(super) fn career_step(&mut self, online: Option<(Vec<MissionFrame>, i32, Option<MissionFrame>)>) -> Result<(), SelectedLiveError> {
+        // A profile free skate's challenge system updates as the career's does, in its place
+        // for the update alone: outside it the game has no career.
+        if self.career.is_none() && online.is_none() && self.freeskate.challenges.is_some() {
+            self.career = self.freeskate.challenges.take();
+            let updated = self.career_step(None);
+            self.freeskate.challenges = self.career.take();
+            return updated;
+        }
         self.deliver_career_waypoint_groups()?;
         let challenge_messages = self.inner.try_take_challenge_messages().map_err(error)?;
         let Some(career) = self.career.as_mut() else { return self.try_update_free_skate_dynamic_hulls() };
@@ -2938,6 +3044,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             career.hud.result_info = career.system.submit_result_info();
         }
         self.collect_career_hud();
+        if self.career.as_ref().is_some_and(|career| career.free_skate) {
+            // No scene plays in a free skate: the scene manager's frame is left out.
+            return Ok(());
+        }
         let game_camera = self.game_camera_matrix();
         if let Some(career) = self.career.as_mut() {
             // The scene manager's frame; the native runs it per rendered frame
@@ -3030,6 +3140,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
         let outputs = career.system.take_outputs();
         let party = career.system.world().game_mode == crate::challenge::players::GM_PARTY_PLAY;
+        let free_skate = career.free_skate;
         let online_local = career.system.world().online.as_ref().map(|online| online.local_player);
         let mut online_outputs = Vec::new();
         let mut end_points = Vec::new();
@@ -3391,7 +3502,8 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
         self.apply_skater_requests(requests)?;
         self.apply_ai_requests(ai_requests)?;
-        if autosave && let Err(e) = self.save_career() {
+        // A free skate's challenge system has no career to save.
+        if autosave && !free_skate && let Err(e) = self.save_career() {
             eprintln!("career: autosave failed: {e}");
         }
         self.online_challenge_outputs(online_outputs)
@@ -3645,7 +3757,7 @@ impl<T, C> SelectedLiveSession<T, C> {
 
     /// The career front-end states' sounds and the turn HUD's since the last call.
     pub(super) fn take_career_sounds(&mut self) -> Vec<&'static str> {
-        let Some(career) = self.career.as_mut() else { return Vec::new() };
+        let Some(career) = self.career.as_mut().or(self.freeskate.challenges.as_mut()) else { return Vec::new() };
         let mut sounds = std::mem::take(&mut career.sounds);
         sounds.append(&mut career.system.world_mut().turn_huds.sounds);
         sounds
@@ -4242,7 +4354,16 @@ impl<T, C> SelectedLiveSession<T, C> {
         };
         for marker in markers {
             let MarkerMessage::Set(marker) = marker else {
-                self.player_ui_queues()?.send_clear_session_marker();
+                // PC port addition, Skate During Turn Wait: the challenge's own marker, held back
+                // while the wait's stands in, takes the challenge's messages.
+                match self.online.held_marker.as_mut() {
+                    Some(held) => {
+                        if let Some(held) = held.as_mut() {
+                            held.clear_for_world_travel();
+                        }
+                    }
+                    None => self.player_ui_queues()?.send_clear_session_marker(),
+                }
                 continue;
             };
             let Some(actor) = self.inner.player.as_ref().and_then(|player| player.selected.actor.clone()) else {
@@ -4263,7 +4384,14 @@ impl<T, C> SelectedLiveSession<T, C> {
                     (transform, u32::from(!right))
                 }
             };
-            self.player_ui_queues()?.send_set_session_marker(transform, foot_forward);
+            match self.online.held_marker.as_mut() {
+                Some(held) => {
+                    if let Some(held) = held.as_mut() {
+                        held.set_forced(&transform, foot_forward, true);
+                    }
+                }
+                None => self.player_ui_queues()?.send_set_session_marker(transform, foot_forward),
+            }
         }
         Ok(())
     }

@@ -20,6 +20,9 @@ pub enum PauseMenuOption {
     SaveReplay = 13,
     /// Leave Challenge (PC port addition).
     LeaveChallenge = 14,
+    /// End Challenge, the host's while a Spot Battle under Infinite Rounds plays (PC port
+    /// addition).
+    EndChallenge = 15,
 }
 
 #[cfg(test)]
@@ -151,6 +154,58 @@ mod quit_tests {
         assert_eq!(state.popup,None);
     }
     #[test]
+    fn end_challenge_tops_the_online_hubs_while_the_game_offers_it() {
+        use PauseMenuOption as O;
+        let press=|menu:&mut PauseMenuController,input:PauseMenuInput| menu.update(input,true);
+        let start=PauseMenuInput{start:true,..Default::default()};
+        let down=PauseMenuInput{down:true,..Default::default()};
+        let select=PauseMenuInput{select:true,..Default::default()};
+        let mut menu=PauseMenuController::default();
+        menu.set_hub(StartHub::OnlineChallenge);
+        menu.set_leave_challenge(true);
+        press(&mut menu,start);
+        menu.acknowledge_intro();
+        press(&mut menu,down);
+        assert_eq!(menu.selected_option(),O::LeaveChallenge);
+        // Offered with the hub up: the row comes in at the top and the picker keeps its row.
+        menu.set_end_challenge(true);
+        assert_eq!(menu.options(),[O::EndChallenge,O::Settings,O::LeaveChallenge,O::Quit]);
+        assert_eq!(menu.selected_option(),O::LeaveChallenge);
+        // The hub opens on it; its confirmation opens on No.
+        press(&mut menu,start);
+        press(&mut menu,start);
+        menu.acknowledge_intro();
+        assert_eq!(menu.selected_option(),O::EndChallenge);
+        let state=press(&mut menu,select);
+        assert_eq!(state.popup,Some((HubPopup::EndChallenge,0)));
+        let state=press(&mut menu,select);
+        assert!(state.visible && state.popup.is_none() && !menu.take_end_challenge_confirmed());
+        // Yes ends the challenge and closes the hub.
+        press(&mut menu,select);
+        press(&mut menu,down);
+        let state=press(&mut menu,select);
+        assert!(!state.visible && menu.take_end_challenge_confirmed() && !menu.take_end_challenge_confirmed());
+        assert!(!menu.take_quit_confirmed() && !menu.take_leave_challenge_confirmed());
+        // The battle over with the confirmation up: the confirmation and the row go.
+        press(&mut menu,start);
+        menu.acknowledge_intro();
+        press(&mut menu,select);
+        menu.set_end_challenge(false);
+        assert_eq!(menu.snapshot().popup,None);
+        assert_eq!(menu.options(),[O::Settings,O::LeaveChallenge,O::Quit]);
+        assert_eq!(menu.selected_option(),O::Settings);
+        // The host waiting in the pre-game lobby has it too.
+        menu.close();
+        menu.set_hub(StartHub::OnlineFreeSkate);
+        assert!(!menu.options().contains(&O::EndChallenge));
+        menu.set_end_challenge(true);
+        assert_eq!(menu.options(),[O::EndChallenge,O::SaveReplay,O::EditSkater,O::Settings,O::Quit]);
+        assert!(menu.snapshot().item_enabled(O::EndChallenge));
+        // No other hub has the row.
+        menu.set_hub(StartHub::SinglePlayer);
+        assert!(!menu.options().contains(&O::EndChallenge));
+    }
+    #[test]
     fn edit_skater_sits_above_game_settings_while_the_online_game_offers_it() {
         let mut menu=PauseMenuController::default();
         menu.set_hub(StartHub::OnlineFreeSkate);
@@ -194,6 +249,7 @@ impl PauseMenuOption {
             Self::QuitChallenge => "ID_START_HUB_QUIT_CHALLENGE",
             Self::SaveReplay => "ID_START_HUB_SAVE_REPLAY",
             Self::LeaveChallenge => "#Leave Challenge",
+            Self::EndChallenge => "#End Challenge",
         }
     }
 
@@ -304,6 +360,18 @@ pub const ONLINE_FREESKATE_OPTIONS: [PauseMenuOption; 4] =
 pub const ONLINE_CHALLENGE_OPTIONS: [PauseMenuOption; 3] =
     [PauseMenuOption::Settings, PauseMenuOption::LeaveChallenge, PauseMenuOption::Quit];
 
+/// PC port addition: the online hubs while the game offers its host End Challenge (a Spot Battle
+/// under Infinite Rounds in play), the row above the hub's own, as it tops the online hub's menu.
+pub const ONLINE_FREESKATE_END_OPTIONS: [PauseMenuOption; 5] = [
+    PauseMenuOption::EndChallenge,
+    PauseMenuOption::SaveReplay,
+    PauseMenuOption::EditSkater,
+    PauseMenuOption::Settings,
+    PauseMenuOption::Quit,
+];
+pub const ONLINE_CHALLENGE_END_OPTIONS: [PauseMenuOption; 4] =
+    [PauseMenuOption::EndChallenge, PauseMenuOption::Settings, PauseMenuOption::LeaveChallenge, PauseMenuOption::Quit];
+
 /// The main challenge as the hub reads it (`cActivityManager::GetMainChallenge`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MainChallenge {
@@ -361,7 +429,7 @@ impl StartHub {
 /// `QuitGameConfirmationNoDataLoss` (153); Restart Challenge's `Options_RetryChallenge` (204);
 /// Quit Challenge's `QuitChallengeConfirmation` (154). Each template (gPopupTemplate82fdbc58) is
 /// No/Yes under `ID_COMMON_WARNING_TITLE`, defaulting to No and not cancellable. Leave
-/// Challenge's, the same, is a PC port addition.
+/// Challenge's and End Challenge's, the same, are PC port additions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HubPopup {
     Quit,
@@ -369,6 +437,7 @@ pub enum HubPopup {
     RetryChallenge,
     QuitChallenge,
     LeaveChallenge,
+    EndChallenge,
 }
 
 impl HubPopup {
@@ -380,6 +449,8 @@ impl HubPopup {
             Self::RetryChallenge => "ID_OPTIONS_MENU_RETRY_CHALLENGE",
             Self::QuitChallenge => "ID_QUIT_CHALLENGE_MESSAGE",
             Self::LeaveChallenge => "#Leave the challenge? You will wait in the pre-game lobby until the others finish.",
+            // The online hub's End Challenge asks the same.
+            Self::EndChallenge => "#Are you sure you want to end the challenge?",
         }
     }
 }
@@ -454,6 +525,9 @@ pub struct PauseMenuSnapshot {
     /// Edit Skater is offered in an online game: the local player is in its pre-game lobby, with
     /// no round, travel or activity start coming (PC port addition).
     pub edit_skater: bool,
+    /// End Challenge is offered: the local player hosts a Spot Battle under Infinite Rounds that
+    /// plays (PC port addition).
+    pub end_challenge: bool,
 }
 
 impl PauseMenuSnapshot {
@@ -493,6 +567,8 @@ impl PauseMenuSnapshot {
             StartHub::CreateASpot => &CREATE_A_SPOT_OPTIONS,
             StartHub::CreateASpotSetup => &CREATE_A_SPOT_SETUP_OPTIONS,
             StartHub::CreateASpotSetupWithScore => &CREATE_A_SPOT_SETUP_WITH_SCORE_OPTIONS,
+            StartHub::OnlineFreeSkate if self.end_challenge => &ONLINE_FREESKATE_END_OPTIONS,
+            StartHub::OnlineChallenge if self.end_challenge => &ONLINE_CHALLENGE_END_OPTIONS,
             StartHub::OnlineFreeSkate => &ONLINE_FREESKATE_OPTIONS,
             StartHub::OnlineChallenge => &ONLINE_CHALLENGE_OPTIONS,
         }
@@ -505,9 +581,14 @@ impl PauseMenuSnapshot {
     /// Create_A_Spot_Setup_WithScore (`0x82644770`), Online_FreeSkate (`0x8265e928`, Save Replay
     /// only online; Edit Skater while the game offers it, a PC port addition) and Online_Challenge
     /// (`0x826447d0`). Replay needs `mbReplayAvailable`, which is sampled when the hub opens.
+    /// End Challenge, which only the online hubs list, and only while offered, is a PC port
+    /// addition.
     #[must_use]
     pub fn item_enabled(self, option: PauseMenuOption) -> bool {
         use PauseMenuOption as O;
+        if option == O::EndChallenge {
+            return self.end_challenge && matches!(self.hub, StartHub::OnlineFreeSkate | StartHub::OnlineChallenge);
+        }
         if option==O::Replay {
             return self.replay_available && matches!(self.hub,StartHub::SinglePlayer|StartHub::SinglePlayerChallenge|StartHub::OfflineFreeSkate|StartHub::PartyPlay);
         }
@@ -566,6 +647,8 @@ pub struct PauseMenuController {
     abandon_confirmed: bool,
     /// Leave Challenge's confirmation answered yes.
     leave_challenge_confirmed: bool,
+    /// End Challenge's confirmation answered yes.
+    end_challenge_confirmed: bool,
     /// `FrontEndState_StartHub::mbDoingQuit`: `DoQuit` (`0x8266b1a0`) faded the background in,
     /// whose callback `FadeToExit` (`0x8265e7f0`) pops the hub and calls `ExitToMainMenu`.
     doing_quit: bool,
@@ -625,6 +708,27 @@ impl PauseMenuController {
     /// pre-game lobby.
     pub fn take_leave_challenge_confirmed(&mut self) -> bool {
         std::mem::take(&mut self.leave_challenge_confirmed)
+    }
+
+    /// Whether the online game offers its host End Challenge (PC port addition). The row comes
+    /// and goes at the hub's top: the picker stays on the row it was on, or goes to the first
+    /// enabled one when that was End Challenge, whose confirmation goes with it.
+    pub fn set_end_challenge(&mut self, offered: bool) {
+        if self.state.end_challenge == offered {
+            return;
+        }
+        let option = self.selected_option();
+        self.state.end_challenge = offered;
+        if matches!(self.state.popup, Some((HubPopup::EndChallenge, _))) {
+            self.state.popup = None;
+        }
+        self.state.selected = self.options().iter().position(|&row| row == option).unwrap_or_else(|| self.state.first_enabled());
+    }
+
+    /// End Challenge's yes, which also pops the hub: the runtime asks the server to end the
+    /// battle, as the online hub's End Challenge does.
+    pub fn take_end_challenge_confirmed(&mut self) -> bool {
+        std::mem::take(&mut self.end_challenge_confirmed)
     }
 
     /// `QuitPopupCallback`'s save (`0x82671678`): the hub's input blocked and its screen hidden
@@ -766,6 +870,10 @@ impl PauseMenuController {
                         self.leave_challenge_confirmed = true;
                         self.state.visible = false;
                     }
+                    HubPopup::EndChallenge => {
+                        self.end_challenge_confirmed = true;
+                        self.state.visible = false;
+                    }
                     HubPopup::Quit | HubPopup::QuitNoDataLoss => self.quit_confirmed = true,
                 }
             }
@@ -813,6 +921,7 @@ impl PauseMenuController {
             PauseMenuOption::RestartChallenge => Some(HubPopup::RetryChallenge),
             PauseMenuOption::QuitChallenge => Some(HubPopup::QuitChallenge),
             PauseMenuOption::LeaveChallenge if self.state.leave_challenge => Some(HubPopup::LeaveChallenge),
+            PauseMenuOption::EndChallenge if self.state.end_challenge => Some(HubPopup::EndChallenge),
             _ => None,
         };
         if input.select && let Some(popup) = popup {

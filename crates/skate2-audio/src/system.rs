@@ -1199,6 +1199,11 @@ impl AudioSystem {
         self.music.set_music_player_playlist(songs, current_song_index);
     }
 
+    /// PC port: the music player's custom songs (`custom_song`), each one's id and file.
+    pub fn set_custom_songs(&mut self, songs: &[(u32, std::path::PathBuf)]) {
+        self.music.set_custom_songs(songs);
+    }
+
     /// `mCurrentSongIndex` after the update, for the profile.
     #[must_use]
     pub fn music_player_song_index(&self) -> i32 {

@@ -143,6 +143,10 @@ pub struct PlayerPhysics {
     pub is_wipe_out_over: bool,
     /// TU3 `SFXCTL_PlayerPhysics` +0x301: the skater's darkcatch (Skate 3 physics only).
     pub skate3_dark_catch: bool,
+    /// TU3 `SFXCTL_PlayerPhysics` +0x308 and +0x304: a darkcatch now or within the last five
+    /// updates, and the updates since it.
+    pub skate3_dark_catch_recent: bool,
+    pub(super) skate3_dark_catch_frames: u32,
     /// TU3 `SFXCTL_PlayerPhysics` +0x329 and +0x32A: a drop-in's tail locking on the edge and
     /// letting go (Skate 3 physics only).
     pub skate3_drop_in_lock: bool,
@@ -279,6 +283,8 @@ impl Default for PlayerPhysics {
             is_wiping_out: false,
             is_wipe_out_over: false,
             skate3_dark_catch: false,
+            skate3_dark_catch_recent: false,
+            skate3_dark_catch_frames: 0,
             skate3_drop_in_lock: false,
             skate3_drop_in_release: false,
             skate3_only_trick: false,
@@ -414,7 +420,10 @@ impl PlayerPhysics {
         self.is_wiping_out = false;
         self.game_speed = 1.0;
         self.is_wipe_out_over = false;
+        // TU3 Reset 0x824b0be8..0x824b0bf0.
         self.skate3_dark_catch = false;
+        self.skate3_dark_catch_frames = 0;
+        self.skate3_dark_catch_recent = false;
         // TU3 Reset 0x824b0c28.
         self.skate3_drop_in_lock = false;
         self.skate3_drop_in_release = false;
@@ -647,6 +656,15 @@ impl PlayerPhysics {
         self.is_wiping_out = skater.is_wiping_out;
         self.is_wipe_out_over = skater.is_wipe_out_over;
         self.skate3_dark_catch = skater.skate3_dark_catch;
+        // TU3 0x824b17fc..0x824b1834: a darkcatch is kept for five updates after it ends.
+        if self.skate3_dark_catch {
+            self.skate3_dark_catch_recent = true;
+            self.skate3_dark_catch_frames = 0;
+        } else if self.skate3_dark_catch_frames < 5 {
+            self.skate3_dark_catch_frames += 1;
+        } else {
+            self.skate3_dark_catch_recent = false;
+        }
         // TU3 0x824b1964 and 0x824b1970.
         self.skate3_drop_in_lock = skater.skate3_drop_in_lock;
         self.skate3_drop_in_release = skater.skate3_drop_in_release;

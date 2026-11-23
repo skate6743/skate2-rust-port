@@ -26,9 +26,17 @@ Then, in this order:
    (`0x825e00f8`) completes one with progression enabled: its completion BLOG entry, its awards,
    its place in the completed map, its photo articles and its groups' exits. The state machines the
    completions would queue are not run; the unlocks their handlers make come from step 5.
+   A property's teleporter (a full global activity of `ChallengeType` 45: into and out of the
+   stadium and the training facility, the stadium's ramps, a downloadable content's own) is not
+   completed: nothing in the career completes one, and it shows its Enter or Exit prompt only
+   while it is available. Those the career's scripts activate
+   (`Progression.ActivateChallengeByTitle`) are made available instead (2026-11-21; see
+   Properties below). A property's purchase (`dannys_megapark_extension`, the same type and no
+   global activity) is completed as before.
 2. **Each completed challenge's save values** as the best play leaves them: `Highest Rank` 1, and
    `Killed It`, `Spot Found`, `Unlocked`, `PlayerOwns`, `PropertyOwned` and `Paid Entry Fee` set.
-   The other values (best times, points, a declined spot) stay as they are.
+   The other values (best times, points, a declined spot) stay as they are. The properties'
+   teleporters, left available, take theirs alike.
 3. **Point pools**: `Cash` at 9,000,000 (within the pool's bounds, layout words 2 and 3), and
    `Properties Purchased`, `Pools Drained`, `Pools Found`, `Spots Owned`, `Pros Completed`,
    `Sponsorships Earned`, `AnywhereFilms` and `Circulate Pool` at their maximum (word 3).
@@ -67,6 +75,43 @@ UNLOCKABLES, Sk8ChallengeSystem, SignPost and the CAC record are written in one 
 replacement, each read back before it commits (`save_memcard_and_record`); the profile data, the
 settings and the music player are saved as the Extras codes save them, and the profile's other
 savables are kept.
+
+## Properties (2026-11-21)
+
+- The prompts to enter and leave the stadium and the training facility are global activities:
+  `c_3b_01_teleport_stadium_in`, `c_3b_01_teleport_stadium_ramps`,
+  `c_3b_02_teleport_stadium_out`, `m_08_01_teleport_trainingfacility_in` and
+  `m_08_01_teleport_trainingfacility_out` (`challenge_global_data`: `ChallengeType` 45, `Global`
+  2, the free-skate game type set). Each runs while the progression holds its challenge
+  available (`Sk8ChallengeSystem::IsChallengeActive` 0x825a2c78), which the career's scripts make
+  it with `Progression.ActivateChallengeByTitle` once the property is the player's. No script
+  completes or deactivates one.
+- Max Out Save completed them with every other progression challenge, so a maxed save's career
+  ran none of them: no prompt at the stadium or the training facility. A career run on such a
+  save started `service_security` alone of the global activities.
+- Max Out Save now leaves a property's teleporter uncompleted and makes those the scripts
+  activate available (`signpost::complete_every_challenge`).
+- A save that holds a property's teleporter completed (one maxed out by a build up to 0.3.5) has
+  it made available again as its progression loads, the completed challenges after it moving up
+  a place (`signpost::reopen_property_teleporters`, logged as `career: N property teleporters a
+  save held completed are available again`). The next save keeps it that way.
+- The test is the teleporter, not the type: `dannys_megapark_extension` is a `ChallengeType` 45
+  challenge too, a property's purchase, which buying the property completes and which stays
+  completed.
+- Scripted runs (2026-11-21, six Skate 2 DLC packs linked):
+  - a save maxed out by 0.3.5 (419 completed, none available): the career logs `6 property
+    teleporters a save held completed are available again`, loads `413 completed, 6 available`
+    and starts the five teleporters above and `dlc_maloof_teleport_ramp`, each to
+    `wait_for_teleport_volume`. Skated into the volume outside the stadium the screen shows the
+    D-pad up prompt `Enter Stadium`; at the training facility's door in Old Town,
+    `Enter Training Facility`;
+  - Max Out Save on a mid-career save: `413 of 419 progression challenges complete`, `413
+    challenges completed`; Continue Career loads `413 completed, 6 available` and starts the
+    same six;
+  - a mid-career save that had bought the MegaPark extension loads as before, `58 completed, 94
+    available`, with nothing reopened.
+- Free Skate runs these same activities, as the original does:
+  `free-skate-teleporters-2026-11-21.md`.
 
 ## What stays as it is
 

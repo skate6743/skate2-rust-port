@@ -1,10 +1,12 @@
 //! PC port addition: `controller_config.json` beside `config.json` (the working directory the game
 //! runs from, or `SKATE2_SAVE_ROOT`), holding each stick's settings from Control Settings' Stick
-//! Settings and Control Settings' Trigger Threshold ([`crate::stick_settings`]). It is kept apart
-//! from the profile, so a profile the player loads or replaces leaves them as they are. A missing
+//! Settings and Control Settings' Trigger Threshold, Input Delay and Polling Rate
+//! ([`crate::stick_settings`]).
+//! It is kept apart from the profile, so a profile the player loads or replaces leaves them as
+//! they are. A missing
 //! file or value is the default (a stick's is vanilla), and a value past its range is kept to it.
 use super::online_config::number_fields;
-use crate::stick_settings::{ControllerSettings, DEFAULT_TRIGGER_THRESHOLD, StickSettings, TRIGGER_THRESHOLDS};
+use crate::stick_settings::{ControllerSettings, DEFAULT_TRIGGER_THRESHOLD, INPUT_DELAYS, Polling, StickSettings, TRIGGER_THRESHOLDS};
 use std::{fs, io, path::PathBuf};
 
 /// `SKATE2_SAVE_ROOT` relocates it with the saves; otherwise it sits in the working directory the
@@ -44,10 +46,12 @@ fn text(settings: &ControllerSettings) -> String {
         )
     };
     format!(
-        "{{\n{},\n{},\n  \"trigger_threshold\": {}\n}}\n",
+        "{{\n{},\n{},\n  \"trigger_threshold\": {},\n  \"input_delay_ms\": {},\n  \"polling_60hz\": {}\n}}\n",
         stick("left", &settings.left),
         stick("right", &settings.right),
-        settings.trigger_threshold
+        settings.trigger_threshold,
+        settings.input_delay,
+        u8::from(settings.polling == Polling::Vanilla)
     )
 }
 
@@ -71,7 +75,11 @@ fn parse(text: &str) -> ControllerSettings {
     };
     let trigger_threshold =
         field("trigger_threshold", 1., DEFAULT_TRIGGER_THRESHOLD).clamp(*TRIGGER_THRESHOLDS.start(), *TRIGGER_THRESHOLDS.end());
-    ControllerSettings { left: stick("left"), right: stick("right"), trigger_threshold }
+    let input_delay = field("input_delay_ms", 1., 0).clamp(*INPUT_DELAYS.start(), *INPUT_DELAYS.end());
+    // `polling_60hz`: 1 reads the pads on the 60 Hz timer as the original does, which a file
+    // without the key takes; 0 reads them as each tick runs.
+    let polling = if field("polling_60hz", 1., 1) == 0 { Polling::FrameTimed } else { Polling::Vanilla };
+    ControllerSettings { left: stick("left"), right: stick("right"), trigger_threshold, input_delay, polling }
 }
 
 #[cfg(test)]
@@ -84,13 +92,15 @@ mod tests {
             left: StickSettings { multiplier: 40, deadzone: 12, anti_deadzone: 25 },
             right: StickSettings { multiplier: 107, deadzone: 0, anti_deadzone: 50 },
             trigger_threshold: 35,
+            input_delay: 12,
+            polling: Polling::FrameTimed,
         };
         assert_eq!(parse(&text(&settings)), settings);
         assert_eq!(parse(&text(&ControllerSettings::VANILLA)), ControllerSettings::VANILLA);
         assert_eq!(parse(&text(&ControllerSettings::DEFAULT)), ControllerSettings::DEFAULT);
         assert!(text(&settings).contains("\"left_stick_multiplier\": 0.40,"));
         assert!(text(&settings).contains("\"right_stick_multiplier\": 1.07,"));
-        assert!(text(&settings).ends_with("\"right_stick_anti_deadzone\": 50,\n  \"trigger_threshold\": 35\n}\n"));
+        assert!(text(&settings).ends_with("\"right_stick_anti_deadzone\": 50,\n  \"trigger_threshold\": 35,\n  \"input_delay_ms\": 12,\n  \"polling_60hz\": 0\n}\n"));
     }
 
     #[test]
@@ -106,5 +116,14 @@ mod tests {
         assert_eq!(parse(r#"{"trigger_threshold": 0}"#), ControllerSettings::VANILLA);
         assert_eq!(parse(r#"{"trigger_threshold": 300}"#).trigger_threshold, *TRIGGER_THRESHOLDS.end());
         assert_eq!(parse(r#"{"trigger_threshold": -5}"#).trigger_threshold, 0);
+        // A file from before the input delay has none.
+        assert_eq!(settings.input_delay, 0);
+        assert_eq!(parse(r#"{"input_delay_ms": 17}"#).input_delay, 17);
+        assert_eq!(parse(r#"{"input_delay_ms": 300}"#).input_delay, *INPUT_DELAYS.end());
+        // A file from before the polling rate polls on the timer, as does any value but 0.
+        assert_eq!(settings.polling, Polling::Vanilla);
+        assert_eq!(parse(r#"{"polling_60hz": 0}"#).polling, Polling::FrameTimed);
+        assert_eq!(parse(r#"{"polling_60hz": 1}"#).polling, Polling::Vanilla);
+        assert_eq!(parse(r#"{"polling_60hz": 7}"#).polling, Polling::Vanilla);
     }
 }

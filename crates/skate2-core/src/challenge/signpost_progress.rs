@@ -476,12 +476,13 @@ pub(crate) fn add_cash(world: &mut World, cash: i32, credit: usize) {
 /// PC port addition (Max Out Save, `max_out.rs`): each completed challenge's save values as the
 /// best play leaves them: `Highest Rank` first place, and `Killed It`, `Spot Found`, `Unlocked`,
 /// `PlayerOwns`, `PropertyOwned` and `Paid Entry Fee` set. Its other values (best heat times,
-/// points, a declined spot) stay as they are.
+/// points, a declined spot) stay as they are. The challenges a maxed career leaves available
+/// (its properties' teleporters, which nothing completes) take theirs alike.
 pub(crate) fn max_out_challenge_save_data(world: &mut World) {
     let db = Arc::clone(&world.db);
     let signpost = &mut world.signpost;
     for save in signpost.progress.challenge_save.values_mut() {
-        if !signpost.completed.contains_key(&save.challenge) {
+        if !signpost.completed.contains_key(&save.challenge) && !signpost.available.contains_key(&save.challenge) {
             continue;
         }
         if matches!(
@@ -1330,5 +1331,10 @@ fn load_progression_data(world: &mut World, tuples: &[Vec<u8>]) {
         if id != 0 {
             world.signpost.progress.news.insert(key_from_id(&db, classes::MESSAGES, 2, id));
         }
+    }
+    // PC port: a save an earlier build maxed out holds the properties' teleporters completed.
+    let reopened = super::signpost::reopen_property_teleporters(world);
+    if reopened > 0 {
+        eprintln!("career: {reopened} property teleporters a save held completed are available again");
     }
 }

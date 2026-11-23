@@ -267,6 +267,9 @@ pub(super) struct Layer3Core {
     prev_block: Vec<[[[f32; 4]; 18]; 8]>,
     /// `mpPolySynthHistoryF` ("PolySynthHistoryF"): each channel's two dct64 buffers.
     synth_history: Vec<[[f32; 288]; 2]>,
+    /// PC port (custom songs): the granules are a standard MPEG stream's (`mpeg::Mp3Stream`), whose
+    /// part 3 can end in stuffing bits of any length.
+    pub(super) standard_stream: bool,
 }
 
 impl Layer3Core {
@@ -296,6 +299,7 @@ impl Layer3Core {
             loaded_table_select: [None; 3],
             prev_block: vec![[[[0.0; 4]; 18]; 8]; channels],
             synth_history: vec![[[0.0; 288]; 2]; channels],
+            standard_stream: false,
         }
     }
 
@@ -601,6 +605,7 @@ impl Layer3Core {
         let limits = [region1.min(big), region2.min(big), big];
         let gain = TWO_TO_NEGATIVE_QUARTER_POWER[usize::from(255 - gi.global_gain)];
         let out = scratch;
+        let standard_stream = self.standard_stream;
         let bits = &mut self.bits;
         let mut pending_index = [0i16; 32];
         let mut pending_value = [0i16; 32];
@@ -609,7 +614,9 @@ impl Layer3Core {
             for k in 0..count {
                 let slot = at + index[k] as u16 as usize;
                 if let Some(sample) = out.get_mut(slot) {
-                    *sample *= pow43(value[k]);
+                    // PC port: `SToPowerOf4over3` is linear between powers of two, which EA's
+                    // streams are made for; a standard stream's values take the power itself.
+                    *sample *= if standard_stream { f32::from(value[k]).powf(4.0 / 3.0) } else { pow43(value[k]) };
                 }
             }
         };
@@ -716,10 +723,19 @@ impl Layer3Core {
             bits.count = (rewind & 7) as i32;
             if bits.count != 0 {
                 bits.reg = slw(bits.byte(bits.ptr - 1), 32 - bits.count);
+            } else if standard_stream {
+                // PC port: no bits held; the next channel's begin at the byte.
+                bits.reg = 0;
             }
             i -= 4;
         }
-        let position = bits.position();
+        let mut position = bits.position();
+        // PC port: a standard stream's stuffing is passed a few bits at a time, which the register
+        // holds whole; EA's granules end within a register's reach.
+        while standard_stream && end - position > 16 {
+            bits.get(16);
+            position += 16;
+        }
         if position < end {
             bits.get(end - position);
         }

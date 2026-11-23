@@ -12,7 +12,7 @@
 
 use super::{SelectedLiveError, SelectedLiveSession, error, trace};
 use crate::challenge::mission::MissionFrame;
-use crate::challenge::players::{OnlineChallenge, PT_HUMAN, PlayersBackEnd};
+use crate::challenge::players::{OnlineChallenge, PT_HUMAN, PlayersBackEnd, SpotBattleCarry};
 use crate::challenge::results::{OnlineResultRow, OnlineResults};
 use crate::challenge::system::Output;
 use crate::online::catalog;
@@ -99,6 +99,19 @@ const SPOT_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
 /// next, so a console whose game parted from the others' waits on another turn than theirs, and
 /// every one of them waits on it.
 const STALL_TICKS: u32 = 240;
+/// PC port (user request): the log's lines for the host's Infinite Rounds and its end of such a
+/// battle.
+pub(super) const HOST_ENDED_CHALLENGE: &str = "The host has ended the challenge.";
+pub(super) const INFINITE_ROUNDS_ENABLED: &str = "The host has enabled infinite rounds.";
+pub(super) const INFINITE_ROUNDS_DISABLED: &str = "The host has disabled infinite rounds.";
+/// PC port (user request): the log's line for the host's Round Lock turned off; set, the line
+/// names its round ([`round_lock_line`]).
+pub(super) const ROUND_LOCK_DISABLED: &str = "The host has turned the round lock off.";
+
+/// The log's line for the host's Round Lock at `round` (0 off).
+pub(super) fn round_lock_line(round: u32) -> String {
+    if round == 0 { ROUND_LOCK_DISABLED.to_owned() } else { format!("The host has locked every round to round {round}.") }
+}
 /// While the wait goes on, the round tells the server again every second of simulation ticks:
 /// the server counts a report only while it is fresh, so one from a wait that has ended cannot
 /// join later ones.
@@ -280,6 +293,9 @@ pub(super) struct Round {
     /// it has, for diagnostics.
     unpinned: Option<u32>,
     turns: u32,
+    /// The challenge's last `cMsgPinPlayer` for the local skater pinned it: what the skater goes
+    /// back to when Skate During Turn Wait stops (PC port).
+    script_pinned: bool,
     /// The player `Online.SwitchCamera` last made this console follow.
     camera_player: Option<i32>,
     /// The sync point the challenge waits at.
@@ -305,6 +321,28 @@ pub(super) struct Round {
     speech_seen: BTreeMap<(i32, i32), u32>,
     nis_delivered: u32,
     speech_delivered: BTreeMap<(i32, i32), u32>,
+    /// PC port (user request): a Spot Battle the host started with Infinite Rounds on, as the
+    /// game had it at the round's load on every console.
+    pub(super) infinite_rounds: bool,
+    /// PC port (user request): the host's Round Lock of a 1-Up, as the game had it at the
+    /// round's load on every console (0 without one).
+    pub(super) round_lock: u32,
+    /// The host ended it (`ServerMessage::ChallengeEnded`) and no tick has counted that yet:
+    /// the local skater's facts say so until one does ([`FactsNotes::ended`]).
+    end_pending: bool,
+    /// A tick's notes counted the host's end, the same tick on every console.
+    pub(super) ended: bool,
+    /// The challenge has still to take the end (it takes none before its first turn): asked
+    /// again at each tick.
+    end_due: bool,
+    /// PC port (user request): a Spot Battle, which takes in the players who join it in play.
+    spot_battle: bool,
+    /// A player waits to join it (`ServerMessage::ChallengeJoining`): the battle's next turn
+    /// does not start, and its state goes to the server instead.
+    join_wanted: bool,
+    /// The state this battle starts from (`ServerMessage::ChallengeCarry`), until it starts: one
+    /// the server loaded again for a player who joined the battle before it.
+    carry: Option<Vec<u8>>,
 }
 
 impl Round {
@@ -357,6 +395,7 @@ impl Round {
             stance,
             unpinned: None,
             turns: 0,
+            script_pinned: false,
             camera_player: None,
             sync: None,
             released: BTreeSet::new(),
@@ -370,6 +409,22 @@ impl Round {
             speech_seen: BTreeMap::new(),
             nis_delivered: 0,
             speech_delivered: BTreeMap::new(),
+            infinite_rounds: false,
+            round_lock: 0,
+            end_pending: false,
+            ended: false,
+            end_due: false,
+            spot_battle: false,
+            join_wanted: false,
+            carry: None,
+        }
+    }
+
+    /// The host ended the challenge: an infinite battle still in play takes it at the tick the
+    /// next facts' notes name.
+    fn host_ended(&mut self) {
+        if self.infinite_rounds && !self.ended && matches!(self.stage, Stage::Loading { .. } | Stage::Running) {
+            self.end_pending = true;
         }
     }
 
@@ -443,6 +498,11 @@ impl Round {
         self.running() && self.local_contributes()
     }
 
+    /// The challenge's last pin of the local skater (`cMsgPinPlayer`) pinned it.
+    pub(super) const fn script_pinned(&self) -> bool {
+        self.script_pinned
+    }
+
     /// Whether the round follows the local skater (`Online.SwitchCamera`). A turn-based challenge
     /// switches every console to the turn's player at the same tick, and no challenge everyone
     /// plays at once switches at all, so while the local skater plays, the others watch it.
@@ -514,7 +574,7 @@ impl Round {
     /// What the local skater's next facts tell every console.
     fn notes(&self) -> FactsNotes {
         let left = self.leaving.iter().filter_map(|&user_id| self.player_index(user_id)).filter_map(|index| u8::try_from(index).ok()).collect();
-        FactsNotes { votes: self.votes.iter().map(|(&player, &score)| (player, score)).collect(), left, ..FactsNotes::default() }
+        FactsNotes { votes: self.votes.iter().map(|(&player, &score)| (player, score)).collect(), left, ended: self.end_pending, ..FactsNotes::default() }
     }
 
     /// The frame a player stands at for a tick it sends no facts for.
@@ -682,6 +742,14 @@ impl Round {
                     disconnects.push(player);
                 }
             }
+            if note.ended && self.infinite_rounds && !self.ended {
+                trace(format_args!("tick {tick}: the host ended the challenge"));
+                self.ended = true;
+                self.end_due = true;
+            }
+        }
+        if self.ended {
+            self.end_pending = false;
         }
         frames.retain(|frame| !disconnects.contains(&frame.player));
         for frame in &frames {
@@ -746,6 +814,98 @@ impl Round {
         }
         self.contributors = next;
     }
+}
+
+/// A Spot Battle's state as it travels (`ClientMessage::Carry`, PC port addition): its players
+/// by user id, as the battle it restarts has another table. Version 1: the round; the turn
+/// order with how many of it have had this round's turn; the players from the best rank down
+/// with score and bonus objective; the highest vote.
+const CARRY_VERSION: u8 = 1;
+
+/// The battle's state for the server, its players named by user id; `None` if it names a
+/// player the table has not.
+fn encode_carry(carry: &SpotBattleCarry, players: &[u64]) -> Option<Vec<u8>> {
+    use skate2_net::codec::Writer;
+    let user = |index: i32| usize::try_from(index).ok().and_then(|index| players.get(index)).copied();
+    let mut w = Writer::new();
+    w.u8(CARRY_VERSION);
+    w.varint(u64::try_from(carry.round).ok()?);
+    w.u8(u8::try_from(carry.played).ok()?);
+    w.u8(u8::try_from(carry.order.len()).ok()?);
+    for &index in &carry.order {
+        w.u64(user(index)?);
+    }
+    w.u8(u8::try_from(carry.ranking.len()).ok()?);
+    for &(index, score, bonus) in &carry.ranking {
+        w.u64(user(index)?);
+        w.signed(i64::from(score));
+        w.u8(u8::from(bonus));
+    }
+    match carry.vote.and_then(|(score, index)| Some((score, user(index)?))) {
+        Some((score, voted)) => {
+            w.u8(1);
+            w.signed(i64::from(score));
+            w.u64(voted);
+        }
+        None => w.u8(0),
+    }
+    Some(w.into_vec())
+}
+
+/// The state a restarted battle starts from, for its own table: the carried players in their
+/// turn order, then the players who joined, so a joiner goes last in the round it joins; the
+/// same for the ranks, a joiner with no score behind the players it joins. A carried player no
+/// longer in the table is left out. `None` for bytes that are no such state.
+fn decode_carry(data: &[u8], players: &[u64]) -> Option<SpotBattleCarry> {
+    use skate2_net::codec::Reader;
+    let index = |user_id: u64| players.iter().position(|&player| player == user_id).and_then(|index| i32::try_from(index).ok());
+    let mut r = Reader::new(data);
+    if r.u8().ok()? != CARRY_VERSION {
+        return None;
+    }
+    let round = i32::try_from(r.varint().ok()?).ok().filter(|&round| round >= 1)?;
+    let played = usize::from(r.u8().ok()?);
+    let mut carry = SpotBattleCarry { round, ..SpotBattleCarry::default() };
+    let count = usize::from(r.u8().ok()?);
+    if count > MAX_PLAYERS {
+        return None;
+    }
+    for position in 0..count {
+        let Some(player) = index(r.u64().ok()?) else { continue };
+        if carry.order.contains(&player) {
+            return None;
+        }
+        carry.order.push(player);
+        if position < played {
+            carry.played += 1;
+        }
+    }
+    let count = usize::from(r.u8().ok()?);
+    if count > MAX_PLAYERS {
+        return None;
+    }
+    for _ in 0..count {
+        let (user_id, score, bonus) = (r.u64().ok()?, i32::try_from(r.signed().ok()?).ok()?, r.u8().ok()? != 0);
+        let Some(player) = index(user_id) else { continue };
+        if carry.ranking.iter().any(|&(ranked, _, _)| ranked == player) {
+            return None;
+        }
+        carry.ranking.push((player, score, bonus));
+    }
+    if r.u8().ok()? != 0 {
+        let (score, voted) = (i32::try_from(r.signed().ok()?).ok()?, r.u64().ok()?);
+        carry.vote = index(voted).map(|player| (score, player));
+    }
+    r.finish().ok()?;
+    for player in 0..i32::try_from(players.len()).ok()? {
+        if !carry.order.contains(&player) {
+            carry.order.push(player);
+        }
+        if !carry.ranking.iter().any(|&(ranked, _, _)| ranked == player) {
+            carry.ranking.push((player, 0, false));
+        }
+    }
+    Some(carry)
 }
 
 /// The players back end of an online challenge (`StateOnlineGame::UpdateGameInfo` 0x827538c8):
@@ -834,6 +994,30 @@ fn trace_due() -> bool {
 }
 
 impl super::Online {
+    /// PC port addition, Skate During Turn Wait: the game's session marker (`marker`) for this
+    /// tick, by [`SelectedLiveSession::online_turn_wait_state`]: the wait's own while the skater
+    /// skates through another player's turn, the challenge's from the moment that ends. Whether
+    /// the wait's stands in now.
+    pub(in super::super) fn swap_turn_wait_marker(&mut self, (free, in_round): (bool, bool), marker: &mut Option<crate::session_marker::SessionMarker>) -> bool {
+        match (free, self.held_marker.take()) {
+            (true, None) => {
+                let wait = self.turn_wait_marker.take().unwrap_or_else(crate::session_marker::SessionMarker::construct);
+                self.held_marker = Some(std::mem::replace(marker, Some(wait)));
+                trace(format_args!("skate during turn wait: the wait's session marker stands in"));
+            }
+            (false, Some(held)) => {
+                self.turn_wait_marker = std::mem::replace(marker, held);
+                trace(format_args!("skate during turn wait: the challenge's session marker is back"));
+            }
+            (_, held) => self.held_marker = held,
+        }
+        // A round's end takes the wait's marker with it: the next round is another place.
+        if !in_round {
+            self.turn_wait_marker = None;
+        }
+        self.held_marker.is_some()
+    }
+
     /// Whether the round's Leave Challenge is offered: the local player plays it and has not
     /// finished it (PC port addition).
     pub(in super::super) fn can_leave_challenge(&self) -> bool {
@@ -871,6 +1055,14 @@ impl<T, C> SelectedLiveSession<T, C> {
                 _ => Phase::LobbySkate,
             };
             game.participants.clone_from(&players);
+            // PC port: the host's end was the last challenge's.
+            if kind != reset::CHALLENGE {
+                game.challenge_ended = false;
+            }
+        }
+        // A carried state is the next load's alone.
+        if kind == reset::LOBBY_SKATE {
+            self.online.carry = None;
         }
         self.online.lobby_hud_dirty = true;
         match kind {
@@ -935,7 +1127,19 @@ impl<T, C> SelectedLiveSession<T, C> {
         let stance = Arc::new(Mutex::new([true; MAX_PLAYERS]));
         let backend = self.online_players_backend(&players, local, &stance)?;
         let local = i32::try_from(local).unwrap_or(0);
-        let online = OnlineChallenge { local_player: local, players: i32::try_from(players.len()).unwrap_or(0), ..OnlineChallenge::default() };
+        // PC port: the host's Infinite Rounds, a Spot Battle's. The option changes in lobby skate
+        // only and every member hears it before this load, so every console loads alike.
+        let infinite_rounds = game_type == Some(OWN_THE_SPOT) && activity.is_none() && self.online.game.as_ref().is_some_and(|game| game.infinite_rounds);
+        // PC port: the host's Round Lock, a 1-Up's that runs Skate 3's graph, where the 1-Up has
+        // a round start of its number (none without one); every console reads the same game and
+        // data.
+        let round_lock = if own_graph && net_type == skate2_net::protocol::challenge::ONE_UP {
+            let rounds = crate::skate3::linked().map_or(0, |data| data.one_up_rounds(challenge));
+            self.online.game.as_ref().map(|game| game.round_lock).filter(|&round| round <= rounds).unwrap_or(0)
+        } else {
+            0
+        };
+        let online = OnlineChallenge { local_player: local, players: i32::try_from(players.len()).unwrap_or(0), infinite_rounds, round_lock, ..OnlineChallenge::default() };
         self.start_online_challenge_load(challenge, Arc::new(backend), online)?;
         trace(format_args!("loading challenge {challenge:016x} as player {local} of {}", players.len()));
         let turn_based = game_type.is_some_and(|kind| matches!(kind, 4 | 9 | 31 | 32));
@@ -947,6 +1151,15 @@ impl<T, C> SelectedLiveSession<T, C> {
         };
         round.stall_reports = game_type == Some(SKATE);
         round.own_graph = own_graph;
+        round.infinite_rounds = infinite_rounds;
+        round.round_lock = round_lock;
+        if round_lock != 0 {
+            trace(format_args!("the 1-Up's rounds are locked to round {round_lock}"));
+        }
+        // PC port: a Spot Battle takes joiners in, and one loaded again for a joiner starts from
+        // the state the server sent ahead of this load.
+        round.spot_battle = game_type == Some(OWN_THE_SPOT) && round.activity.is_none() && !own_graph;
+        round.carry = self.online.carry.take().filter(|_| round.spot_battle);
         self.online.round = Some(round);
         Ok(())
     }
@@ -1060,11 +1273,22 @@ impl<T, C> SelectedLiveSession<T, C> {
         let round = self.online.round.as_mut().ok_or_else(|| error("round absent"))?;
         round.start(players, local);
         let challenge = round.challenge;
+        let infinite_rounds = round.infinite_rounds;
+        let round_lock = round.round_lock;
+        let carry_wanted = round.spot_battle && round.join_wanted;
+        let restore = round.carry.take().and_then(|data| {
+            let restore = decode_carry(&data, &round.players);
+            match &restore {
+                Some(carry) => trace(format_args!("the battle goes on from round {}, {} of {} turns played", carry.round, carry.played, carry.order.len())),
+                None => trace(format_args!("the battle's carried state ({} bytes) does not read: it starts at its first round", data.len())),
+            }
+            restore
+        });
         let career = self.career.as_mut().ok_or_else(|| error("online challenge system absent"))?;
         let world = career.system.world_mut();
         world.players = Some(Arc::new(backend));
         world.local_player = local;
-        world.online = Some(OnlineChallenge { local_player: local, players: count, ..OnlineChallenge::default() });
+        world.online = Some(OnlineChallenge { local_player: local, players: count, infinite_rounds, round_lock, carry_wanted, restore, ..OnlineChallenge::default() });
         career.online_random = Some(random);
         career.start_online_main_challenge(challenge);
         trace(format_args!("challenge {challenge:016x} started as player {local} of {count}"));
@@ -1136,6 +1360,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     pub(in super::super) fn pop_all_front_end_states(&mut self) -> Result<(), SelectedLiveError> {
         // The music player, then Options (`OnLeave` 0x8266af70) under it or on its own.
         self.audio.menu.close();
+        self.audio.add_song = None;
         self.options_menu.leave();
         self.skate_profile.close();
         // `FrontEndState_OnlineHubMenu::OnLeave` (0x82661228) closes its popup with its screen.
@@ -1349,10 +1574,57 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.online_spectated().map(|remote| remote.user_id)
     }
 
+    /// PC port addition, Skate During Turn Wait (Online Settings): whether the local skater skates
+    /// freely now, its own camera shown in a corner while the screen follows another player's
+    /// turn. Only while the view is on that player's camera (no scene plays), the round runs and
+    /// the challenge is not teleporting the local skater: a teleporting player's facts pace the
+    /// round, so the skater must stand as the challenge left it from the teleport's start. A
+    /// waiting player sends no facts and the round reads it at its last ones without their events
+    /// (`standing_frame`), so nothing it does counts; the other consoles stop drawing it once it
+    /// leaves its spot (`update_spectator_spots`), and at once where its frames say it skates so
+    /// (`remote_skater::TURN_WAIT_FLAG`).
+    pub(in super::super) fn online_skates_while_waiting(&self) -> bool {
+        if !self.options_menu.skate_during_turn_wait() || self.online.spectate.is_some() {
+            return false;
+        }
+        let Some(round) = self.online.round.as_ref().filter(|round| round.turn_based && round.running()) else { return false };
+        let teleporting = usize::try_from(round.local).ok().is_some_and(|local| {
+            self.career
+                .as_ref()
+                .and_then(|career| career.system.world().online.as_ref())
+                .is_some_and(|online| online.teleporting.get(local).copied().unwrap_or(false))
+        });
+        !teleporting && matches!(self.online_view(), Some((OnlineView::Player(player), ..)) if player != round.local)
+    }
+
+    /// PC port addition, Skate During Turn Wait: whether the local skater's own view shows in its
+    /// corner now. The corner draws over the HUD, so it stays away while a menu is up (the pause
+    /// menu, Options and its music player, the online hub): the skater skates on unseen.
+    pub(in super::super) fn online_turn_wait_preview(&self) -> bool {
+        self.online_skates_while_waiting()
+            && !self.pause_menu.snapshot().visible
+            && !self.options_menu.visible()
+            && !self.audio.menu.visible()
+            && !self.online_hub_open()
+    }
+
+    /// PC port addition, Skate During Turn Wait: the session marker of the wait. While the local
+    /// skater skates through another player's turn the game's marker is the wait's own, which the
+    /// skater sets and goes to as in a free skate (LB with the D-pad), and which it finds again at
+    /// its next wait of the round. The challenge's marker (none in a Spot Battle or a game of
+    /// S.K.A.T.E., `CreateSessionMarker` 0x82729c28) is held back meanwhile and stands again from
+    /// the moment the wait ends, untouched, so a turn plays with the marker the challenge gave it.
+    /// Whether the skater skates through a wait now, and whether a round is on: what
+    /// [`super::Online::swap_turn_wait_marker`] goes by.
+    pub(in super::super) fn online_turn_wait_state(&self) -> (bool, bool) {
+        (self.online_skates_while_waiting(), self.online.round.is_some())
+    }
+
     /// The challenge pinned or unpinned the local skater (`cMsgPinPlayer`).
     pub(in super::super) fn online_local_pinned(&mut self, pin: bool) {
         let tick = self.completed_frames;
         if let Some(round) = self.online.round.as_mut() {
+            round.script_pinned = pin;
             if pin {
                 round.unpinned = None;
             } else if round.unpinned.is_none() {
@@ -1454,6 +1726,58 @@ impl<T, C> SelectedLiveSession<T, C> {
         trace(format_args!("taken out of the challenge: every other player's round waited on this console's facts"));
         self.online.event_log.add(EventText::literal("You were removed from the challenge (out of sync).".to_owned()));
         self.abandon_online_round()
+    }
+
+    /// `ChallengeJoining` (PC port addition, user request): a player waits to join the Spot
+    /// Battle this console plays. Where the battle would start its next turn it holds instead and
+    /// its state goes to the server (`send_spot_battle_carry`), which loads the battle again
+    /// with the player in it.
+    pub(super) fn online_challenge_joining(&mut self) {
+        let Some(round) = self.online.round.as_mut().filter(|round| round.spot_battle) else { return };
+        trace(format_args!("a player waits to join the battle"));
+        round.join_wanted = true;
+        if matches!(round.stage, Stage::Running)
+            && let Some(online) = self.career.as_mut().and_then(|career| career.system.world_mut().online.as_mut())
+        {
+            online.carry_wanted = true;
+        }
+    }
+
+    /// `ChallengeCarry` (PC port addition): the state the battle about to load starts from.
+    pub(super) fn online_challenge_carry(&mut self, data: Vec<u8>) {
+        trace(format_args!("the next battle starts from a carried state ({} bytes)", data.len()));
+        self.online.carry = Some(data);
+    }
+
+    /// The battle held its next turn for a player waiting to join it
+    /// (`runtime::spot_battle_join`): its state goes to the server, its players named by user
+    /// id. The battle stays held until the server loads it again.
+    fn send_spot_battle_carry(&mut self) {
+        let Some(carry) = self.career.as_mut().and_then(|career| career.system.world_mut().online.as_mut()).and_then(|online| online.carry.take()) else { return };
+        let Some(round) = self.online.round.as_ref() else { return };
+        let session = round.session;
+        match encode_carry(&carry, &round.players) {
+            Some(data) => {
+                trace(format_args!("tick {}: the battle holds at round {} for a player joining it ({} bytes)", round.processed, carry.round, data.len()));
+                self.online.send(ClientMessage::Carry { session, data });
+            }
+            None => trace(format_args!("the battle's state names a player its table has not: {carry:?}")),
+        }
+    }
+
+    /// `ChallengeEnded` (PC port addition): the host ended a Spot Battle that runs under Infinite
+    /// Rounds. Every member's log says so; a console playing the battle hands it to its facts'
+    /// notes, and every console's battle ends from the tick they name.
+    pub(super) fn online_challenge_ended(&mut self) {
+        let Some(game) = self.online.game.as_mut() else { return };
+        game.challenge_ended = true;
+        self.online.lobby_hud_dirty = true;
+        if game.entered {
+            self.online.event_log.add(EventText::literal(HOST_ENDED_CHALLENGE.to_owned()));
+        }
+        if let Some(round) = self.online.round.as_mut() {
+            round.host_ended();
+        }
     }
 
     /// `ChallengeLeave` (PC port addition): a player left the round for the pre-game lobby, or the
@@ -1688,6 +2012,17 @@ impl<T, C> SelectedLiveSession<T, C> {
                             career.online_player_disconnected(player);
                         }
                     }
+                    // PC port: the host's end of an infinite Spot Battle, from the tick whose notes
+                    // named it; a battle still before its first turn takes it at a later tick, the
+                    // same one on every console.
+                    if self.online.round.as_ref().is_some_and(|round| round.end_due)
+                        && let Some(career) = self.career.as_mut()
+                        && career.online_host_ended()
+                        && let Some(round) = self.online.round.as_mut()
+                    {
+                        trace(format_args!("tick {}: the challenge took the host's end", round.processed));
+                        round.end_due = false;
+                    }
                     let lead = self.online.round.as_ref().filter(|round| round.local_contributes()).map_or(0, |round| round.produced.saturating_sub(round.processed));
                     let tick = self.online.round.as_ref().map_or(0, |round| round.processed);
                     if let Some(career) = self.career.as_mut() {
@@ -1707,6 +2042,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                         }
                     }
                     self.career_step(Some((frames, local, own)))?;
+                    self.send_spot_battle_carry();
                     self.take_held_presentation();
                     let voting = self.career.as_ref().is_some_and(|career| career.system.world().voting.in_voting());
                     // PC port: a Skate 3 graph began its turn player's turn, countdown or run at
@@ -2233,6 +2569,48 @@ mod tests {
     use super::{CATCH_UP_LEAD, CATCH_UP_TICKS, REFILL_LEAD, SMOOTH_LEAD, pace, ticks_for_lead};
 
     #[test]
+    fn a_turn_wait_has_its_own_session_marker() {
+        use crate::{session_marker::SessionMarker, skeleton_root_transforms::SkeletonRootMatrix};
+        let at = |x: f32| {
+            let mut matrix = [0.0; 16];
+            (matrix[0], matrix[5], matrix[10], matrix[15]) = (1.0, 1.0, 1.0, 1.0);
+            matrix[12] = x;
+            SkeletonRootMatrix::known(matrix)
+        };
+        let mut challenge = SessionMarker::construct();
+        challenge.set_forced(&at(10.0), 1, true);
+        let mut online = super::super::Online::default();
+        let mut marker = Some(challenge.clone());
+        // The skater's own turn: the challenge's marker stands.
+        assert!(!online.swap_turn_wait_marker((false, true), &mut marker));
+        assert_eq!(marker, Some(challenge.clone()));
+        // A wait begins: a marker of its own, not yet set.
+        assert!(online.swap_turn_wait_marker((true, true), &mut marker));
+        assert_eq!(marker.as_ref().and_then(SessionMarker::get), None);
+        marker.as_mut().unwrap().set_forced(&at(50.0), 0, true);
+        let wait = marker.clone();
+        assert!(online.swap_turn_wait_marker((true, true), &mut marker));
+        assert_eq!(marker, wait, "the wait's marker stays through the wait");
+        // The wait ends: the challenge's marker is back as it was, and the next wait finds its own.
+        assert!(!online.swap_turn_wait_marker((false, true), &mut marker));
+        assert_eq!(marker, Some(challenge.clone()));
+        assert!(online.swap_turn_wait_marker((true, true), &mut marker));
+        assert_eq!(marker, wait);
+        // The round ends: the challenge's is back, and the wait's goes with the round.
+        assert!(!online.swap_turn_wait_marker((false, false), &mut marker));
+        assert_eq!(marker, Some(challenge));
+        assert!(online.swap_turn_wait_marker((true, true), &mut marker));
+        assert_eq!(marker.as_ref().and_then(SessionMarker::get), None);
+        // A game without a marker (a Spot Battle, S.K.A.T.E.) has one through a wait alone.
+        let mut online = super::super::Online::default();
+        let mut none = None;
+        assert!(online.swap_turn_wait_marker((true, true), &mut none));
+        assert!(none.is_some());
+        assert!(!online.swap_turn_wait_marker((false, true), &mut none));
+        assert_eq!(none, None);
+    }
+
+    #[test]
     fn a_few_ready_ticks_run_one_a_tick_and_a_backlog_catches_up() {
         assert_eq!(ticks_for_lead(0), 0);
         assert_eq!(ticks_for_lead(1), 1);
@@ -2298,6 +2676,104 @@ mod tests {
         round.leaving.clear();
         round.player_left(30);
         assert!(round.notes().left.is_empty());
+    }
+
+    /// A battle of users 10, 20 and 30 in round 2: 20 leads on 900 with the bonus objective and
+    /// the highest vote, 10 has 400, 30 nothing; the order is 10, 30, 20 and 10 has had its turn.
+    fn carried() -> super::SpotBattleCarry {
+        super::SpotBattleCarry { round: 2, order: vec![0, 2, 1], played: 1, ranking: vec![(1, 900, true), (0, 400, false), (2, 0, false)], vote: Some((3, 1)) }
+    }
+
+    /// The same table reads the state back as it was.
+    #[test]
+    fn a_battle_s_state_reads_back_for_the_same_players() {
+        let players = [10, 20, 30];
+        let data = super::encode_carry(&carried(), &players).expect("a state of the table's players");
+        assert!(data.len() <= skate2_net::protocol::MAX_CARRY);
+        assert_eq!(super::decode_carry(&data, &players), Some(carried()));
+    }
+
+    /// The battle restarted for a joiner has another table: 40 joined (and took the game's free
+    /// second slot, so every later player moved up one), and 30 left meanwhile. The joiner goes
+    /// last in the round and last on the board; the turn already had stays had.
+    #[test]
+    fn a_joiner_goes_last_in_the_round_it_joins() {
+        let data = super::encode_carry(&carried(), &[10, 20, 30]).expect("a state");
+        let restarted = super::decode_carry(&data, &[10, 40, 20]).expect("the state for the new table");
+        assert_eq!(restarted.round, 2);
+        assert_eq!(restarted.order, [0, 2, 1], "10, then 20, then the joiner");
+        assert_eq!(restarted.played, 1, "10's turn");
+        assert_eq!(restarted.ranking, [(2, 900, true), (0, 400, false), (1, 0, false)]);
+        assert_eq!(restarted.vote, Some((3, 2)), "20's, under its new index");
+        // Every player of the old order has had its turn: the joiner still plays this round.
+        let done = super::SpotBattleCarry { played: 3, ..carried() };
+        let data = super::encode_carry(&done, &[10, 20, 30]).expect("a state");
+        let restarted = super::decode_carry(&data, &[10, 20, 30, 40]).expect("the state for the new table");
+        assert_eq!((restarted.order.as_slice(), restarted.played), (&[0, 2, 1, 3][..], 3), "the joiner is the round's fourth turn");
+        // A player whose vote led has left: no one's vote leads.
+        let data = super::encode_carry(&carried(), &[10, 20, 30]).expect("a state");
+        assert_eq!(super::decode_carry(&data, &[10, 30]).expect("the state").vote, None);
+    }
+
+    /// Bytes that are no such state start the battle afresh rather than half of one.
+    #[test]
+    fn bytes_that_are_no_state_read_as_none() {
+        let players = [10, 20, 30];
+        let data = super::encode_carry(&carried(), &players).expect("a state");
+        assert_eq!(super::decode_carry(&[], &players), None);
+        assert_eq!(super::decode_carry(&data[..data.len() - 1], &players), None, "cut short");
+        let mut longer = data.clone();
+        longer.push(0);
+        assert_eq!(super::decode_carry(&longer, &players), None, "bytes left over");
+        let mut other = data.clone();
+        other[0] = 2;
+        assert_eq!(super::decode_carry(&other, &players), None, "another version");
+        let twice = super::SpotBattleCarry { order: vec![0, 0, 1], ..carried() };
+        let data = super::encode_carry(&twice, &players).expect("it codes");
+        assert_eq!(super::decode_carry(&data, &players), None, "a player twice in the order");
+        assert_eq!(super::encode_carry(&super::SpotBattleCarry { order: vec![0, 5], ..carried() }, &players), None, "a player the table has not");
+    }
+
+    /// The host's end of an infinite battle rides the pacing player's facts until a tick counts
+    /// it, once; a battle with its rounds takes none.
+    #[test]
+    fn the_host_s_end_rides_the_facts_to_one_tick() {
+        let stance = std::sync::Arc::new(std::sync::Mutex::new([true; super::MAX_PLAYERS]));
+        let frame = |player: i32| super::MissionFrame { player, local: player == 0, ..Default::default() };
+        let mut round = super::Round::loading(1, 0, None, vec![10, 20], 0, super::FactsScope::ALL, true, std::sync::Arc::clone(&stance));
+        round.start(vec![10, 20], 0);
+        round.host_ended();
+        assert!(!round.notes().ended, "a battle with its rounds has no end to take from its host");
+        round.infinite_rounds = true;
+        round.contributors = 0b01;
+        assert!(!round.notes().ended);
+        round.host_ended();
+        assert!(round.notes().ended);
+        // A tick whose facts went out before the end reached this console does not count it.
+        round.local_frames.insert(0, (frame(0), frame(0), super::FactsNotes::default()));
+        round.local_frames.insert(1, (frame(0), frame(0), round.notes()));
+        round.local_frames.insert(2, (frame(0), frame(0), round.notes()));
+        assert!(round.next_tick().is_some());
+        assert!(!round.ended && !round.end_due && round.notes().ended);
+        assert!(round.next_tick().is_some());
+        assert!(round.ended && round.end_due, "the tick whose notes name the end");
+        assert!(!round.notes().ended, "later facts say nothing more of it");
+        round.end_due = false;
+        assert!(round.next_tick().is_some());
+        assert!(!round.end_due, "a note of an end already counted counts for nothing");
+        round.host_ended();
+        assert!(!round.notes().ended);
+        // Another console, watching: the turn player's facts bring it the end.
+        let mut watching = super::Round::loading(1, 0, None, vec![10, 20], 1, super::FactsScope::ALL, true, stance);
+        watching.start(vec![10, 20], 1);
+        watching.infinite_rounds = true;
+        watching.contributors = 0b01;
+        watching.stints[0] = 1;
+        let mut facts = super::PlayerFacts::new(super::FactsScope::ALL);
+        facts.frames.insert((1, 0), (frame(0), super::FactsNotes { ended: true, ..Default::default() }));
+        watching.others.insert(10, facts);
+        assert!(watching.next_tick().is_some());
+        assert!(watching.ended && watching.end_due);
     }
 
     /// A stall the console let go skips the local skater's facts over its ticks: every console,

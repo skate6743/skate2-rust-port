@@ -1696,6 +1696,44 @@ mod tests {
         assert_eq!(at(element::TINT_OVERRIDE, 5.0), 0.0);
     }
 
+    /// The downloadable content's camera files, when `SKATE2_DLC_DIR` names a folder of Skate
+    /// 2's packages: every `ice_NNN.bin` of every archive reads. (Skate 3's packs hold files of
+    /// the same names with that game's elements, which do not.)
+    #[test]
+    #[ignore = "needs SKATE2_DLC_DIR"]
+    fn content_camera_files_read() {
+        use crate::mount::{ArchiveSource, MountedBig};
+        use crate::stfs::StfsPackage;
+        let Some(dir) = std::env::var_os("SKATE2_DLC_DIR") else { return };
+        let mut failed = 0;
+        for path in std::fs::read_dir(dir).unwrap().flatten().map(|entry| entry.path()) {
+            let Ok(package) = StfsPackage::open(&path) else { continue };
+            for entry in package.root_files().filter(|entry| entry.name.to_ascii_lowercase().ends_with(".big")) {
+                let Ok(big) = MountedBig::open_source(ArchiveSource::Package(package.file(entry).unwrap())) else { continue };
+                for number in 0..=32 {
+                    let name = format!("data\\scene\\ice_{number:03}.bin");
+                    let Some(found) = big.archive().find_path(&name) else { continue };
+                    let bytes = match big.read_entry(found) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            failed += 1;
+                            eprintln!("{} {} {name}: {error}", path.file_name().unwrap().to_string_lossy(), entry.name);
+                            continue;
+                        }
+                    };
+                    match CameraSet::parse(&bytes) {
+                        Ok(set) => eprintln!("{} {} {name}: {} bytes, {} groups", path.file_name().unwrap().to_string_lossy(), entry.name, bytes.len(), set.groups.len()),
+                        Err(error) => {
+                            failed += 1;
+                            eprintln!("{} {} {name}: {} bytes, {error}", path.file_name().unwrap().to_string_lossy(), entry.name, bytes.len());
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(failed, 0);
+    }
+
     #[test]
     fn the_anchor_space_offsets_the_anchor_or_the_avatar_below_it() {
         let mut spaces = Spaces { anchor: Some([1.0, 2.0, 3.0]), ..Spaces::default() };

@@ -171,6 +171,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 }
                 eprintln!("travel: additional world {held} unloaded");
                 self.additional_location = None;
+                self.try_reset_living_world_for_travel()?;
             }
         }
         let Some((file, location)) = target else { return Ok(WorldReadiness::Ready) };
@@ -188,9 +189,46 @@ impl<T, C> SelectedLiveSession<T, C> {
         }
         let loaded = terrain.try_poll_additional_world().map_err(error)?;
         if loaded {
+            let arrived = self.additional_location != Some(location);
             self.additional_location = Some(location);
+            // A linked Skate 3 map stands where San Vanelona does, whose ground it takes.
+            if arrived && crate::skate3::is_district_world(&file) {
+                self.try_reset_living_world_for_travel()?;
+            }
         }
         Ok(if loaded { WorldReadiness::Ready } else { WorldReadiness::Pending })
+    }
+
+    /// PC port: the living world's reset (`LivingWorld::Manager::Reset` 0x8271d3d8, as a game's
+    /// unload makes it) once a travel has unloaded an additional world, and once it has loaded
+    /// one that stands in San Vanelona's place. A streamed locator chunk's removal leaves its
+    /// objects to the census (`RemoveStreamedLocatorData` 0x82d3d618 culls them only for a chunk
+    /// whose asset flags ask), which culls by distance; a linked Skate 3 data's maps lie over one
+    /// another round the origin, where San Vanelona has ground of its own, so the objects,
+    /// pedestrians and vehicles of the world that left stood in the next one's air and fell onto
+    /// it. In an online game the living world stays the network game's, which spawns none.
+    /// Without a frame to reset (a saved replay's world, loaded before its game) there is nothing
+    /// out.
+    fn try_reset_living_world_for_travel(&mut self) -> Result<(), SelectedLiveError> {
+        let network_game = self.online.game.as_ref().is_some_and(|game| game.entered);
+        let reset = self.inner.try_with_selected_queued_frame(|frame, _, _| {
+            let (Some(living), Some(recipes)) = (frame.living_world, frame.living_world_recipes.as_ref()) else {
+                return Ok(false);
+            };
+            living
+                .try_reset_game(frame.world, frame.actor, frame.cvars, recipes, network_game)
+                .map(|()| true)
+                .map_err(|e| format!("travel LivingWorld reset: {e:?}"))
+        });
+        match reset {
+            Ok(done) => {
+                if done.map_err(error)? {
+                    eprintln!("travel: living world reset");
+                }
+            }
+            Err(missing) => eprintln!("travel: no living world reset ({missing:?})"),
+        }
+        Ok(())
     }
 
     /// Whether the travel's world is in place and `presented` (the additional world the

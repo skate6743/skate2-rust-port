@@ -3,6 +3,7 @@
 //! HID controllers), elsewhere every pad, Xbox pads and a Steam Deck's controls included. A
 //! PlayStation pad's sample is the XInput state DS4Windows 1.4 gave its virtual Xbox 360 pad, so
 //! the native pad conversion in core reads what it read there; an Xbox pad's is the pad's own.
+use crate::pad_delay::History;
 use sdl3::gamepad::{Axis, Button, Gamepad, GamepadType};
 use skate2_core::{PadVibration, XboxPadSample};
 use std::{
@@ -69,6 +70,9 @@ struct Shared {
     ready: bool,
     /// The connected pads, in the order they connected.
     pads: Vec<Pad>,
+    /// Each connected pad's packet numbers and samples over the last moments, for Control
+    /// Settings' Input Delay (`crate::pad_delay`).
+    histories: Vec<(u32, History<(u32, XboxPadSample)>)>,
     /// The vibration the game last set on each pad.
     vibration: Vec<(u32, PadVibration)>,
 }
@@ -111,8 +115,9 @@ impl SdlPads {
     }
 
     /// The pad shown in a slot XInput found empty: the one already there, else the first pad
-    /// not shown in another slot. Its packet number and sample.
-    pub(crate) fn claim(&mut self, index: u32) -> Option<(u32, XboxPadSample)> {
+    /// not shown in another slot. Its packet number and sample, as they were at `then` when the
+    /// poll reads the past (`crate::pad_delay::ReadTime`).
+    pub(crate) fn claim(&mut self, index: u32, then: Option<Instant>) -> Option<(u32, XboxPadSample)> {
         let slot = usize::try_from(index)
             .ok()
             .filter(|slot| *slot < self.slots.len())?;
@@ -131,7 +136,12 @@ impl SdlPads {
             })
             .copied();
         self.slots[slot] = pad.map(|pad| pad.id);
-        pad.map(|pad| (pad.packet, pad.sample))
+        let pad = pad?;
+        let delayed = then.and_then(|then| {
+            let (_, history) = shared.histories.iter().find(|(id, _)| *id == pad.id)?;
+            history.as_of(then)
+        });
+        Some(delayed.unwrap_or((pad.packet, pad.sample)))
     }
 
     /// XInput lists a pad in this slot; one of ours shown there moves to the next free slot.
@@ -267,6 +277,8 @@ fn run(shared: &SharedState, stop: &AtomicBool) -> Result<(), sdl3::Error> {
             eprintln!("diagnostic SDL gamepads: {names:?}");
         }
         state.pads.clear();
+        state.histories.retain(|(id, _)| open.iter().any(|pad| pad.id == *id));
+        let now = Instant::now();
         for pad in &mut open {
             let sample = sample(&pad.gamepad, pad.sticks);
             if pad.sample != Some(sample) {
@@ -278,6 +290,12 @@ fn run(shared: &SharedState, stop: &AtomicBool) -> Result<(), sdl3::Error> {
                 sample,
                 packet: pad.packet,
             });
+            if !state.histories.iter().any(|(id, _)| *id == pad.id) {
+                state.histories.push((pad.id, History::default()));
+            }
+            if let Some((_, history)) = state.histories.iter_mut().find(|(id, _)| *id == pad.id) {
+                history.record(now, (pad.packet, sample));
+            }
         }
         state
             .vibration

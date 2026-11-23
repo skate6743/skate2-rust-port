@@ -13,8 +13,11 @@ pub mod path;
 pub mod path_track;
 pub mod sfx;
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::custom_song::CustomSongPlayer;
 use crate::formats::pathfinder::MapFile;
 use crate::nicotine::MixMap;
 use crate::player::physics::point_graph;
@@ -573,6 +576,11 @@ pub struct MusicSystem {
     music_player_index: i32,
     /// `AudioAssetManager` loads of the map files: (load id, the file, its bytes once loaded).
     asset_loads: Vec<(u32, &'static str, Option<Arc<[u8]>>)>,
+    /// PC port: the music player's custom songs (`custom_song`): each one's file by its song id,
+    /// the one playing as the iPod state's song, and whether a movie holds the music paused.
+    custom_songs: HashMap<u32, PathBuf>,
+    custom_player: Option<CustomSongPlayer>,
+    movie_pause: bool,
 }
 
 impl Default for MusicSystem {
@@ -668,6 +676,37 @@ impl MusicSystem {
             music_player_songs: Vec::new(),
             music_player_index: 0,
             asset_loads: Vec::new(),
+            custom_songs: HashMap::new(),
+            custom_player: None,
+            movie_pause: false,
+        }
+    }
+
+    /// PC port: the music player's custom songs, each one's id and file.
+    pub fn set_custom_songs(&mut self, songs: &[(u32, PathBuf)]) {
+        self.custom_songs = songs.iter().cloned().collect();
+    }
+
+    /// PC port: the custom song playing is let go.
+    fn stop_custom_song(&mut self, core: &mut AudioCore) {
+        if let Some(player) = self.custom_player.take() {
+            player.stop(core);
+        }
+    }
+
+    /// PC port: a custom song plays only as the iPod state's song, and holds its place while the
+    /// music is paused as the stream's songs do.
+    fn update_custom_song(&mut self, core: &mut AudioCore) {
+        if self.custom_player.is_none() {
+            return;
+        }
+        if self.target_state.mode != mode::IPOD {
+            self.stop_custom_song(core);
+            return;
+        }
+        let paused = !self.enable_music || !self.music_system_turned_on() || self.paused || self.movie_pause;
+        if let Some(player) = self.custom_player.as_mut() {
+            player.set_paused(core, paused);
         }
     }
 
@@ -745,7 +784,8 @@ impl MusicSystem {
     /// `IsMusicPlaying` 0x824e9c88.
     #[must_use]
     pub fn is_music_playing(&self) -> bool {
-        self.enable_music && self.path.flags.current_node >= 0
+        // PC port: a custom song counts as the stream's songs do.
+        self.enable_music && (self.path.flags.current_node >= 0 || self.custom_player.as_ref().is_some_and(CustomSongPlayer::playing))
     }
 
     #[must_use]
@@ -804,6 +844,7 @@ impl MusicSystem {
     pub fn update(&mut self, dt: f32, io: &mut MusicIo<'_>) -> bool {
         self.update_asset_loads(io);
         let result = self.core_update(dt, io);
+        self.update_custom_song(io.core);
         if !self.first_init && self.has_stream_imp {
             self.cvars.reset_music = true;
             self.first_init = true;
@@ -1210,6 +1251,7 @@ impl MusicSystem {
 
     /// `StopStream` 0x82a7fa68.
     fn stop_stream(&mut self, io: &mut MusicIo<'_>) {
+        self.stop_custom_song(io.core);
         let mut snd = self.snd(io);
         self.path.clear_all_events(ALL_STREAM_TRACKS);
         self.path.pitch_mult(ALL_STREAM_TRACKS, 4096, &mut snd);
@@ -2049,14 +2091,26 @@ impl MusicSystem {
 
     /// `UpdateIPodState` 0x82506aa8.
     fn update_ipod_state(&mut self, io: &mut MusicIo<'_>) -> bool {
-        let mut playing = self.path.flags.current_node >= 0;
+        // PC port: a custom song plays in place of the stream's.
+        let mut playing = self.path.flags.current_node >= 0 || self.custom_player.as_ref().is_some_and(CustomSongPlayer::playing);
         let song = self.target_state.data[0];
         if self.current_state.data[0] != song {
             if playing {
                 self.stop_stream(io);
                 playing = false;
             }
-            if let Some(index) = find_song_index(&IPOD_SONGS, song as u32) {
+            self.stop_custom_song(io.core);
+            if let Some(file) = self.custom_songs.get(&(song as u32)).cloned() {
+                self.map_stream_channels(channel_map::STEREO_NORMAL, io);
+                self.reset_stream(io);
+                let target = self.destination_sub_mix.unwrap_or(io.master);
+                let mut volume = self.calc_volume(io.music_volume.as_ref(), io.vault);
+                if !self.enable_music || self.game_music_disabled() {
+                    volume = 0.0;
+                }
+                self.custom_player = Some(CustomSongPlayer::start(file, target, volume));
+                playing = true;
+            } else if let Some(index) = find_song_index(&IPOD_SONGS, song as u32) {
                 self.map_stream_channels(channel_map::STEREO_NORMAL, io);
                 self.reset_stream(io);
                 self.path.set_named_value(IPOD_TRACK, "ipod", index);
@@ -2530,6 +2584,10 @@ impl MusicSystem {
                 self.current_volume = volume;
             }
         }
+        // PC port: a custom song takes the same volume.
+        if let Some(player) = self.custom_player.as_mut() {
+            player.set_volume(io.core, volume.clamp(0.0, 1.0));
+        }
     }
 
     /// `UpdateDsp` 0x82506968.
@@ -2883,12 +2941,16 @@ impl MusicSystem {
 
     /// The Pathfinder timer and service task, from the core's `TIMERSTAGE_BEFORECOMMANDS` timer.
     pub fn path_timer(&mut self, core: &mut AudioCore, master: PluginRef, period: f32) {
-        let mut snd = SndIo { core, dry_submix: self.path.dry_submix.unwrap_or(master) };
+        let mut snd = SndIo { core: &mut *core, dry_submix: self.path.dry_submix.unwrap_or(master) };
         self.path.timer(period, &mut snd);
+        if let Some(player) = self.custom_player.as_mut() {
+            player.timer(core);
+        }
     }
 
     /// `PauseForMovie` 0x824f0a18's and `ResumeAfterMovie` 0x824f0a98's `PATH_pause`.
     pub fn pause_for_movie(&mut self, pause: bool, core: &mut AudioCore, master: PluginRef) {
+        self.movie_pause = pause;
         if self.active_stream_track != 0 {
             let pause = pause || !self.enable_music;
             let mut snd = SndIo { core, dry_submix: self.path.dry_submix.unwrap_or(master) };

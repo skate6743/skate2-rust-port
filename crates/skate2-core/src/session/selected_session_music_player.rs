@@ -5,12 +5,16 @@ use crate::{
     edit_skater_profile::{AudioProfile, EditSkaterProfileStore},
     ui::{
         controller_config,
+        custom_songs::{self, PickedSong, SongPrompt},
+        extras::TextInput,
         music_player::{self, profile_music_mode, Manager, MusicRequest},
         online_config::OnlineConfig,
         options::{Action, Controller, ProfileSettings},
         pause_menu::PauseMenuInput,
+        profile_name::Prompt,
     },
 };
+use std::path::PathBuf;
 
 fn error(e: impl std::fmt::Display) -> SelectedLiveError {
     SelectedLiveError::failed(SelectedLiveStage::PreupdateInput, e.to_string())
@@ -27,6 +31,21 @@ pub(super) struct ProfileAudio {
     pub(super) new_profile: bool,
     /// The audio system's `IAudioInterface`, when the host has one.
     pub(super) interface: Option<std::sync::Arc<dyn crate::nis::audio::AudioInterface>>,
+    /// PC port: the music player's Add Song while it runs, and its call for the host's file
+    /// picker.
+    pub(super) add_song: Option<AddSong>,
+    pub(super) pick_song: bool,
+}
+
+/// PC port: Add Song (`custom_songs`), from the host's file picker to the song's names.
+pub(super) enum AddSong {
+    /// The host's picker is open.
+    Picking,
+    /// The artist is asked for; the title follows, `title` suggested.
+    Artist { path: PathBuf, title: String, prompt: Prompt },
+    Title { path: PathBuf, artist: String, prompt: Prompt },
+    /// Why the file was not added, until a key closes it.
+    Failed(String),
 }
 
 impl Default for ProfileAudio {
@@ -40,6 +59,8 @@ impl Default for ProfileAudio {
             menu: music_player::Controller::default(),
             new_profile: false,
             interface: None,
+            add_song: None,
+            pick_song: false,
         }
     }
 }
@@ -75,6 +96,16 @@ impl ProfileAudio {
         party_play: bool,
     ) -> Result<OptionsOutcome, SelectedLiveError> {
         if self.menu.visible() {
+            // PC port: Add Song's picker and prompts take the screen's input; A and B answer a
+            // prompt as Enter and Escape do.
+            if self.add_song.is_some() {
+                if has_focus && input.select {
+                    self.custom_song_input(TextInput::Accept);
+                } else if has_focus && input.cancel {
+                    self.custom_song_input(TextInput::Cancel);
+                }
+                return Ok(OptionsOutcome::Shown);
+            }
             let manager = self.manager.as_mut().ok_or_else(|| error("music player catalogue absent"))?;
             if has_focus && self.menu.update(input, manager, &mut self.settings).map_err(error)? {
                 // PopState: Options' OnEnter reopens its screen.
@@ -82,6 +113,7 @@ impl ProfileAudio {
                 let video = options.snapshot().video;
                 options.open(true, video, &self.settings);
             }
+            self.custom_song_changes();
             return Ok(OptionsOutcome::Shown);
         }
         if !options.visible() {
@@ -106,6 +138,71 @@ impl ProfileAudio {
             }
         }
     }
+    /// PC port: what the music player did about custom songs: a removed song leaves
+    /// `custom_songs.json`, a changed playlist is written to it, and Add Song calls for the host's
+    /// file picker.
+    fn custom_song_changes(&mut self) {
+        let changes = self.menu.take_custom_song_changes();
+        for &song in &changes.removed {
+            if let Err(error) = custom_songs::remove(song) {
+                eprintln!("custom_songs.json could not be saved: {error}");
+            }
+        }
+        if changes.playlists
+            && let Some(manager) = &self.manager
+            && let Err(error) = custom_songs::store_playlists(&manager.profile)
+        {
+            eprintln!("custom_songs.json could not be saved: {error}");
+        }
+        if changes.add {
+            self.add_song = Some(AddSong::Picking);
+            self.pick_song = true;
+        }
+    }
+    /// PC port: a key in Add Song's prompt. Enter takes the artist, then the title, and adds the
+    /// song to the catalogue and the current playlist; Escape leaves without it.
+    fn custom_song_input(&mut self, input: TextInput) {
+        let Some(step) = self.add_song.take() else { return };
+        self.add_song = match step {
+            AddSong::Picking => Some(AddSong::Picking),
+            AddSong::Failed(message) => (!matches!(input, TextInput::Accept | TextInput::Cancel)).then_some(AddSong::Failed(message)),
+            AddSong::Artist { path, title, mut prompt } => {
+                prompt.input(input);
+                if prompt.take_cancelled() {
+                    None
+                } else if let Some(artist) = prompt.take_accepted() {
+                    Some(AddSong::Title { path, artist: artist.trim().to_owned(), prompt: Prompt::song(&title) })
+                } else {
+                    Some(AddSong::Artist { path, title, prompt })
+                }
+            }
+            AddSong::Title { path, artist, mut prompt } => {
+                prompt.input(input);
+                if prompt.take_cancelled() {
+                    None
+                } else if let Some(title) = prompt.take_accepted() {
+                    match custom_songs::add(&path, &artist, &title) {
+                        Ok(song) => {
+                            if let Some(manager) = self.manager.as_mut() {
+                                manager.add_custom_song(song.id);
+                                if let Err(error) = custom_songs::store_playlists(&manager.profile) {
+                                    eprintln!("custom_songs.json could not be saved: {error}");
+                                }
+                                self.menu.song_added(manager);
+                            }
+                            None
+                        }
+                        Err(message) => {
+                            self.menu.play_sound("FE_SOUND_CORE_ERROR");
+                            Some(AddSong::Failed(message))
+                        }
+                    }
+                } else {
+                    Some(AddSong::Title { path, artist, prompt })
+                }
+            }
+        };
+    }
     /// `FrontEndState_Options::RequestExit` 0x82681700: the music player's `mbIsDirty` folds
     /// into `mIsDirty`, which saves the profile (`RequestSave(eBeMemcardSave_Profile)`) when no
     /// main challenge runs or the game mode is Party Play. The PC rows save apart from it: the
@@ -129,10 +226,15 @@ impl ProfileAudio {
                 .and_then(|mut store| store.save_gameplay_modes(options.modes()))
                 .map_err(error)?;
         }
-        if options.lobby_chat_dirty() || options.ghost_players_dirty() {
-            OnlineConfig { show_lobby_chat: options.show_lobby_chat(), show_ghost_players: options.show_ghost_players(), ..OnlineConfig::load() }
-                .save()
-                .map_err(error)?;
+        if options.lobby_chat_dirty() || options.ghost_players_dirty() || options.skate_during_turn_wait_dirty() {
+            OnlineConfig {
+                show_lobby_chat: options.show_lobby_chat(),
+                show_ghost_players: options.show_ghost_players(),
+                skate_during_turn_wait: options.skate_during_turn_wait(),
+                ..OnlineConfig::load()
+            }
+            .save()
+            .map_err(error)?;
         }
         if options.sticks_dirty() {
             controller_config::save(&options.sticks()).map_err(error)?;
@@ -152,9 +254,57 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// `GetNumMusicPlayerSongs`), over which the profile's `tMusicPlayer` loads.
     pub fn set_music_catalogue(&mut self, catalogue: Vec<u32>) -> Result<(), SelectedLiveError> {
         let store = EditSkaterProfileStore::open(EditSkaterProfileStore::default_path().map_err(error)?).map_err(error)?;
-        let profile = store.load_music_player(&catalogue).map_err(error)?;
-        self.audio.manager = Some(Manager::new(profile, catalogue));
+        let mut profile = store.load_music_player(&catalogue).map_err(error)?;
+        // PC port: the custom songs of custom_songs.json come before the game's, in the playlists
+        // the file puts them in.
+        custom_songs::merge(&mut profile);
+        let mut songs = custom_songs::ids();
+        songs.extend(catalogue);
+        self.audio.manager = Some(Manager::new(profile, songs));
         Ok(())
+    }
+    /// PC port: whether the music player's Add Song called for the host's file picker since the
+    /// last call.
+    pub fn take_song_picker_request(&mut self) -> bool {
+        std::mem::take(&mut self.audio.pick_song)
+    }
+    /// PC port: the host's picker closed: on a song file (with the names it suggests) the artist
+    /// is asked for; without one (`None`) Add Song ends; a file that is no song says why.
+    pub fn custom_song_picked(&mut self, picked: Option<Result<PickedSong, String>>) {
+        if !matches!(self.audio.add_song, Some(AddSong::Picking)) {
+            return;
+        }
+        self.audio.add_song = match picked {
+            None => None,
+            Some(Ok(song)) => Some(AddSong::Artist { path: song.path, title: song.title, prompt: Prompt::song(&song.artist) }),
+            Some(Err(message)) => {
+                self.audio.menu.play_sound("FE_SOUND_CORE_ERROR");
+                Some(AddSong::Failed(message))
+            }
+        };
+    }
+    /// PC port: what Add Song shows over the music player.
+    #[must_use]
+    pub fn custom_song_prompt(&self) -> Option<SongPrompt> {
+        let field = |prompt: &Prompt| Some((prompt.text.clone(), prompt.cursor));
+        match self.audio.add_song.as_ref()? {
+            AddSong::Picking => None,
+            AddSong::Failed(message) => Some(SongPrompt { message: message.clone(), field: None, error: None }),
+            AddSong::Artist { prompt, .. } => {
+                Some(SongPrompt { message: "Enter the artist or band:".to_owned(), field: field(prompt), error: prompt.error.clone() })
+            }
+            AddSong::Title { prompt, .. } => {
+                Some(SongPrompt { message: "Enter the song's title:".to_owned(), field: field(prompt), error: prompt.error.clone() })
+            }
+        }
+    }
+    /// Whether Add Song's prompt takes the keyboard.
+    pub(super) fn custom_song_prompt_open(&self) -> bool {
+        matches!(self.audio.add_song, Some(AddSong::Artist { .. } | AddSong::Title { .. } | AddSong::Failed(_)))
+    }
+    /// A key in Add Song's prompt.
+    pub(super) fn custom_song_text_input(&mut self, input: TextInput) {
+        self.audio.custom_song_input(input);
     }
     /// `GetCurrentMusicPlayerSongID` and the `mCurrentSongIndex` the music system left after
     /// its update.

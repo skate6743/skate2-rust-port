@@ -121,7 +121,7 @@ impl<T, C> SelectedLiveSession<T, C> {
     /// the profile gave them. `SignPost` keeps what the profile has: the port's free-skate game
     /// does not load the progression the native's carries unchanged.
     fn save_free_skate_profile(&mut self) -> Result<(), SelectedLiveError> {
-        let system = self.freeskate.hulls.as_ref().ok_or_else(|| error("free skate game absent"))?;
+        let system = self.freeskate.system().ok_or_else(|| error("free skate game absent"))?;
         let unlocks = system.world().unlockables.save();
         let hulls = system.world().dynamic_hulls.save();
         let path = EditSkaterProfileStore::default_path().map_err(error)?;

@@ -4,7 +4,7 @@
 //! (`SendUnrankedMatchMessage` 0x826a85a0, `StateOnlinePlayNow`), the Lobby Browser (PC port
 //! addition) and the notices of failed sign-ins and searches.
 
-use super::{MatchRequest, OnlineNotice, SelectedLiveError, SelectedLiveSession, error, trace};
+use super::{LossReason, MatchRequest, OnlineNotice, SelectedLiveError, SelectedLiveSession, error, trace};
 use crate::online::catalog::{self, OnlineChallenge};
 use crate::ui::lobby_browser::Notice;
 use crate::ui::online_match::{Action, CustomMatch, FreeskateMatch, MatchChoice, SKATE2_POOL, SKATE3_DLC_POOL, SKATE3_POOL, Snapshot};
@@ -66,18 +66,79 @@ impl MatchScreen {
     }
 }
 
-/// The notice the Online options show for a failure.
-pub(super) const fn notice_text(notice: &OnlineNotice) -> &'static str {
+/// The notice the Online options show for a failure. A game that ended under the player names
+/// why on a line of its own under the original's text (PC port addition): the popup reads a
+/// label, a line break and a second label as both.
+pub(super) fn notice_text(notice: &OnlineNotice) -> String {
+    let with_reason = |text: &str, reason: &str| format!("{text}\n#Reason: {reason}");
     match notice {
-        OnlineNotice::SignInFailed => "ID_ONLINE_SIGNIN_FAILED_EA_SERVER",
-        OnlineNotice::NoMatch => "ID_SIDEKICK_ONLINE_QUICK_MATCH_NO_MATCH",
-        OnlineNotice::MatchFailed => "ID_ONLINE_MATCHMAKING_NOSERVER",
-        OnlineNotice::Disconnected => "ID_ONLINE_GAME_LEFT",
-        OnlineNotice::Kicked => "ID_ONLINE_KICKED_BY_GAME_HOST",
-        OnlineNotice::UpdateRequired => "#Your game doesn't match the server's version. Update the game to play online.",
-        OnlineNotice::NicknameNotPermitted => "#Nickname not permitted.",
+        OnlineNotice::SignInFailed => "ID_ONLINE_SIGNIN_FAILED_EA_SERVER".to_owned(),
+        OnlineNotice::NoMatch => "ID_SIDEKICK_ONLINE_QUICK_MATCH_NO_MATCH".to_owned(),
+        OnlineNotice::MatchFailed => "ID_ONLINE_MATCHMAKING_NOSERVER".to_owned(),
+        OnlineNotice::Disconnected(reason) => with_reason("ID_ONLINE_GAME_LEFT", &reason.name()),
+        // eSk8FEPopup_Online_Error_KickedInactivity.
+        OnlineNotice::Kicked(reason @ (LossReason::ChallengeTimeout | LossReason::InactivityTimeout)) => with_reason("ID_ONLINE_KICKED_INACTIVITY", &reason.name()),
+        OnlineNotice::Kicked(reason) => with_reason("ID_ONLINE_KICKED_BY_GAME_HOST", &reason.name()),
+        OnlineNotice::UpdateRequired => "#Your game doesn't match the server's version. Update the game to play online.".to_owned(),
+        OnlineNotice::NicknameNotPermitted => "#Nickname not permitted.".to_owned(),
         // ShowErrorDialog 0x825735d0: eSk8FEPopup_Online_Error_DLC_Required, ID_EANATION and OK.
-        OnlineNotice::DlcRequired => "ID_DLC_REQUIRED",
+        OnlineNotice::DlcRequired => with_reason("ID_DLC_REQUIRED", "Missing content"),
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::{LossReason, OnlineNotice, notice_text};
+    use skate2_net::client::Disconnect;
+    use skate2_net::protocol::leave;
+
+    #[test]
+    fn every_game_lost_names_its_reason() {
+        let reasons = [
+            LossReason::TimedOut,
+            LossReason::KickedByHost,
+            LossReason::Kicked,
+            LossReason::ChallengeTimeout,
+            LossReason::InactivityTimeout,
+            LossReason::Flood,
+            LossReason::Chat,
+            LossReason::HostRequest,
+            LossReason::Network,
+            LossReason::GameError,
+        ];
+        for reason in reasons {
+            for notice in [OnlineNotice::Disconnected(reason), OnlineNotice::Kicked(reason)] {
+                let text = notice_text(&notice);
+                let (label, line) = text.split_once('\n').expect("two lines");
+                assert!(label.starts_with("ID_ONLINE_"), "{text}");
+                assert_eq!(line, format!("#Reason: {}", reason.name()));
+                assert!(!reason.name().is_empty());
+            }
+        }
+        assert_eq!(notice_text(&OnlineNotice::Kicked(LossReason::KickedByHost)), "ID_ONLINE_KICKED_BY_GAME_HOST\n#Reason: Kicked by host");
+        assert_eq!(notice_text(&OnlineNotice::DlcRequired), "ID_DLC_REQUIRED\n#Reason: Missing content");
+    }
+
+    #[test]
+    fn the_timeouts_name_the_server_s_limits() {
+        assert_eq!(LossReason::of_kick(leave::KICKED_FOR_INACTIVITY), LossReason::ChallengeTimeout);
+        assert_eq!(LossReason::of_kick(leave::KICKED_FOR_IDLE), LossReason::InactivityTimeout);
+        assert_eq!(notice_text(&OnlineNotice::Kicked(LossReason::ChallengeTimeout)), "ID_ONLINE_KICKED_INACTIVITY\n#Reason: 5 second challenge timeout");
+        assert_eq!(notice_text(&OnlineNotice::Kicked(LossReason::InactivityTimeout)), "ID_ONLINE_KICKED_INACTIVITY\n#Reason: 60 second inactivity timeout");
+    }
+
+    /// A ban closes the connection without a word, so the game hears a timeout; whatever else
+    /// the server closes as a lost connection reads the same.
+    #[test]
+    fn a_ban_reads_as_a_connection_that_timed_out() {
+        let timeout = "ID_ONLINE_GAME_LEFT\n#Reason: Connection timed out";
+        for end in [Disconnect::TimedOut, Disconnect::Closed(leave::LOST_CONNECTION), Disconnect::Closed(leave::QUIT), Disconnect::Closed(200)] {
+            assert_eq!(notice_text(&OnlineNotice::Disconnected(LossReason::of(&end))), timeout, "{end:?}");
+        }
+        assert_eq!(LossReason::of(&Disconnect::Closed(leave::KICKED_FOR_FLOOD)), LossReason::Flood);
+        assert_eq!(LossReason::of(&Disconnect::Closed(leave::KICKED_FOR_CHAT)), LossReason::Chat);
+        assert_eq!(LossReason::of(&Disconnect::Closed(leave::KICKED_FOR_HOST_REQUEST)), LossReason::HostRequest);
+        assert_eq!(LossReason::of(&Disconnect::Network("socket".into())), LossReason::Network);
     }
 }
 
@@ -244,7 +305,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             if matches!(self.online.screen, Some(MatchScreen::Quick)) {
                 self.online.screen = None;
             }
-            reel.online_notice(notice_text(notice));
+            reel.online_notice(&notice_text(notice));
         }
         if let Some(action) = action {
             self.open_online_screen(action)?;

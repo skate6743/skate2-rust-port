@@ -11,6 +11,12 @@
 //! The griptape is near black, so its colour is no filter over it as a garment's is: the diffuse
 //! is first brought to a mean of one over the top face (`level`), which leaves the grain to take
 //! the colour. See `docs/evidence/edit-skater-griptape-2026-11-16.md`.
+//!
+//! The colour it takes is a surface's (`worn`): a tint is the share of the light a face sends
+//! back, and one near or past the whole of it reads on screen as a light of its own. So a tint's
+//! brightest channel bends toward `BRIGHTEST` from `KNEE` on, intensity past the picker's 1 goes
+//! into a purer colour instead of a brighter one, and the grain counts for no more than `GRAIN`
+//! times its mean, so a bright mark in the diffuse does not shine either.
 use crate::texture::NativeTexture;
 use skate2_formats::{
     material::{LinearTextureLevel, PIXEL_FORMAT_A8R8G8B8, PIXEL_FORMAT_DXT1, PIXEL_FORMAT_DXT5, PIXEL_FORMAT_LIN_DXT5},
@@ -26,6 +32,16 @@ const FLAT: f32 = 0.5;
 const SAMPLES: usize = 6;
 /// The least `level`: a diffuse darker than this over the top face is taken to be this bright.
 const DARKEST: f32 = 1.0 / 4096.0;
+/// The most of the light a griptape's colour sends back, in its brightest channel.
+const BRIGHTEST: f32 = 0.5;
+/// The tint a channel keeps as it is; past it the brightest channel bends toward [`BRIGHTEST`].
+const KNEE: f32 = 0.2;
+/// How far past the top face's mean the diffuse squared counts.
+const GRAIN: f32 = 1.5;
+/// How much purer a colour at the picker's greatest intensity is than at its 1.
+const PUREST: f32 = 0.4;
+/// The picker's greatest intensity as a tint (its colour on screen, squared).
+const GREATEST_TINT: f32 = crate::ui::colour_picker::MAX_INTENSITY * crate::ui::colour_picker::MAX_INTENSITY;
 
 type Uv = [f32; 2];
 
@@ -51,11 +67,40 @@ impl GripSurface {
     }
 
     /// What the diffuse squared is multiplied by over the griptape for it to take `tint`, a
-    /// colour filter's tint (`edit_skater_colour_filter`).
+    /// colour filter's tint (`edit_skater_colour_filter`), as a griptape wears it ([`worn`]); its
+    /// fourth lane is the most of the diffuse squared that counts ([`GRAIN`] times the mean).
     #[must_use]
-    pub fn gain(&self, tint: [f32; 3]) -> [f32; 3] {
-        tint.map(|lane| if lane.is_finite() { lane.max(0.) / self.level } else { 0. })
+    pub fn gain(&self, tint: [f32; 3]) -> [f32; 4] {
+        let [red, green, blue] = worn(tint).map(|lane| lane / self.level);
+        [red, green, blue, self.level * GRAIN]
     }
+}
+
+/// The share of the light a griptape of `tint` sends back in each channel. A tint whose brightest
+/// channel is within [`KNEE`] is that share as it is. Past it the brightest channel bends toward
+/// [`BRIGHTEST`], which it never passes, and the others keep their ratio to it; past a tint of 1
+/// (the picker's intensity 1) the colour grows purer as well, away from its own grey, up to
+/// [`PUREST`] at the picker's greatest intensity.
+#[must_use]
+pub fn worn(tint: [f32; 3]) -> [f32; 3] {
+    let tint = tint.map(|lane| if lane.is_finite() { lane.max(0.) } else { 0. });
+    let peak = tint[0].max(tint[1]).max(tint[2]);
+    if peak <= KNEE {
+        return tint;
+    }
+    let span = BRIGHTEST - KNEE;
+    let bent = KNEE + span * (1. - (-(peak - KNEE) / span).exp());
+    let mut colour = tint.map(|lane| lane / peak);
+    if peak > 1. {
+        let purer = 1. + PUREST * ((peak - 1.) / (GREATEST_TINT - 1.)).min(1.);
+        let grey = 0.2126 * colour[0] + 0.7152 * colour[1] + 0.0722 * colour[2];
+        colour = colour.map(|lane| (grey + (lane - grey) * purer).max(0.));
+        let top = colour[0].max(colour[1]).max(colour[2]);
+        if top > 0. {
+            colour = colour.map(|lane| lane / top);
+        }
+    }
+    colour.map(|lane| lane * bent)
 }
 
 /// A mesh's top face: its triangles and the rectangle of the first set they span.
@@ -295,8 +340,37 @@ mod tests {
         assert!((mean_square(&uv, &triangles, &[0, 1], texel).unwrap() - 0.25).abs() < 1e-6);
         assert!((mean_square(&uv, &triangles, &[2, 3], texel).unwrap() - 1.).abs() < 1e-6);
         assert_eq!(mean_square(&uv, &triangles, &[], texel), None);
+        // A colour within the knee is multiplied in as it is, over the mean; the fourth lane is
+        // how much of the diffuse squared counts.
         let surface = GripSurface { rectangle: [0.; 4], level: 0.25 };
-        assert_eq!(surface.gain([1., 0.5, 0.]), [4., 2., 0.]);
+        assert_eq!(surface.gain([0.2, 0.1, 0.]), [0.8, 0.4, 0., 0.25 * GRAIN]);
+    }
+
+    #[test]
+    fn a_griptape_wears_a_bright_colour_as_a_surface_and_never_as_a_light() {
+        let peak = |colour: [f32; 3]| colour[0].max(colour[1]).max(colour[2]);
+        // The row's colours and any other within the knee stay as they are.
+        assert_eq!(worn([0.096, 0.0016, 0.0016]), [0.096, 0.0016, 0.0016]);
+        assert_eq!(worn([KNEE, 0., KNEE / 2.]), [KNEE, 0., KNEE / 2.]);
+        assert_eq!(worn([f32::NAN, -1., 0.1]), [0., 0., 0.1]);
+        // Past it the brightest channel rises with the tint and never passes the ceiling, however
+        // far the tint goes; the hue's order holds.
+        let mut last = KNEE;
+        for step in 1..=200_u8 {
+            let tint = KNEE + 8. * f32::from(step) / 200.;
+            let colour = worn([tint, tint * 0.2, tint * 0.6]);
+            assert!(peak(colour) > last - 1e-6 && peak(colour) <= BRIGHTEST, "tint {tint}: {colour:?}");
+            assert!(colour[0] > colour[2] && colour[2] > colour[1], "tint {tint}: {colour:?}");
+            last = peak(colour);
+        }
+        // Up to the picker's 1 the channels keep their ratio; past it the colour grows purer.
+        let pink = worn([1., 0.2, 0.6]);
+        assert!((pink[1] / pink[0] - 0.2).abs() < 1e-6 && (pink[2] / pink[0] - 0.6).abs() < 1e-6);
+        let hot = worn([GREATEST_TINT, 0.2 * GREATEST_TINT, 0.6 * GREATEST_TINT]);
+        assert!(hot[1] / hot[0] < 0.15 && hot[2] / hot[0] < 0.59 && hot[2] / hot[0] > 0.3, "{hot:?}");
+        // A grey stays a grey.
+        let grey = worn([3., 3., 3.]);
+        assert!(grey[0] == grey[1] && grey[1] == grey[2] && grey[0] <= BRIGHTEST);
     }
 
     #[test]

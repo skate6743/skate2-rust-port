@@ -278,10 +278,11 @@ fn cas_custom(
 }
 
 /// PC port: Edit Griptape's colour as two custom rows: what the diffuse squared is multiplied by
-/// over the deck's top face, its fourth lane set, then the rectangle of the first texture
-/// coordinate set that holds that face. Both zero on any other mesh and on a deck with none.
+/// over the deck's top face, its fourth lane the most of the diffuse squared that counts (above
+/// none on a deck with a colour), then the rectangle of the first texture coordinate set that
+/// holds that face. Both zero on any other mesh and on a deck with none.
 fn grip_rows(view: &skate2_core::character::material_admission::CharacterMaterialView<'_>) -> [[f32; 4]; 2] {
-    view.grip.map_or([[0.; 4]; 2], |(gain, rectangle)| [[gain[0], gain[1], gain[2], 1.], rectangle])
+    view.grip.map_or([[0.; 4]; 2], |(gain, rectangle)| [gain, rectangle])
 }
 
 /// PC port: the custom rows of a character surface (`defaultcharacter`), which reads a deck's

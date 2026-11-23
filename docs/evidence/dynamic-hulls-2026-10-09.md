@@ -218,7 +218,8 @@ characters has one: no jack in the shipped game caps anything.
 * `session/selected_session_terrain.rs` (+ trait): the dynamic hull manager's own loader.
 * `session/selected_session_career.rs`: requests and completions after each career update,
   `StateLoading::DynamicHullState` for travels (`try_dynamic_hull_state`), the game unload, and
-  free skate's manager (`free_skate_dynamic_hulls`, `try_update_free_skate_dynamic_hulls`). The
+  free skate's manager (a profile free skate's whole challenge system since 2026-11-21,
+  `free_skate_challenges`; an online one's `try_update_free_skate_dynamic_hulls`). The
   port's travel lands a few simulation updates after its spot test, so the manager's update is
   held (`DynamicHulls::teleport_hold`) while a travel is in flight, as the native's paused
   simulation is; without it the box test at the skater's old place unloaded what the spot test

@@ -200,9 +200,6 @@ pub struct Contacts {
     skate3_inverted: bool,
     /// The skater runs Skate 3 physics, whose catches are TU3's.
     skate3_physics: bool,
-    /// TU3 `SFXCTL_PlayerPhysics` +0x308/+0x304: a darkcatch now or within the last five frames.
-    skate3_dark_catch_recent: bool,
-    skate3_dark_catch_frames: u32,
     /// TU3 `SFXObj_Contacts` +0x1F0: the darkcatch landing, in a splice voice.
     skate3_dark_catch_land: Option<Skate3Splice>,
     /// PC port: the outputs TU3's darkcatch sounds read from its contacts mixer, here PLAYER
@@ -302,8 +299,6 @@ impl Contacts {
             foot_scrape: [None; 2],
             skate3_inverted: false,
             skate3_physics: false,
-            skate3_dark_catch_recent: false,
-            skate3_dark_catch_frames: 0,
             skate3_dark_catch_land: None,
             skate3_io: None,
             last_in_air: false,
@@ -451,21 +446,14 @@ impl Contacts {
             Skate3Splice::delete_slot(sound, ctx);
         }
         Skate3Splice::delete_slot(&mut self.skate3_dark_catch_land, ctx);
+        // TU3 Destroy 0x824b81cc: the board is no longer held inverted.
+        self.skate3_inverted = false;
     }
 
     /// `SFXObj_Contacts::UpdateParams` 0x8254f8a0 (the state is attached), for the skater at
     /// `array_index` of the presentation.
     pub fn update_params(&mut self, t: f32, physics: &PlayerPhysics, skater: &SkaterData, array_index: i32, io: Option<DMixIoId>, ctx: &mut SfxCtx<'_>) {
         self.skate3_physics = physics.skate3_physics && ctx.skate3.is_some();
-        // TU3's controller update (0x824b17fc..0x824b1834) keeps a darkcatch for five frames.
-        if physics.skate3_dark_catch {
-            self.skate3_dark_catch_recent = true;
-            self.skate3_dark_catch_frames = 0;
-        } else if self.skate3_dark_catch_frames < 5 {
-            self.skate3_dark_catch_frames += 1;
-        } else {
-            self.skate3_dark_catch_recent = false;
-        }
         self.check_for_foot_catches(physics, ctx);
         self.check_for_foot_scrapes(physics, ctx);
         self.check_for_skate3_inverted_board(physics, ctx);
@@ -766,15 +754,18 @@ impl Contacts {
     }
 
     /// TU3 `PlayFootScrapeSound` 0x824b97c8 with the board inverted: Skate 3's
-    /// `aud_contacts/default` 0xF2866EE0540CDF05 element `foot`, in its splice bank 7.
+    /// `aud_contacts/default` 0xF2866EE0540CDF05 element `foot`, in its splice bank 7, through the
+    /// effect sub mix `SKATE3_EFFECTS` 0x0D73DB849EC8E2B2 names (0x824b9864..0x824b98b8).
     fn skate3_inverted_scrape(foot: usize, ctx: &mut SfxCtx<'_>) -> Option<SpliceId> {
         let vault = ctx.skate3?;
         if !Self::skate3_bank(ctx, SPLICE_SKATE3_FOLEY, "sk8_foley.bnk") {
             return None;
         }
         let cue = vault.i32_at(CONTACTS, 0xF286_6EE0_540C_DF05, foot as u32);
-        trace_skate3_darkcatch(format_args!("scrape foot {foot}: cue {cue}"));
-        Self::play_dry(ctx, SPLICE_SKATE3_FOLEY as i32, cue)
+        let effect = vault.i32(SKATE3_EFFECTS, 0x0D73_DB84_9EC8_E2B2);
+        trace_skate3_darkcatch(format_args!("scrape foot {foot}: cue {cue} effect {effect}"));
+        let target = ctx.global_effects.skate3_effect(ctx.core, effect, ctx.local, vault, ctx.rng);
+        ctx.new_splice(SPLICE_SKATE3_FOLEY as i32, cue, target)
     }
 
     /// TU3 `LandGround` 0x824bac14..0x824baee8: landing in or just after a darkcatch plays Skate 3's
@@ -1223,7 +1214,7 @@ impl Contacts {
                 ctx.set_input(io, 7, 0x7FFF);
             }
         }
-        if physics.skate3_dark_catch || self.skate3_dark_catch_recent {
+        if physics.skate3_dark_catch || physics.skate3_dark_catch_recent {
             self.land_skate3_dark_catch(physics, ctx);
         }
         let mut count = 0;

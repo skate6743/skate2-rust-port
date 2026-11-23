@@ -214,6 +214,9 @@ fn net_challenge_type(game_type: i32) -> Option<u8> {
 }
 /// `challenges.LocalData`.
 const LOCAL_DATA: u64 = 0xd7bb_2b16_0caf_8ed6;
+/// A 1-Up's local data's `StartLocationRotation`: the start each round's runs begin at, one a
+/// round in turn.
+const START_LOCATION_ROTATION: u64 = 0xd1cc_dcff_223f_ec17;
 /// Each Skate 3 challenge's local data Vault, beside the challenge bank.
 const LOCAL_DATA_VAULTS: &str = "data\\db\\challenge_local_data";
 /// The Vault of the local data's shared records, which each game's local data inherits.
@@ -1507,6 +1510,21 @@ impl Skate3Data {
         self.online.iter().find(|spot| spot.key == key)
     }
 
+    /// PC port (the host's Round Lock): how many round starts the online 1-Up with this
+    /// `challenges` key goes through (its `StartLocationRotation`); 0 for any other game, and for
+    /// a 1-Up that does not run Skate 3's own graph, whose rounds have no such starts.
+    #[must_use]
+    pub fn one_up_rounds(&self, key: u64) -> u32 {
+        if !self.runs_own_graph(key) || self.online_spot(key).map(|spot| spot.net_type) != net_challenge_type(ONE_UP_GAME_TYPE) {
+            return 0;
+        }
+        self.db
+            .attribute(CHALLENGES, key, LOCAL_DATA)
+            .and_then(|local| local.ref_spec(0))
+            .and_then(|(class, local)| self.db.attribute(class, local, START_LOCATION_ROTATION))
+            .map_or(0, |starts| u32::try_from(starts.len()).unwrap_or(0))
+    }
+
     /// Whether the Skate 3 online game with this `challenges` key runs Skate 3's own state graph
     /// (a graft with a `graph`): its scripts read every player's objectives and the facts whole.
     #[must_use]
@@ -2086,7 +2104,6 @@ mod tests {
     #[test]
     fn skate3_one_ups_run_skate3s_own_graph() {
         use crate::challenge::runtime::{StateGraph, field};
-        const START_LOCATION_ROTATION: u64 = 0xd1cc_dcff_223f_ec17;
         const WAIT_LOCATION_ROTATION: u64 = 0x8b76_4557_f3ec_7068;
         const OBJECTIVES: u64 = 0xc4b3_4541_5e85_37be;
         const MULTIPLIER_ACTIVE: u64 = 0xcb83_7eef_5095_8fbb;
@@ -2122,6 +2139,9 @@ mod tests {
                 (0..value.len()).filter_map(|index| value.text(index)).map(str::to_owned).collect::<Vec<_>>()
             };
             assert_eq!(texts(START_LOCATION_ROTATION), theirs(START_LOCATION_ROTATION), "{} starts", game.name);
+            // The host's Round Lock offers each of them.
+            assert_eq!(data.one_up_rounds(game.key) as usize, theirs(START_LOCATION_ROTATION).len(), "{} rounds", game.name);
+            assert!(data.one_up_rounds(game.key) >= 1, "{} has a round start", game.name);
             assert_eq!(texts(WAIT_LOCATION_ROTATION), theirs(WAIT_LOCATION_ROTATION), "{} waits", game.name);
             assert!(read(TIME_LIMIT).and_then(|value| value.f32(0)).is_some_and(|limit| limit > 0.0), "{} has a run time", game.name);
             assert_eq!(read(MULTIPLIER_ACTIVE).and_then(|value| value.bool(0)), Some(false), "{} scores without the multiplier", game.name);

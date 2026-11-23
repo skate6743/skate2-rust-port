@@ -204,13 +204,29 @@ vote ended it alike.
 
 ## Inactivity
 
-A game that sends neither a replay frame nor `Busy` for two seconds is kicked
-(`KR_KickedForInactivity`, `leave::KICKED_FOR_INACTIVITY`). A game with no frame to send
-(travelling behind the fade, loading, paused at a sync point) says `Busy` every quarter second; a
-frozen or paused game (a hang, a debugger, Cheat Engine) says nothing and is kicked, and its
-challenge goes on without it. Measured 2026-10-16: a game killed in the middle of S.K.A.T.E. was
-kicked about 3 seconds after its last datagram (two seconds, then the server's next check); the
-other player won by disconnect (`finish_reason` 1) and went back to lobby skate.
+A participant of a challenge in play whose game sends neither a replay frame nor `Busy` for five
+seconds is kicked (`KR_KickedForInactivity`, `leave::KICKED_FOR_INACTIVITY`): the other players'
+rounds wait for its facts. A game with no frame to send (travelling behind the fade, loading,
+paused at a sync point) says `Busy` every quarter second; a frozen or paused game (a hang, a
+debugger, Cheat Engine) says nothing and is kicked, and its challenge goes on without it. The
+limit was two seconds until 2026-11-22. Measured with it 2026-10-16: a game killed in the middle
+of S.K.A.T.E. was kicked about 3 seconds after its last datagram (two seconds, then the server's
+next check); the other player won by disconnect (`finish_reason` 1) and went back to lobby
+skate. A S.K.A.T.E. of three or more takes a silent player out of the challenge alone a second
+sooner, once every other player's round has waited four seconds on it (`Stalled`).
+
+A member no round waits on (lobby skate, a challenge still loading or showing its results, a
+member in lobby skate while others play a challenge) is kicked only after a minute of it
+(`IDLE_INACTIVITY`, 2026-11-22). Until then two seconds held for every member, so a free
+skate lost a player to anything that stopped its game or its datagrams for two seconds: a hitch,
+a window the system stopped drawing, a load longer than the connection thread's 30 seconds of
+`Busy`, a link down for a moment. A link that stays down is dropped as lost after the transport's
+10 seconds, and a challenge's load keeps its own 90. The kick at the minute's limit has its own
+reason (`leave::KICKED_FOR_IDLE`). The kicked game shows `ID_ONLINE_KICKED_INACTIVITY` (the
+original's `eSk8FEPopup_Online_Error_KickedInactivity`; it showed the host's kick's text before)
+and under it `Reason: 5 second challenge timeout` or `Reason: 60 second inactivity timeout`, as
+every notice of a game lost names its reason. Every automatic disconnect and its reason line is
+listed in `docs/evidence/online-disconnects-2026-11-22.md`.
 
 ## Pinned gestures
 

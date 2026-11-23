@@ -123,6 +123,73 @@ fn pipeline_tick_budget(step: Duration, tick: Duration, completion: Duration,
 }
 
 
+/// How long before `now` the newest timer period began, for a tick that starts `since_slot` after
+/// its own: the original's timer reads the pads at each period's start (`timerThread` 0x8298a2c4)
+/// and a tick takes the newest sample (`LastInput` 0x826dfbd8), so a tick running a whole period
+/// or more late reads the period that began last.
+fn since_timer(since_slot: Duration, step: Duration) -> Duration {
+    let step = step.as_nanos().max(1);
+    Duration::from_nanos(u64::try_from(since_slot.as_nanos() % step).unwrap_or(0))
+}
+
+/// `SKATE2_TRACE_PAD_POLL=1`: every 600 ticks, how long after their timer instants the ticks
+/// started, and how far apart their starts were (the pad reads' spacing under the Frame Timed
+/// polling rate; the vanilla rate reads at the timer instants, one period apart).
+fn trace_pad_poll(now: Instant, late: Duration) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("SKATE2_TRACE_PAD_POLL").is_some()) {
+        return;
+    }
+    struct Trace {
+        last: Option<Instant>,
+        ticks: u32,
+        late: Duration,
+        latest: Duration,
+        nearest: Duration,
+        farthest: Duration,
+        off: Duration,
+        uneven: u32,
+    }
+    static TRACE: std::sync::Mutex<Trace> = std::sync::Mutex::new(Trace {
+        last: None,
+        ticks: 0,
+        late: Duration::ZERO,
+        latest: Duration::ZERO,
+        nearest: Duration::MAX,
+        farthest: Duration::ZERO,
+        off: Duration::ZERO,
+        uneven: 0,
+    });
+    let Ok(mut trace) = TRACE.lock() else { return };
+    if let Some(last) = trace.last {
+        let apart = now.saturating_duration_since(last);
+        trace.nearest = trace.nearest.min(apart);
+        trace.farthest = trace.farthest.max(apart);
+        // More than two milliseconds off a sixtieth of a second.
+        trace.off += apart.abs_diff(FIXED_STEP);
+        if apart.abs_diff(FIXED_STEP) > Duration::from_millis(2) {
+            trace.uneven += 1;
+        }
+    }
+    trace.last = Some(now);
+    trace.ticks += 1;
+    trace.late += late;
+    trace.latest = trace.latest.max(late);
+    if trace.ticks == 600 {
+        eprintln!(
+            "pad poll: 600 ticks started {:.2} ms after their timer instants on average, {:.2} ms at most; their starts were {:.2} to {:.2} ms apart, {:.2} ms off 16.67 on average, {} of them more than 2 ms off",
+            trace.late.as_secs_f64() * 1000. / 600.,
+            trace.latest.as_secs_f64() * 1000.,
+            trace.nearest.as_secs_f64() * 1000.,
+            trace.farthest.as_secs_f64() * 1000.,
+            trace.off.as_secs_f64() * 1000. / 600.,
+            trace.uneven
+        );
+        let last = trace.last;
+        *trace = Trace { last, ticks: 0, late: Duration::ZERO, latest: Duration::ZERO, nearest: Duration::MAX, farthest: Duration::ZERO, off: Duration::ZERO, uneven: 0 };
+    }
+}
+
 /// One more tick is due while the debt covers the armed timer period and the
 /// per-redraw budget remains.
 fn tick_due(accumulator: Duration, step: Duration, ticks: u32) -> bool {
@@ -403,6 +470,8 @@ pub(crate) fn run(root: &std::path::Path) -> RenderResult<()> {
         update: crate::game_update::GameUpdate::start(),
         dlc,
         skate3,
+        song_picker: crate::song_picker::SongPicker::default(),
+        custom_songs: 0,
         trick_guide_previous:None,
         pedestrian_approach_stick: [0, i16::MAX],
         ollie_tweak_left,
@@ -497,6 +566,10 @@ struct LiveSkatingClient {
     dlc: crate::dlc_link::DlcLinks,
     /// PC: the linked Skate 3 data and its picker.
     skate3: crate::skate3_link::Skate3Link,
+    /// PC: the music player's Add Song picker, and the custom songs the music system was last
+    /// given (`custom_songs::generation`).
+    song_picker: crate::song_picker::SongPicker,
+    custom_songs: u64,
     trick_guide_previous:Option<Instant>,
     pedestrian_approach_stick: [i16; 2],
     ollie_hold: u64,
@@ -565,6 +638,31 @@ fn diagnostic_display(mut values: skate2_formats::skater_profile::PcDisplaySetti
     });
     if let Some(&(_, msaa)) = schedule.iter().filter(|(at, _)| *at <= frame).max_by_key(|(at, _)| *at) {
         values.msaa = msaa;
+    }
+    // SKATE2_DIAGNOSTIC_FRAME_RATE_CAP=unlimited|60|120|refresh, SKATE2_DIAGNOSTIC_VSYNC=0|1 and
+    // SKATE2_DIAGNOSTIC_RESOLUTION_SCALE=<percent>: those Display Settings rows over the save's.
+    static PACING: std::sync::OnceLock<(Option<skate2_core::ui::options::FrameRateCap>, Option<bool>, Option<u8>)> = std::sync::OnceLock::new();
+    let (cap, vsync, scale) = *PACING.get_or_init(|| {
+        use skate2_core::ui::options::FrameRateCap;
+        let cap = std::env::var("SKATE2_DIAGNOSTIC_FRAME_RATE_CAP").ok().and_then(|cap| match cap.trim() {
+            "unlimited" => Some(FrameRateCap::Unlimited),
+            "60" => Some(FrameRateCap::Fps60),
+            "120" => Some(FrameRateCap::Fps120),
+            "refresh" => Some(FrameRateCap::RefreshRate),
+            _ => None,
+        });
+        let vsync = std::env::var("SKATE2_DIAGNOSTIC_VSYNC").ok().map(|vsync| vsync.trim() != "0");
+        let scale = std::env::var("SKATE2_DIAGNOSTIC_RESOLUTION_SCALE").ok().and_then(|scale| scale.trim().parse::<u8>().ok());
+        (cap, vsync, scale)
+    });
+    if let Some(cap) = cap {
+        values.frame_rate_cap = cap;
+    }
+    if let Some(vsync) = vsync {
+        values.vsync = vsync;
+    }
+    if let Some(scale) = scale {
+        values.resolution_scale = scale.clamp(*skate2_core::ui::options::RESOLUTION_SCALES.start(), *skate2_core::ui::options::RESOLUTION_SCALES.end());
     }
     values
 }
@@ -1531,6 +1629,11 @@ impl LiveSkatingClient {
                         self.session.diagnostic_travel([x, y, z], yaw);
                     }
                 }
+                // SKATE2_DIAGNOSTIC_FREE_SKATE_HERE=tick[;tick...]: at each tick, the free skate the
+                // online hub's Free Skate Here would ask for from where the skater is.
+                if std::env::var("SKATE2_DIAGNOSTIC_FREE_SKATE_HERE").is_ok_and(|ticks| ticks.split(';').any(|at| at.trim().parse::<u64>().ok()==Some(tick))) {
+                    eprintln!("diagnostic: free skate here at {tick}: {}", self.session.diagnostic_free_skate_here());
+                }
                 // SKATE2_DIAGNOSTIC_SKATE3_SPOT=name[;name...] at SKATE2_DIAGNOSTIC_SKATE3_SPOT_TICK=
                 // tick[;tick...]: the challenge map's travel to a linked Skate 3 teleport.
                 if let (Ok(ticks), Ok(names))=(std::env::var("SKATE2_DIAGNOSTIC_SKATE3_SPOT_TICK"), std::env::var("SKATE2_DIAGNOSTIC_SKATE3_SPOT"))
@@ -2311,12 +2414,13 @@ impl LiveSkatingClient {
                         }).unwrap_or(0);
                     }
                 }
-                // SKATE2_DIAGNOSTIC_OPTIONS_PAGE=physics|weather|display|display_left|control: after the
-                // presses that open Options, the rows by name down to Physics Settings, Gameplay Settings'
-                // Weather Settings, Display Settings' Brightness or Control Settings' Trigger Threshold;
-                // there one right on the first row (the Trigger Threshold's knob), or the Brightness knob
-                // a step right (left) each press to the end of its range, then back out of Options, and
-                // the page's rows and values logged.
+                // SKATE2_DIAGNOSTIC_OPTIONS_PAGE=physics|weather|display|display_left|control|control_delay:
+                // after the presses that open Options, the rows by name down to Physics Settings, Gameplay
+                // Settings' Weather Settings, Display Settings' Brightness or Control Settings' Trigger
+                // Threshold (Polling & Delay); there one right on the first row (the Trigger Threshold's knob),
+                // or the Brightness knob a step right (left) each press to the end of its range, then back
+                // out of Options (Polling & Delay's page opened, its Input Delay's knob a step right each
+                // press to its end, then one right on its Polling Rate), and the page's rows and values logged.
                 if matches!(demo,ControlsDemo::MainMenu) && tick > 600 && tick % 30 == 0
                     && let Ok(target) = std::env::var("SKATE2_DIAGNOSTIC_OPTIONS_PAGE")
                 {
@@ -2325,7 +2429,8 @@ impl LiveSkatingClient {
                     let row = options.rows().get(options.selected).copied();
                     let physics = target == "physics";
                     let display = target.starts_with("display");
-                    let control = target == "control";
+                    let control = target.starts_with("control");
+                    let delay = target == "control_delay";
                     let wanted = if physics {
                         Row::PhysicsSettings
                     } else if display {
@@ -2348,8 +2453,24 @@ impl LiveSkatingClient {
                             }
                             if options.values.brightness == end { 0x2000 } else if left { 0x0004 } else { 0x0008 }
                         }
-                        Page::Control if row != Some(Row::TriggerThreshold) => 0x0002,
-                        Page::Control if !self.options_page_adjusted => {
+                        Page::Control if row != Some(if delay { Row::PollingDelay } else { Row::TriggerThreshold }) => 0x0002,
+                        Page::Control if delay => 0x1000,
+                        Page::PollingDelay if options.sticks.input_delay < *skate2_core::stick_settings::INPUT_DELAYS.end() => {
+                            if row == Some(Row::InputDelay) { 0x0008 } else { 0x0002 }
+                        }
+                        Page::PollingDelay if row == Some(Row::InputDelay) => 0x0001,
+                        Page::PollingDelay if !self.options_page_adjusted => {
+                            self.options_page_adjusted = true;
+                            eprintln!("options page Polling & Delay: rows {:?}, sticks {:?}", options.rows(), options.sticks);
+                            0x0008
+                        }
+                        Page::PollingDelay => {
+                            if tick % 300 == 0 {
+                                eprintln!("options page Polling & Delay: rows {:?}, selected {}, sticks {:?}", options.rows(), options.selected, options.sticks);
+                            }
+                            0
+                        }
+                        Page::Control if !delay && !self.options_page_adjusted => {
                             self.options_page_adjusted = true;
                             0x0008
                         }
@@ -3479,6 +3600,12 @@ impl LiveSkatingClient {
 
     fn run_tick(&mut self, was_paused: bool) -> TickRecord {
         let tick_start = Instant::now();
+        // PC port: the tick's own timer instant, which its poll reads the pads at under the
+        // vanilla polling rate (`crate::pad_delay`). The debt left after this tick's period is
+        // how long ago that instant was when the clock last advanced.
+        let late = since_timer(self.accumulator.saturating_add(tick_start.saturating_duration_since(self.previous)), self.step);
+        self.pad.set_poll_slot(tick_start.checked_sub(late));
+        trace_pad_poll(tick_start, late);
         skate2_core::diagnostics::lean_trace::begin_tick();
         let replay_or_window_focus = self.pad.demo_sample.is_some() || self.focused;
         let outcome = self
@@ -3561,6 +3688,7 @@ impl LiveSkatingClient {
         self.pad.set_stick_settings(options_menu.sticks);
         view.set_stick_preview(self.session.controller_slot().and_then(|slot| self.pad.raw_sticks(slot)))?;
         view.set_free_skate_settings(self.session.free_skate_hud_settings());
+        view.set_free_skate_hud(self.session.take_free_skate_hud());
         view.set_music_player(self.session.music_player_snapshot())?;
         view.set_skate_profile(self.session.skate_profile_view())?;
         // PC port: an online game ticks under its pre-game Edit Skater, whose room holds the
@@ -3574,6 +3702,11 @@ impl LiveSkatingClient {
         let (audio_state,audio_world)=self.audio_inputs();
         let menu_sounds = self.session.take_menu_sounds();
         view.play_nis_sfx(self.session.take_nis_sfx());
+        // PC: the music system plays the music player's custom songs from their files.
+        let custom_songs = skate2_core::ui::custom_songs::generation();
+        if custom_songs != self.custom_songs && view.set_custom_songs(&skate2_core::ui::custom_songs::files()) {
+            self.custom_songs = custom_songs;
+        }
         let music = self.session.take_music_requests();
         let mut chyron = self.session.take_chyron_songs();
         if let Some((song, index)) =
@@ -3584,7 +3717,8 @@ impl LiveSkatingClient {
         chyron.extend(view.take_audio_chyron());
         view.update_chyron(self.session.chyron_state(), &chyron)?;
         view.update_online_event_log(self.session.online_hud_active(), self.session.take_online_event_log())?;
-        view.update_online_chat(self.session.online_chat_prompt().as_ref(), self.session.online_nickname_prompt().as_ref())?;
+        view.update_online_chat(self.session.online_chat_prompt().as_ref(), self.session.online_nickname_prompt().as_ref(),
+            self.session.custom_song_prompt().as_ref())?;
         view.update_online_spectator(self.session.online_spectated_name().as_deref())?;
         let overlay = self.session.online_activity_overlay();
         let sign_up = self.session.online_activity_signup();
@@ -3983,6 +4117,13 @@ impl LiveSkatingClient {
         }
         if self.session.take_skate3_link_request() {
             self.skate3.open_picker();
+        }
+        // PC: the music player's Add Song: the file picker, then the picked file's names.
+        if self.session.take_song_picker_request() {
+            self.song_picker.open();
+        }
+        if let Some(picked) = self.song_picker.poll() {
+            self.session.custom_song_picked(picked);
         }
         if let Some(row) = self.session.take_dlc_unlink_request() {
             let dlc_count = self.dlc.packs().len();

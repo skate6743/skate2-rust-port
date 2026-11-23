@@ -11,6 +11,10 @@
 //! the activity types (12, `SetupFreeskateActivitiesMenu` 0x8268a500) and a type's activities
 //! (13, `GoToFreeskateType` 0x826886f0). The screen's `menu_picker`s keep the selection as
 //! `NextValueCalc` and `PrevValueCalc` step it: over disabled items, wrapping.
+//!
+//! PC port additions (user request): Host Options' Challenge Options (18) in a challenge game,
+//! with the settings of the game's challenge type (a Spot Battle's Infinite Rounds), and the
+//! host's End Challenge at the top of its menu while a battle without a last round plays.
 
 use super::FeSoundRequest;
 use super::pause_menu::PauseMenuInput;
@@ -29,6 +33,8 @@ pub const FREESKATE_ACTIVITY_LIST: u32 = 13;
 pub const PLAYER_LIST: u32 = 14;
 pub const OFFLINE: u32 = 15;
 pub const SESSION_ACCESS: u32 = 17;
+/// Host Options' Challenge Options (PC port addition).
+pub const CHALLENGE_OPTIONS: u32 = 18;
 /// The sound `CheckForOnlineHubMenu` plays as it opens the hub and `ReceiveInput` 0x8266c578 as
 /// B leaves a submenu.
 pub const HUB_SOUND: u64 = 0x1A53_83D3_0000_0000;
@@ -112,10 +118,41 @@ pub struct Lobby {
     pub activities: Vec<HubActivity>,
     /// `sProposal`: an activity is proposed.
     pub proposal: bool,
+    /// The game's challenge type is Spot Battle, whose Challenge Options hold Infinite Rounds
+    /// (PC port addition).
+    pub spot_battle: bool,
+    /// The host's Infinite Rounds: a Spot Battle started with it on has no last round.
+    pub infinite_rounds: bool,
+    /// Such a battle is in play and its host has not ended it: End Challenge is offered.
+    pub endless_in_play: bool,
+    /// The round starts the game's 1-Up goes through, one a round, whose Challenge Options hold
+    /// Round Lock (PC port addition); 0 for any other game.
+    pub one_up_rounds: u32,
+    /// The host's Round Lock: the round start every round begins at, from 1; 0 without one.
+    pub round_lock: u32,
 }
 
 /// The player menu's item in place of View Gamercard (PC port addition).
 pub const SPECTATE: &str = "Spectate";
+/// Host Options' item and menu of the challenge type's settings (PC port addition).
+pub const CHALLENGE_OPTIONS_TITLE: &str = "Challenge Options";
+/// A Spot Battle's setting there, as it reads off and on: selecting it turns it the other way.
+pub const INFINITE_ROUNDS_OFF: &str = "Infinite Rounds: Off";
+/// A 1-Up's setting there, as it reads without a lock; selecting it opens its popup.
+pub const ROUND_LOCK_OFF: &str = "Round Lock: Off";
+/// Round Lock's popup: its title, its question and its first option, before the rounds' numbers.
+pub const ROUND_LOCK_TITLE: &str = "Round Lock";
+pub const ROUND_LOCK_QUESTION: &str = "Start every round at the same round's spot?";
+pub const ROUND_LOCK_OPTION_OFF: &str = "Off";
+
+/// Round Lock's item as it reads with the lock at `round` (0 without one).
+#[must_use]
+pub fn round_lock_title(round: u32) -> String {
+    if round == 0 { ROUND_LOCK_OFF.to_owned() } else { format!("Round Lock: Round {round}") }
+}
+pub const INFINITE_ROUNDS_ON: &str = "Infinite Rounds: On";
+/// The host's item that ends a battle without a last round (PC port addition).
+pub const END_CHALLENGE: &str = "End Challenge";
 /// The host's player menu item that hands the game to the player (PC port addition).
 pub const MAKE_HOST: &str = "Make Host";
 
@@ -140,6 +177,12 @@ enum Target {
     Spectate,
     /// The host's player menu's Make Host (PC port addition).
     MakeHost,
+    /// Challenge Options' Infinite Rounds (PC port addition).
+    ToggleInfiniteRounds,
+    /// Challenge Options' Round Lock (PC port addition).
+    RoundLock,
+    /// The host's End Challenge (PC port addition).
+    EndChallenge,
     KickPlayer,
     PublicFreeskate,
     CustomFreeskate,
@@ -194,20 +237,36 @@ pub struct KickPopup {
     pub selected: usize,
 }
 
+/// Round Lock's popup (PC port addition): Off, then each of the 1-Up's rounds by its number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoundLockPopup {
+    /// The 1-Up's round starts.
+    pub rounds: u32,
+    /// The option highlighted: 0 is Off, the others their round.
+    pub selected: usize,
+}
+
 /// A popup of the online front end (sk8popup, FE state 34).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Popup {
     Kick(KickPopup),
+    /// Round Lock's options (PC port addition), opening on the lock as it stands; B leaves it.
+    RoundLock(RoundLockPopup),
     /// Make Host's confirmation, as Kick Player's (PC port addition): Yes or No, Yes first.
     MakeHost(KickPopup),
+    /// End Challenge's confirmation, as Kick Player's (PC port addition): Yes or No, opening on
+    /// No, as the item is the first the host's menu opens on. Its player is no one.
+    EndChallenge(KickPopup),
     /// `OnlineBackEnd::OpenLoadingPopup` 0x825665e8 while matchmaking searches: popup 38,
     /// `ID_ONLINE_MATCHING_SKATERS` with no options, not cancellable.
     Matching,
     /// `StateOnlineSignIn::ConnectToPlasma` 0x8275df08 while the sign-in connects: popup 33,
     /// `ID_ONLINE_SIGNING_IN` with no options; B cancels.
     SigningIn,
-    /// What ended a search or the sign-in (`OnlineBackEnd::ShowErrorDialog` 0x825735d0), and OK.
-    Notice(&'static str),
+    /// What ended a search, the sign-in or a game (`OnlineBackEnd::ShowErrorDialog` 0x825735d0),
+    /// and OK: a label, or a label, a line break and a second label under it (a game lost and its
+    /// reason, PC port addition).
+    Notice(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -237,6 +296,13 @@ pub enum Action {
     Spectate(u64),
     /// Make Host, confirmed (PC port addition): the game goes to the player, then Exit.
     MakeHost(u64),
+    /// Challenge Options' Infinite Rounds, turned on or off (PC port addition); the menu stays.
+    SetInfiniteRounds(bool),
+    /// Challenge Options' Round Lock, set to a round or to 0, off (PC port addition); the menu
+    /// stays.
+    SetRoundLock(u32),
+    /// End Challenge, confirmed (PC port addition): the battle in play ends, then Exit.
+    EndChallenge,
     /// `GoToFreeskateActivityCIC` 0x82661a98: FE state 67 over the hub, to propose the activity.
     ActivitySignUp(u64),
     /// `GoToFreeSkateHere` 0x8267bee8: a public free skate where the skater is
@@ -448,7 +514,12 @@ impl Controller {
             enabled: lobby.host && !lobby.changing_location,
             target: Target::Menu(HOST_OPTIONS),
         };
-        let mut root = Menu { title: Some(Title::Literal(lobby.nickname.clone())), items: vec![friends], selected: 0 };
+        let mut root = Menu { title: Some(Title::Literal(lobby.nickname.clone())), items: Vec::new(), selected: 0 };
+        // PC port: the host's End Challenge, at the top while a battle without a last round plays.
+        if lobby.host && lobby.endless_in_play {
+            root.items.push(Item { title: Title::Literal(END_CHALLENGE.to_owned()), enabled: true, target: Target::EndChallenge });
+        }
+        root.items.push(friends);
         if lobby.host {
             if !lobby.ranked {
                 root.items.extend([start_challenge, activities]);
@@ -483,14 +554,26 @@ impl Controller {
         // original's Host Options waited for both) while Session Access stays open (PC port
         // addition); the selection stays on an item still enabled.
         let setup = !lobby.challenge_in_progress && !lobby.proposal;
-        let items = vec![
+        let mut items = vec![
             Item { title: Title::Hal("ID_ONLINE_HUB_NEW_CHALLENGE"), enabled: setup, target: Target::MatchSetup },
             Item { title: Title::Hal("ID_ONLINE_HUB_CHANGE_LOCATION"), enabled: setup, target: Target::ChangeLocation },
             Item { title: Title::Hal("ID_ONLINEHUB_SESSIONACCESS"), enabled: true, target: Target::SessionAccess },
         ];
+        // PC port: Challenge Options, in a challenge game; on where the game's challenge type has
+        // settings.
+        let options = Self::challenge_options(lobby, setup);
+        if !lobby.free_skate_type {
+            items.push(Item { title: Title::Literal(CHALLENGE_OPTIONS_TITLE.to_owned()), enabled: !options.is_empty(), target: Target::Menu(CHALLENGE_OPTIONS) });
+        }
         let kept = self.menus.get(&HOST_OPTIONS).map(|menu| menu.selected).filter(|&selected| items.get(selected).is_some_and(|item| item.enabled));
         let selected = kept.or_else(|| items.iter().position(|item| item.enabled)).unwrap_or(0);
         self.menus.insert(HOST_OPTIONS, Menu { title: Some(Title::Hal("ID_ONLINE_HUB_HOST_OPTIONS")), items, selected });
+        if options.is_empty() {
+            self.menus.remove(&CHALLENGE_OPTIONS);
+        } else {
+            let selected = self.menus.get(&CHALLENGE_OPTIONS).map_or(0, |menu| menu.selected.min(options.len() - 1));
+            self.menus.insert(CHALLENGE_OPTIONS, Menu { title: Some(Title::Literal(CHALLENGE_OPTIONS_TITLE.to_owned())), items: options, selected });
+        }
         self.setup_player_menu();
         self.setup_session_access();
         if activities_enabled {
@@ -502,6 +585,27 @@ impl Controller {
             self.menus.remove(&FREESKATE_ACTIVITIES);
             self.menus.remove(&FREESKATE_ACTIVITY_LIST);
         }
+    }
+
+    /// Challenge Options' items (PC port addition): the settings of the game's challenge type,
+    /// which change in lobby skate with no activity proposed (`setup`), as Match Setup does. A
+    /// Spot Battle has Infinite Rounds, shown as it stands; a 1-Up with round starts has Round
+    /// Lock, which also waits for a change of challenge under way to end (the lock is one
+    /// 1-Up's).
+    fn challenge_options(lobby: &Lobby, setup: bool) -> Vec<Item> {
+        if lobby.free_skate_type {
+            return Vec::new();
+        }
+        let mut items = Vec::new();
+        if lobby.spot_battle {
+            let title = if lobby.infinite_rounds { INFINITE_ROUNDS_ON } else { INFINITE_ROUNDS_OFF };
+            items.push(Item { title: Title::Literal(title.to_owned()), enabled: setup, target: Target::ToggleInfiniteRounds });
+        }
+        if lobby.one_up_rounds > 0 {
+            let title = round_lock_title(lobby.round_lock.min(lobby.one_up_rounds));
+            items.push(Item { title: Title::Literal(title), enabled: setup && !lobby.changing_location, target: Target::RoundLock });
+        }
+        items
     }
 
     /// `SetupFreeskateActivitiesMenu` 0x8268a500: the six types in its order, each enabled where
@@ -640,6 +744,8 @@ impl Controller {
         match self.popup.take() {
             Some(Popup::Kick(popup)) => return self.confirm(popup, Popup::Kick, Action::Kick, input),
             Some(Popup::MakeHost(popup)) => return self.confirm(popup, Popup::MakeHost, Action::MakeHost, input),
+            Some(Popup::EndChallenge(popup)) => return self.confirm(popup, Popup::EndChallenge, |_| Action::EndChallenge, input),
+            Some(Popup::RoundLock(popup)) => return self.pick_round_lock(popup, input),
             // The searching popup takes no input: the search ends in a game or a notice.
             Some(popup) => {
                 self.popup = Some(popup);
@@ -685,6 +791,32 @@ impl Controller {
             return Action::None;
         }
         self.select(item.target)
+    }
+
+    /// Round Lock's popup (PC port addition): sk8popup's menu_picker over Off and the rounds,
+    /// wrapping. A sets the lock to the option highlighted and closes the popup; the menu under
+    /// it stays, and reads the lock once the server says it. B closes the popup with the lock as
+    /// it was.
+    fn pick_round_lock(&mut self, mut popup: RoundLockPopup, input: PauseMenuInput) -> Action {
+        let options = popup.rounds as usize + 1;
+        if input.cancel {
+            self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_B_BUTTON"));
+            return Action::None;
+        }
+        if input.up {
+            popup.selected = (popup.selected + options - 1) % options;
+            self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_NAV_UP"));
+        }
+        if input.down {
+            popup.selected = (popup.selected + 1) % options;
+            self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_NAV_DOWN"));
+        }
+        if !input.select {
+            self.popup = Some(Popup::RoundLock(popup));
+            return Action::None;
+        }
+        self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_A_BUTTON"));
+        Action::SetRoundLock(popup.selected as u32)
     }
 
     /// A player's Yes or No popup (`GoToKickPlayer` 0x826722e8's, and Make Host's): sk8popup's
@@ -746,6 +878,18 @@ impl Controller {
                 let name = self.peer_name(user_id).unwrap_or_default().to_owned();
                 self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_POPUP"));
                 self.popup = Some(Popup::MakeHost(KickPopup { user_id, name, selected: 0 }));
+                Action::None
+            }
+            Target::ToggleInfiniteRounds => Action::SetInfiniteRounds(!self.lobby.infinite_rounds),
+            Target::RoundLock => {
+                let rounds = self.lobby.one_up_rounds;
+                self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_POPUP"));
+                self.popup = Some(Popup::RoundLock(RoundLockPopup { rounds, selected: self.lobby.round_lock.min(rounds) as usize }));
+                Action::None
+            }
+            Target::EndChallenge => {
+                self.sounds.push(FeSoundRequest::Play("FE_SOUND_CORE_POPUP"));
+                self.popup = Some(Popup::EndChallenge(KickPopup { user_id: 0, name: String::new(), selected: 1 }));
                 Action::None
             }
             Target::PublicFreeskate => Action::PublicFreeskate,
@@ -951,13 +1095,13 @@ mod tests {
         let snapshot = hub.snapshot();
         let options = &snapshot.stack[1];
         assert_eq!(options.id, HOST_OPTIONS);
-        assert_eq!(options.items.iter().map(|(_, enabled)| *enabled).collect::<Vec<_>>(), vec![false, false, true], "Match Setup and Change Location wait");
+        assert_eq!(options.items.iter().map(|(_, enabled)| *enabled).collect::<Vec<_>>(), vec![false, false, true, false], "Match Setup and Change Location wait");
         assert_eq!(options.selected, 2, "on Session Access");
         hub.update(press(|input| input.up = true));
         assert_eq!(hub.snapshot().stack[1].selected, 2, "the greyed items are passed over");
         hub.refresh(lobby(true, 1));
         let snapshot = hub.snapshot();
-        assert_eq!(snapshot.stack[1].items.iter().map(|(_, enabled)| *enabled).collect::<Vec<_>>(), vec![true, true, true], "back in lobby skate");
+        assert_eq!(snapshot.stack[1].items.iter().map(|(_, enabled)| *enabled).collect::<Vec<_>>(), vec![true, true, true, false], "back in lobby skate");
         assert_eq!(snapshot.stack[1].selected, 2);
         let mut waiting = lobby(true, 1);
         waiting.challenge_in_progress = true;
@@ -1070,6 +1214,141 @@ mod tests {
         let options = &hub.snapshot().stack[1];
         assert_eq!(options.id, HOST_OPTIONS);
         assert_eq!(options.items.iter().map(|(_, enabled)| *enabled).collect::<Vec<_>>(), vec![false, false, true]);
+    }
+
+    fn spot_battle(host: bool) -> Lobby {
+        Lobby { spot_battle: true, min_participants: 1, ..lobby(host, 1) }
+    }
+
+    /// Opens Host Options (the root's last item), then its last item.
+    fn open_challenge_options(hub: &mut Controller) {
+        hub.ready = true;
+        hub.update(press(|input| input.up = true));
+        hub.update(press(|input| input.select = true));
+        assert_eq!(hub.snapshot().stack[1].id, HOST_OPTIONS);
+        hub.update(press(|input| input.up = true));
+        hub.update(press(|input| input.select = true));
+    }
+
+    #[test]
+    fn challenge_options_show_in_a_challenge_game_and_open_where_the_type_has_settings() {
+        let options = |lobby: Lobby| {
+            let mut hub = Controller::open(lobby);
+            hub.ready = true;
+            hub.update(press(|input| input.up = true));
+            hub.update(press(|input| input.select = true));
+            hub.snapshot().stack[1].items.iter().find(|(title, _)| *title == Title::Literal(CHALLENGE_OPTIONS_TITLE.into())).map(|(_, enabled)| *enabled)
+        };
+        assert_eq!(options(spot_battle(true)), Some(true));
+        assert_eq!(options(lobby(true, 1)), Some(false), "a challenge type with no settings yet: shown, off");
+        assert_eq!(options(Lobby { free_skate_type: true, ..lobby(true, 1) }), None, "a free skate has no challenge to set");
+        let mut hub = Controller::open(spot_battle(true));
+        open_challenge_options(&mut hub);
+        let snapshot = hub.snapshot();
+        let menu = &snapshot.stack[2];
+        assert_eq!(menu.id, CHALLENGE_OPTIONS);
+        assert_eq!(menu.title, Title::Literal(CHALLENGE_OPTIONS_TITLE.into()));
+        assert_eq!(menu.items, vec![(Title::Literal(INFINITE_ROUNDS_OFF.into()), true)]);
+    }
+
+    #[test]
+    fn infinite_rounds_toggles_and_the_menu_stays() {
+        let mut hub = Controller::open(spot_battle(true));
+        open_challenge_options(&mut hub);
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::SetInfiniteRounds(true));
+        assert_eq!(hub.snapshot().stack.len(), 3, "the menu stays up");
+        // The server's word comes back: the item reads on, and turns it off again.
+        hub.refresh(Lobby { infinite_rounds: true, ..spot_battle(true) });
+        let snapshot = hub.snapshot();
+        assert_eq!(snapshot.stack.len(), 3);
+        assert_eq!(snapshot.stack[2].items, vec![(Title::Literal(INFINITE_ROUNDS_ON.into()), true)]);
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::SetInfiniteRounds(false));
+        // A battle in play keeps the rounds it loaded with.
+        hub.refresh(Lobby { infinite_rounds: true, lobby_mode: false, challenge_in_progress: true, endless_in_play: true, ..spot_battle(true) });
+        let snapshot = hub.snapshot();
+        assert_eq!(snapshot.stack[2].items, vec![(Title::Literal(INFINITE_ROUNDS_ON.into()), false)]);
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::None);
+    }
+
+    fn one_up(host: bool, rounds: u32, lock: u32) -> Lobby {
+        Lobby { one_up_rounds: rounds, round_lock: lock, min_participants: 2, ..lobby(host, 1) }
+    }
+
+    #[test]
+    fn round_lock_opens_a_popup_of_off_and_the_one_up_s_rounds() {
+        let mut hub = Controller::open(one_up(true, 3, 0));
+        open_challenge_options(&mut hub);
+        assert_eq!(hub.snapshot().stack[2].items, vec![(Title::Literal(ROUND_LOCK_OFF.into()), true)]);
+        // A opens the popup on Off; the options wrap; B leaves the lock as it is.
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::None);
+        assert_eq!(hub.popup(), Some(&Popup::RoundLock(RoundLockPopup { rounds: 3, selected: 0 })));
+        hub.update(press(|input| input.up = true));
+        assert_eq!(hub.popup(), Some(&Popup::RoundLock(RoundLockPopup { rounds: 3, selected: 3 })));
+        hub.update(press(|input| input.down = true));
+        hub.update(press(|input| input.down = true));
+        hub.update(press(|input| input.down = true));
+        assert_eq!(hub.popup(), Some(&Popup::RoundLock(RoundLockPopup { rounds: 3, selected: 2 })));
+        assert_eq!(hub.update(press(|input| input.cancel = true)), Action::None);
+        assert_eq!(hub.popup(), None);
+        assert_eq!(hub.snapshot().stack.len(), 3, "the menu stays up under the popup");
+        // A on a round sets the lock; the server's word comes back and the item reads it.
+        hub.update(press(|input| input.select = true));
+        hub.update(press(|input| input.down = true));
+        hub.update(press(|input| input.down = true));
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::SetRoundLock(2));
+        assert_eq!(hub.popup(), None);
+        hub.refresh(one_up(true, 3, 2));
+        assert_eq!(hub.snapshot().stack[2].items, vec![(Title::Literal("Round Lock: Round 2".into()), true)]);
+        // The popup opens on the lock as it stands, and Off turns it off.
+        hub.update(press(|input| input.select = true));
+        assert_eq!(hub.popup(), Some(&Popup::RoundLock(RoundLockPopup { rounds: 3, selected: 2 })));
+        hub.update(press(|input| input.down = true));
+        hub.update(press(|input| input.down = true));
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::SetRoundLock(0));
+    }
+
+    #[test]
+    fn round_lock_is_a_one_up_s_and_waits_for_lobby_skate() {
+        // A challenge with no round starts (any other type) has no Round Lock.
+        let mut hub = Controller::open(lobby(true, 1));
+        hub.ready = true;
+        hub.update(press(|input| input.up = true));
+        hub.update(press(|input| input.select = true));
+        let options = hub.snapshot().stack[1].items.iter().find(|(title, _)| *title == Title::Literal(CHALLENGE_OPTIONS_TITLE.into())).map(|(_, enabled)| *enabled);
+        assert_eq!(options, Some(false));
+        // A 1-Up in play, or one the game is changing away from, keeps the lock it has.
+        let mut hub = Controller::open(one_up(true, 3, 1));
+        open_challenge_options(&mut hub);
+        hub.refresh(Lobby { lobby_mode: false, challenge_in_progress: true, ..one_up(true, 3, 1) });
+        assert_eq!(hub.snapshot().stack[2].items, vec![(Title::Literal("Round Lock: Round 1".into()), false)]);
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::None);
+        assert_eq!(hub.popup(), None);
+        hub.refresh(Lobby { changing_location: true, ..one_up(true, 3, 1) });
+        assert_eq!(hub.snapshot().stack[2].items, vec![(Title::Literal("Round Lock: Round 1".into()), false)]);
+    }
+
+    #[test]
+    fn end_challenge_tops_the_host_s_menu_of_an_endless_battle_and_asks_first() {
+        let playing = |host: bool| Lobby { infinite_rounds: true, lobby_mode: false, challenge_in_progress: true, endless_in_play: true, ..spot_battle(host) };
+        let guest = Controller::open(playing(false)).snapshot();
+        assert!(guest.stack[0].items.iter().all(|(title, _)| *title != Title::Literal(END_CHALLENGE.into())), "the host's alone");
+        let lobby_skate = Controller::open(Lobby { infinite_rounds: true, ..spot_battle(true) }).snapshot();
+        assert!(lobby_skate.stack[0].items.iter().all(|(title, _)| *title != Title::Literal(END_CHALLENGE.into())), "no battle plays");
+        let mut hub = Controller::open(playing(true));
+        hub.ready = true;
+        let snapshot = hub.snapshot();
+        assert_eq!(snapshot.stack[0].items[0], (Title::Literal(END_CHALLENGE.into()), true));
+        assert_eq!(snapshot.stack[0].selected, 0);
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::None);
+        assert!(matches!(hub.popup(), Some(Popup::EndChallenge(KickPopup { selected: 1, .. }))), "the popup opens on No");
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::None, "No ends nothing");
+        assert_eq!(hub.popup(), None);
+        hub.update(press(|input| input.select = true));
+        hub.update(press(|input| input.up = true));
+        assert_eq!(hub.update(press(|input| input.select = true)), Action::EndChallenge);
+        // Ended: the item goes, and the selection moves to an item still there.
+        hub.refresh(Lobby { endless_in_play: false, ..playing(true) });
+        assert!(hub.snapshot().stack[0].items.iter().all(|(title, _)| *title != Title::Literal(END_CHALLENGE.into())));
     }
 
     fn single_player(kind: HubKind) -> Controller {

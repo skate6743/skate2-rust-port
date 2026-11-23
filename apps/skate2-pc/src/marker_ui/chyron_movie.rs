@@ -91,9 +91,13 @@ impl ChyronMovie {
     /// `Display(artist, title, album)`: `GetSongInfo`'s strings through `FixUpString` into
     /// `mcChyron`'s artist, song and album fields, then `intro` while visible.
     fn show_song(&mut self, assets: &Assets, song: u32) -> RenderResult<()> {
-        let (artist, title, album) = skate2_audio::system::AudioSystem::music_player_song_info(song, |id| {
-            assets.localized.get(&id).map(|units| String::from_utf16_lossy(units))
-        });
+        // PC port: a custom song shows the names typed for it.
+        let (artist, title, album) = match skate2_core::ui::custom_songs::info(song) {
+            Some((artist, title)) => (format!("#{artist}"), format!("#{title}"), "# ".to_owned()),
+            None => skate2_audio::system::AudioSystem::music_player_song_info(song, |id| {
+                assets.localized.get(&id).map(|units| String::from_utf16_lossy(units))
+            }),
+        };
         let card = self.root.named(&["mcChyron"])?;
         for (field, text) in [("artist", artist), ("song", title), ("album", album)] {
             let text = fix_up_string(card, assets, &text)?;

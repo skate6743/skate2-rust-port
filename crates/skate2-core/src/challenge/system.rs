@@ -631,6 +631,10 @@ impl AttribHost for World {
     fn data_providers(&self, activity: usize) -> Vec<(u64, u64)> {
         self.activities.data_providers(activity)
     }
+    fn field_override(&self, field: u64) -> Option<f32> {
+        let online = self.online.as_ref().filter(|online| online.infinite_rounds)?;
+        (field == keys::hash64("NumRounds")).then_some(if online.host_ended { 0.0 } else { f32::INFINITY })
+    }
 }
 
 /// `IActivitySubController::RunMainActivity` of the ported sub-controllers,
@@ -1123,9 +1127,17 @@ impl ChallengeSystem {
         dynamic_hull::spot_test_against_point(&mut self.world, point);
     }
 
-    /// `Sk8ChallengeSystem::GameLoad` (`0x825a6618`) of a free-skate game
-    /// (`GenerateGameModeSignature` 2) for the dynamic hull manager, the sub-controller the
-    /// port runs in free skate: `GameModeFlags` 2 and the manager's `GameLoad(2)`.
+    /// `Sk8ChallengeSystem::GameLoad` (`0x825a6618`) of a free-skate game:
+    /// `GenerateGameModeSignature` (`0x825a4228`) gives 2, so `cActivityManager::GameLoad(2)`
+    /// loads every sub-controller for it and its prerequisite pass runs the global activities
+    /// flagged for the game type that the progression holds available.
+    pub fn game_load_free_skate(&mut self) {
+        self.world.game_mode_flags = 2;
+        activity::game_load(&mut self.world, 2);
+    }
+
+    /// The same game load for the dynamic hull manager alone, as a replay's own hulls take it:
+    /// `GameModeFlags` 2 and the manager's `GameLoad(2)`.
     pub fn game_load_free_skate_dynamic_hulls(&mut self) {
         self.world.game_mode_flags = 2;
         dynamic_hull::game_load(&mut self.world, 2);
@@ -1643,6 +1655,25 @@ impl ChallengeSystem {
             let message = Message::new("cMsgRestartChallenge", vec![("PlayerID", Field::Number(player as f32))]);
             runtime::handle_local_message(&mut self.challenge, &mut self.world, main, &message);
         }
+    }
+
+    /// PC port (user request): the host ended a Spot Battle that runs under Infinite Rounds, at
+    /// this tick on every console. The turn in play ends as it does when its player leaves
+    /// (`script_fixes::END_SOURCE`), and from here the script's `NumRounds` reads 0, so the
+    /// `countdown` that would start the next turn finds every round played and ends the battle
+    /// as the last round's end does: the overall results, `challenge_finished`'s "challenge
+    /// complete", the highlight reel and the leaderboard. False while the battle has had no turn
+    /// yet (its intro): the caller asks again at the next tick.
+    pub fn end_infinite_rounds(&mut self) -> bool {
+        let Some(main) = self.world.activities.main else { return true };
+        if !self.world.online.as_ref().is_some_and(|online| online.infinite_rounds && !online.host_ended) {
+            return true;
+        }
+        let taken = runtime::end_spot_battle(&mut self.challenge, &mut self.world, main);
+        if taken && let Some(online) = self.world.online.as_mut() {
+            online.host_ended = true;
+        }
+        taken
     }
 
     /// `cActivityManager::GetMainChallenge`: whether a main challenge runs.

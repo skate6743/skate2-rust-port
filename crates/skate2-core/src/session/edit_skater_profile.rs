@@ -9,12 +9,14 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::{
-        Condvar, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Condvar, Mutex, MutexGuard, PoisonError},
+    time::{Duration, Instant},
 };
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 
+/// A number for each test's own folder.
+#[cfg(test)]
 static SAVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// SKATER.P is read and replaced one access at a time. The count is the saves handed to
@@ -119,8 +121,9 @@ pub struct AudioProfile<'a> {
 impl AudioProfile<'_> {
     fn apply(&self, profile: &mut SkaterProfile) -> Result<(), ProfileError> {
         profile.set_settings(self.settings)?;
-        if let Some((player, _)) = self.music_player {
-            profile.set_music_player(player)?;
+        // PC port: the music player's custom songs stay in custom_songs.json.
+        if let Some((player, catalogue)) = self.music_player {
+            profile.set_music_player(&crate::ui::custom_songs::game_songs_only(player, catalogue))?;
         }
         Ok(())
     }
@@ -129,7 +132,7 @@ impl AudioProfile<'_> {
             return Err(ProfileError("settings read-back mismatch"));
         }
         if let Some((player, catalogue)) = self.music_player {
-            if profile.music_player(catalogue)?.as_ref() != Some(player) {
+            if profile.music_player(catalogue)? != Some(crate::ui::custom_songs::game_songs_only(player, catalogue)) {
                 return Err(ProfileError("music player read-back mismatch"));
             }
         }
@@ -325,9 +328,8 @@ impl EditSkaterProfileStore {
         }
         self.commit(&bytes, validated)
     }
-    /// Commit only after complete encoding and read-back validation. On Windows,
-    /// replacement uses a same-directory backup because rename cannot replace
-    /// an existing file. The previous save remains in that backup on success.
+    /// Commit only after complete encoding and read-back validation; the save is replaced in one
+    /// rename ([`Self::commit`]) and no backup of the old one is kept.
     pub fn save_record(&mut self, record: &CacRecord) -> Result<(), EditSkaterProfileError> {
         self.save_record_and_gestures(record, None)
     }
@@ -373,50 +375,70 @@ impl EditSkaterProfileStore {
         }
         self.commit(&bytes, validated)
     }
+    /// The save's replacement: the encoded, read-back profile goes to a file of its own beside
+    /// the save, reaches the disk, and takes the save's name in one rename, which replaces the
+    /// old save on every platform. The save is whole at every moment, the old one until the
+    /// rename and the new one from it, and nothing is left beside it.
+    ///
+    /// The file is named by this process alone: its saves are one at a time ([`FILE`]), so one
+    /// name serves them all, and what a run that ended mid-save left under the name is written
+    /// over. Earlier builds moved the old save aside as `SKATER.P.<pid>.<n>.bak` and kept it; a
+    /// later run given the same process id then found the name taken and refused to save.
     fn commit(&mut self, bytes: &[u8], validated: SkaterProfile) -> Result<(), EditSkaterProfileError> {
         if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
         }
-        let sequence = SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let suffix = format!(".{}.{}", std::process::id(), sequence);
-        let temp = self.path.with_extension(format!("P{suffix}.tmp"));
-        let backup = self.path.with_extension(format!("P{suffix}.bak"));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
-        if let Err(e) = file.write_all(bytes).and_then(|()| file.sync_all()) {
-            drop(file);
+        let temp = self.path.with_extension(format!("P.{}.tmp", std::process::id()));
+        let written = OpenOptions::new().write(true).create(true).truncate(true).open(&temp).and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        });
+        if let Err(e) = written.and_then(|()| replace(&temp, &self.path)) {
             let _ = fs::remove_file(&temp);
             return Err(e.into());
         }
-        drop(file);
-        let had_original = self.path.try_exists()?;
-        if had_original {
-            if backup.try_exists()? {
-                let _ = fs::remove_file(&temp);
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "SKATER.P backup path already exists",
-                )
-                .into());
-            }
-            if let Err(e) = fs::rename(&self.path, &backup) {
-                let _ = fs::remove_file(&temp);
-                return Err(e.into());
-            }
-        }
-        if let Err(e) = fs::rename(&temp, &self.path) {
-            if had_original {
-                let _ = fs::rename(&backup, &self.path);
-            }
-            let _ = fs::remove_file(&temp);
-            return Err(e.into());
-        }
+        sync_directory(&self.path);
         self.profile = Some(validated);
         Ok(())
     }
 }
+
+/// How long a replacement another program's hold on the save refuses is tried again, and how
+/// often.
+const HELD_FOR: Duration = Duration::from_millis(1500);
+const HELD_RETRY: Duration = Duration::from_millis(15);
+
+/// Whether a rename failed because another program has the save open for a moment (a virus
+/// scan, a synced folder): Windows' access denied, sharing violation and lock violation.
+/// Elsewhere an open file does not hold its name.
+fn held(error: &io::Error) -> bool {
+    cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// `temp` takes `path`'s name, replacing the file there (`rename(2)`; on Windows `MoveFileExW`
+/// with `MOVEFILE_REPLACE_EXISTING`). A save another program holds is tried again for
+/// [`HELD_FOR`]; a failure leaves the old save as it was.
+fn replace(temp: &Path, path: &Path) -> io::Result<()> {
+    let start = Instant::now();
+    loop {
+        match fs::rename(temp, path) {
+            Ok(()) => return Ok(()),
+            Err(error) if held(&error) && start.elapsed() < HELD_FOR => std::thread::sleep(HELD_RETRY),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// The rename itself reaches the disk: the save's directory is synced where a directory can be.
+#[cfg(unix)]
+fn sync_directory(path: &Path) {
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    if let Ok(directory) = fs::File::open(parent) {
+        let _ = directory.sync_all();
+    }
+}
+#[cfg(not(unix))]
+fn sync_directory(_: &Path) {}
 
 #[cfg(test)]
 mod display_store_tests {
@@ -443,6 +465,84 @@ mod display_store_tests {
         assert_eq!(reopened.load_record().unwrap(), Some(record));
         assert_eq!(reopened.load_display_settings().unwrap(), PcDisplaySettings { postfx: false, fisheye: false, ..values });
         // Only the uniquely-created test directory is removed.
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn names(root: &Path) -> Vec<String> {
+        let mut names: Vec<String> =
+            fs::read_dir(root).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
+    /// Every save replaces the one file: no backup of the old save and no temporary file stays
+    /// beside it, however many saves a run makes.
+    #[test]
+    fn a_save_leaves_the_save_alone_in_its_folder() {
+        let root = std::env::temp_dir().join(format!("sk82-profile-{}-{}", std::process::id(),
+            SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("SKATER.P");
+        let mut store = EditSkaterProfileStore::open(&path).unwrap();
+        let values = PcDisplaySettings { postfx: false, fisheye: true, ..PcDisplaySettings::default() };
+        for round in 0..5 {
+            store.save_display_settings(PcDisplaySettings { fisheye: round % 2 == 0, ..values }).unwrap();
+            assert_eq!(names(&root), ["SKATER.P"], "after save {round}");
+        }
+        assert_eq!(EditSkaterProfileStore::open(&path).unwrap().load_display_settings().unwrap(), PcDisplaySettings { fisheye: true, ..values });
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// What earlier builds and interrupted saves left beside the save does not stop a save: the
+    /// backups named by this process's id (a run given a process id an earlier run had), an old
+    /// temporary file, and a file under the name this process's saves are written to.
+    #[test]
+    fn files_left_by_earlier_runs_do_not_stop_a_save() {
+        let root = std::env::temp_dir().join(format!("sk82-profile-{}-{}", std::process::id(),
+            SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("SKATER.P");
+        let mut store = EditSkaterProfileStore::open(&path).unwrap();
+        let values = PcDisplaySettings { postfx: false, fisheye: true, ..PcDisplaySettings::default() };
+        store.save_display_settings(values).unwrap();
+        let pid = std::process::id();
+        let left = [format!("SKATER.P.{pid}.0.bak"), format!("SKATER.P.{pid}.1.bak"), format!("SKATER.P.{pid}.0.tmp"), format!("SKATER.P.{pid}.tmp")];
+        for name in &left {
+            fs::write(root.join(name), b"left by an earlier run").unwrap();
+        }
+        let next = PcDisplaySettings { fisheye: false, ..values };
+        store.save_display_settings(next).unwrap();
+        store.save_display_settings(values).unwrap();
+        store.save_display_settings(next).unwrap();
+        assert_eq!(EditSkaterProfileStore::open(&path).unwrap().load_display_settings().unwrap(), next);
+        // The old backups and the old temporary file are not the store's to remove; the name
+        // its own saves take is free again.
+        let mut expected = vec!["SKATER.P".to_owned(), left[0].clone(), left[1].clone(), left[2].clone()];
+        expected.sort();
+        assert_eq!(names(&root), expected);
+        for name in &left[..3] {
+            assert_eq!(fs::read(root.join(name)).unwrap(), b"left by an earlier run");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A save that cannot take the save's name fails with the old save whole and nothing left.
+    #[test]
+    fn a_save_that_cannot_replace_the_file_leaves_the_old_one() {
+        let root = std::env::temp_dir().join(format!("sk82-profile-{}-{}", std::process::id(),
+            SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir(&root).unwrap();
+        // The save's name is a folder: nothing can be renamed over it.
+        let path = root.join("SKATER.P");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("kept"), b"kept").unwrap();
+        let mut store = EditSkaterProfileStore { path: path.clone(), profile: None };
+        let bytes = SkaterProfile::new_empty().encode().unwrap();
+        let validated = SkaterProfile::parse(&bytes).unwrap();
+        assert!(store.commit(&bytes, validated).is_err());
+        assert!(store.profile.is_none(), "a failed save is not the store's profile");
+        assert_eq!(names(&root), ["SKATER.P"]);
+        assert_eq!(fs::read(path.join("kept")).unwrap(), b"kept");
         fs::remove_dir_all(root).unwrap();
     }
 }

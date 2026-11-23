@@ -296,11 +296,13 @@ const CONTENT_SCENE_FILES: u32 = 32;
 /// `FindSceneDataFile`'s scene directory and the ICE data, with the downloadable content's. The
 /// original reads only the highest-numbered `scene_NNN.bin` and `ice_NNN.bin`, which a pack
 /// builds with the game's own scenes as the release build has them; here the game's own
-/// (`_000`) stay as this build ships them, and each pack's file adds the scenes it brings.
+/// (`_000`) stay as this build ships them, and each pack's file adds the scenes it brings. A
+/// pack's scene or camera file that does not read is reported and left out with the other of the
+/// same number.
 ///
 /// # Errors
 ///
-/// A file that cannot be read or parsed.
+/// A file of the game's own that cannot be read or parsed.
 pub fn load_with_content(
     mounts: &skate2_formats::mount::MountSet,
 ) -> Result<(SceneDirectory, skate2_formats::ice_camera::CameraSet), String> {
@@ -310,12 +312,30 @@ pub fn load_with_content(
     let mut cameras = CameraSet::parse(&read(super::camera::PATH)?)?;
     for number in 1..=CONTENT_SCENE_FILES {
         let scene = format!("data\\scene\\scene_{number:03}.bin");
-        if mounts.contains_path(&scene) {
-            directory.add_new_scenes(&SceneDirectory::parse(&read(&scene)?).map_err(|e| format!("{scene}: {e}"))?);
-        }
         let ice = format!("data\\scene\\ice_{number:03}.bin");
-        if mounts.contains_path(&ice) {
-            cameras.add_new_groups(CameraSet::parse(&read(&ice)?).map_err(|e| format!("{ice}: {e}"))?);
+        let content = || -> Result<(Option<SceneDirectory>, Option<CameraSet>), String> {
+            let scenes = if mounts.contains_path(&scene) {
+                Some(SceneDirectory::parse(&read(&scene)?).map_err(|e| format!("{scene}: {e}"))?)
+            } else {
+                None
+            };
+            let takes = if mounts.contains_path(&ice) {
+                Some(CameraSet::parse(&read(&ice)?).map_err(|e| format!("{ice}: {e}"))?)
+            } else {
+                None
+            };
+            Ok((scenes, takes))
+        };
+        match content() {
+            Ok((scenes, takes)) => {
+                if let Some(scenes) = scenes {
+                    directory.add_new_scenes(&scenes);
+                }
+                if let Some(takes) = takes {
+                    cameras.add_new_groups(takes);
+                }
+            }
+            Err(error) => eprintln!("downloadable content scenes left out: {error}"),
         }
     }
     Ok((directory, cameras))

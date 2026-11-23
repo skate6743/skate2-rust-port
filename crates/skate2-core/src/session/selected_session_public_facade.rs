@@ -1390,6 +1390,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let online = crate::ui::online_config::OnlineConfig::load();
         self.options_menu.load_lobby_chat(online.show_lobby_chat);
         self.options_menu.load_ghost_players(online.show_ghost_players);
+        self.options_menu.load_skate_during_turn_wait(online.skate_during_turn_wait);
         self.options_menu.load_sticks(crate::ui::controller_config::load());
         self.audio.settings = profile.load_settings().map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?;
         self.audio.new_profile = profile.is_new_profile().map_err(|e| SelectedLiveError::failed(Stage::BootPrefix, e))?;
@@ -2212,6 +2213,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         let hub_can_open = self.completed_frames != 0 && !map_challenge_loading && !self.pause_menu.snapshot().visible
             && !self.main_menu_pending && !self.career_saves.busy() && !self.online_loading_screen()
             && self.career.as_ref().is_none_or(career::CareerSession::online_hub_allowed)
+            && !self.freeskate.challenges.as_ref().is_some_and(career::CareerSession::popup_open)
             && self.inner.bound_input.as_ref().is_some_and(|input| input.try_can_open_frontend().unwrap_or(false));
         let frontend_input = self.update_online_hub(frontend_input, policy.has_focus, hub_can_open)?;
         // A game the single player hub joined: once the fade covers, the game in play unloads
@@ -2414,7 +2416,7 @@ impl<T, C> SelectedLiveSession<T, C> {
                 }
                 self.dynamic_hulls_unloading = false;
             }
-            if ready && !career::try_dynamic_hull_state(self.career.as_mut(), self.freeskate.hulls.as_mut(), terrain.as_mut(), position)? {
+            if ready && !career::try_dynamic_hull_state(self.career.as_mut(), self.freeskate.system_mut(), terrain.as_mut(), position)? {
                 // The presentation answers again once it shows the hulls the loader registered.
                 trace_travel(&mut self.map_travel_gate, "the dynamic hulls");
                 self.map_travel_presentation_ready = false;
@@ -2785,6 +2787,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             }
         }
         let edit_skater_offered = self.online_can_edit_skater();
+        let end_challenge_offered = self.online_end_challenge_offered();
         let input = self.inner.bound_input.as_mut().expect("ready input");
         if career_overlay_was_open && self.pause_menu.snapshot().visible {
             // ReceiveInput82656af8 delivers the key to the top state once.
@@ -2818,6 +2821,7 @@ impl<T, C> SelectedLiveSession<T, C> {
         self.pause_menu.set_main_challenge(self.career.as_ref().and_then(career::CareerSession::start_hub_main_challenge));
         self.pause_menu.set_leave_challenge(self.online.can_leave_challenge());
         self.pause_menu.set_edit_skater(edit_skater_offered);
+        self.pause_menu.set_end_challenge(end_challenge_offered);
         // StateManagerFrontEnd::ReceiveInput 0x82656af8: nothing reaches the StartHub before its
         // screen's IntroComplete, and a front-end state over the game takes the input itself.
         let frontend_input = if self.pause_menu.awaiting_intro() || career_overlay_open {
@@ -2827,7 +2831,8 @@ impl<T, C> SelectedLiveSession<T, C> {
         };
         // StateManagerFrontEnd::ReceiveInput (0x82656af8) hands an open popup the input instead of
         // CheckForOptions.
-        let popup_open = self.career.as_ref().is_some_and(career::CareerSession::popup_open);
+        // A profile free skate's teleporter popup counts as the career's does.
+        let popup_open = self.career.as_ref().or(self.freeskate.challenges.as_ref()).is_some_and(career::CareerSession::popup_open);
         let pause = self.pause_menu.update(frontend_input,
             policy.has_focus && self.completed_frames != 0 && self.map_travel.is_none() && !map_challenge_loading
                 && (was_paused || (can_open && player_registered && !popup_open && !hub_open)));
@@ -2917,6 +2922,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             if self.pause_menu.take_leave_challenge_confirmed() {
                 self.online_request_leave_challenge();
             }
+            // PC port addition: the StartHub's End Challenge, as the online hub's.
+            if self.pause_menu.take_end_challenge_confirmed() {
+                self.online_end_challenge();
+            }
             if was_paused && pause.visible && !pause.jacked && policy.has_focus && frontend_input.select
                 && !self.pause_menu.awaiting_intro()
                 && self.pause_menu.selected_option()==crate::ui::pause_menu::PauseMenuOption::TrickGuide
@@ -2969,7 +2978,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             // The activity overlay's D-pad up comes before the other HUD components'.
             let hud_dpad = self.online_activity_input(hud_dpad);
             self.career_input(frontend_input, hud_dpad);
-            if self.career.is_none() {self.queue_prop_input(hud_dpad);}
+            if self.career.is_none() && !self.free_skate_challenge_input(frontend_input, hud_dpad) {self.queue_prop_input(hud_dpad);}
         }
         self.apply_prop_actions()?;
         if self.try_update_sign_up_choice_pause()? {
@@ -3116,6 +3125,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             || self.main_menu.is_some() || self.main_menu_pending || self.editor_enter_pending;
         let mut boundary_teleport = false;
         let spectating = self.online_spectating();
+        let turn_wait = self.online_turn_wait_state();
         let input = self.inner.bound_input.as_mut().expect("ready input");
         let selected = &self.inner.player.as_ref().expect("ready player").selected;
         // PlayerUI::Update samples for its mPlayerIndex, which PartyPlayUI moves.
@@ -3132,18 +3142,22 @@ impl<T, C> SelectedLiveSession<T, C> {
             crate::diagnostics::frame_profile::TICK_SESSION_MARKER,
         );
         if has_sim_input {
-            let challenge = self.career.as_ref().map(career::CareerSession::session_marker_rules);
             // GameModule::DoGameUpdate (0x82730418): PlayerUI has the focus only while no popup is
             // open and PauseMan's top state lets the front end open (CheckForPauseState); a free
             // skate's Spectate keeps it while the console watches another player (PC port addition).
             let game_focus = policy.has_focus && !map_challenge_loading && !spectating
-                && !self.career.as_ref().is_some_and(career::CareerSession::popup_open)
+                && !self.career.as_ref().or(self.freeskate.challenges.as_ref()).is_some_and(career::CareerSession::popup_open)
                 && input.try_can_open_frontend().map_err(|e| SelectedLiveError::failed(Stage::PreupdateInput, e))?;
             let marker = self
                 .inner
                 .session_marker
                 .as_mut()
                 .expect("ready session marker");
+            // PC port addition, Skate During Turn Wait: the wait's own marker, under a free
+            // skate's rules (no challenge's): the network game's still hold, so it sets only
+            // within the game's boundaries.
+            let wait_marker = self.online.swap_turn_wait_marker(turn_wait, &mut marker.marker);
+            let challenge = if wait_marker { None } else { self.career.as_ref().map(career::CareerSession::session_marker_rules) };
             let terrain = self.inner.terrain.as_mut().expect("ready terrain");
             // 8272c590 Flow::Manager::Update: DoTeleport's MoveStreamFocus,
             // then SendTeleportMsg, for a request from an earlier frame.
@@ -3284,7 +3298,7 @@ impl<T, C> SelectedLiveSession<T, C> {
             // resume can keep simulation/input active under a non-menu pause state.
             let focused = skate3_input_focus::available(has_sim_input, policy.has_focus,
                 frontend_takes_input, map_challenge_loading,
-                self.career.as_ref().is_some_and(career::CareerSession::popup_open));
+                self.career.as_ref().or(self.freeskate.challenges.as_ref()).is_some_and(career::CareerSession::popup_open));
             (if focused { input.raw_controller() } else { Some(crate::input_pad::XboxPadSample { buttons: 0, left_trigger: 0, right_trigger: 0, left_x: 0, left_y: 0, right_x: 0, right_y: 0 }) }, focused)
         };
         #[cfg(feature = "skate3-runtime")]
@@ -4256,8 +4270,10 @@ impl<T, C> SelectedLiveSession<T, C> {
             let rows = output.try_skeleton_output().ok()?.effective_skeleton_root_matrix.columns();
             [rows[0], rows[1], rows[2]]
         };
+        // Skate During Turn Wait (PC port): the skater walks by its own camera, the one its corner shows.
         let camera = self
             .online_view_camera()
+            .filter(|_| !self.online_skates_while_waiting())
             .and_then(|camera| camera.matrix)
             .or_else(|| self.game_camera_matrix())?;
         let row = |row: usize| SkeletonRootVector::known(std::array::from_fn(|lane| camera[row * 4 + lane]));
@@ -4928,7 +4944,8 @@ impl<T, C> SelectedLiveSession<T, C> {
         &self,
     ) -> Result<Option<crate::challenge::visual_director::VisualIndicatorFrame>, SelectedLiveError>
     {
-        let Some(career) = self.career.as_ref() else {
+        // A profile free skate's challenge system has its teleporters' indicators.
+        let Some(career) = self.career.as_ref().or(self.freeskate.challenges.as_ref()) else {
             return Ok(None);
         };
         let Some(actor) = self
@@ -5178,7 +5195,7 @@ fn actor_base_position(actor: &crate::actor_construction::ActorConstruction) -> 
 
 #[path = "selected_session_career.rs"]
 mod career;
-pub use career::{CareerHud, EndOptionsView, FrontendArguments, PhotoSelectView, PressADialog};
+pub use career::{CareerHud, EndOptionsView, FreeSkateHud, FrontendArguments, PhotoSelectView, PressADialog};
 #[path = "selected_session_scene_characters.rs"]
 mod scene_characters;
 #[path = "selected_session_edit_skater.rs"]
@@ -5193,7 +5210,7 @@ mod freeskate_viewer;
 mod party_play_session;
 #[path = "selected_session_online.rs"]
 mod online_session;
-pub use online_session::{MatchRequest, OnlineNotice, OnlinePlayer, SignIn};
+pub use online_session::{LossReason, MatchRequest, OnlineNotice, OnlinePlayer, SignIn};
 #[path = "selected_session_music_player.rs"]
 mod music_player_session;
 #[path = "selected_session_presentation_submit.rs"]

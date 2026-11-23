@@ -7,6 +7,19 @@
 
 use crate::codec::{DecodeError, DecodeResult, Reader, Writer};
 use crate::frames::{EncodedRun, MAX_RUN};
+use std::time::Duration;
+
+/// How long a participant of a challenge in play may send neither a replay frame nor `Busy`
+/// before the server kicks it (`leave::KICKED_FOR_INACTIVITY`): the other players' rounds wait
+/// for its facts. Two seconds until 2026-11-22, which a hitch or a link down for a moment used up.
+pub const INACTIVITY: Duration = Duration::from_secs(5);
+/// The same for a member no round waits on (lobby skate, a challenge still loading or showing its
+/// results, a member in lobby skate while others play one; `leave::KICKED_FOR_IDLE`). A game that
+/// stops for a while there (a load, a hitch, a window the system does not draw) holds no one up
+/// and stays in; so does one whose link drops for a few seconds, which says as little, and a link
+/// that stays down is the transport's to drop (`transport::TIMEOUT`). A challenge's load has its
+/// own limit.
+pub const IDLE_INACTIVITY: Duration = Duration::from_secs(60);
 
 /// The most players a game holds: an unranked game's `MaxPlayerFilter` (`mMaxPlayers` 8).
 pub const MAX_PLAYERS: usize = 8;
@@ -56,6 +69,29 @@ pub mod request {
     /// PC port addition: the host hands the game to the member whose user id is the value, who is
     /// its host from then on (`ServerMessage::HostChanged`).
     pub const MAKE_HOST: u8 = 32;
+    /// PC port addition: the host sets a challenge option (the host menu's Challenge Options):
+    /// the value's low byte is the [`super::option`], the rest its setting (on or off, or a
+    /// number). Taken in lobby skate only, so every participant of a challenge loads it under
+    /// the same options.
+    pub const SET_CHALLENGE_OPTION: u8 = 33;
+    /// PC port addition: the host ends the challenge in play, one whose options let it run
+    /// without end ([`super::option::INFINITE_ROUNDS`]): `ServerMessage::ChallengeEnded`.
+    pub const END_CHALLENGE: u8 = 34;
+}
+
+/// A challenge option the host sets (PC port addition, `request::SET_CHALLENGE_OPTION`,
+/// `ServerMessage::ChallengeOption`).
+pub mod option {
+    /// Spot Battle: the battle has no last round and goes on until the host ends it
+    /// (`request::END_CHALLENGE`). Off (0) unless the host turns it on (1).
+    pub const INFINITE_ROUNDS: u8 = 1;
+    /// 1-Up: every round starts at one of the 1-Up's round starts, the setting its number from
+    /// 1. Off (0), each round starts at the next one. The game's challenge changing turns it off:
+    /// another 1-Up has other starts.
+    pub const ROUND_LOCK: u8 = 2;
+    /// The highest round [`ROUND_LOCK`] takes. A game knows how many starts its 1-Up has, the
+    /// server does not.
+    pub const MAX_ROUND_LOCK: u32 = 32;
 }
 
 /// `GameReset`'s reset type.
@@ -115,6 +151,10 @@ pub mod leave {
     pub const KICKED_FOR_CHAT: u8 = 9;
     /// Sent reliable messages far faster than the game does.
     pub const KICKED_FOR_FLOOD: u8 = 10;
+    /// Sent neither a replay frame nor `Busy` for [`super::IDLE_INACTIVITY`] where no round
+    /// waited on it; [`KICKED_FOR_INACTIVITY`] is a challenge's participant's
+    /// ([`super::INACTIVITY`]).
+    pub const KICKED_FOR_IDLE: u8 = 11;
 }
 
 /// Why the server refused a client.
@@ -145,6 +185,10 @@ pub fn valid_nickname(nickname: &str) -> bool {
         && nickname.chars().all(nickname_character)
         && nickname.chars().any(|character| character.is_ascii_alphanumeric())
 }
+
+/// The most bytes a Spot Battle's carried state takes (`ClientMessage::Carry`, PC port
+/// addition): its round, its turn order and eight players' scores.
+pub const MAX_CARRY: usize = 512;
 
 /// The longest chat line, in characters: where the game's chat prompt stops (PC port addition).
 pub const CHAT_CHARACTERS: usize = 200;
@@ -377,19 +421,21 @@ pub const MAX_PRESENTED: usize = 15;
 /// facts (player index), each counted at that tick; whether the player waits at a round's sync
 /// point from this tick, standing still at these facts until every player has reached it; and
 /// the presentation events the pacing leader's console saw, for every console to take at this
-/// tick.
+/// tick; and that the host ended the challenge (PC port addition, `ServerMessage::
+/// ChallengeEnded`), for every console's challenge to end from this tick.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FactsNotes {
     pub votes: Vec<(u8, i32)>,
     pub left: Vec<u8>,
     pub syncing: bool,
     pub presented: Vec<Presented>,
+    pub ended: bool,
 }
 
 impl FactsNotes {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.votes.is_empty() && self.left.is_empty() && !self.syncing && self.presented.is_empty()
+        self.votes.is_empty() && self.left.is_empty() && !self.syncing && self.presented.is_empty() && !self.ended
     }
 
     fn write(&self, w: &mut Writer) {
@@ -398,7 +444,8 @@ impl FactsNotes {
             count(self.votes.len(), MAX_PLAYERS)
                 | (count(self.left.len(), MAX_PLAYERS) << 4)
                 | (u64::from(self.syncing) << 8)
-                | (count(self.presented.len(), MAX_PRESENTED) << 9),
+                | (count(self.presented.len(), MAX_PRESENTED) << 9)
+                | (u64::from(self.ended) << 13),
         );
         for &(player, score) in self.votes.iter().take(MAX_PLAYERS) {
             w.u8(player);
@@ -426,8 +473,8 @@ impl FactsNotes {
     fn read(r: &mut Reader<'_>) -> DecodeResult<Self> {
         let counts = r.varint_u32()?;
         let field = |shift: u32, mask: u32| usize::try_from((counts >> shift) & mask).unwrap_or(usize::MAX);
-        let (votes, left, syncing, presented) = (field(0, 0xf), field(4, 0xf), field(8, 1), field(9, 0xf));
-        if votes > MAX_PLAYERS || left > MAX_PLAYERS || counts >> 13 != 0 {
+        let (votes, left, syncing, presented, ended) = (field(0, 0xf), field(4, 0xf), field(8, 1), field(9, 0xf), field(13, 1));
+        if votes > MAX_PLAYERS || left > MAX_PLAYERS || counts >> 14 != 0 {
             return Err(DecodeError("facts notes"));
         }
         let player = |r: &mut Reader<'_>| -> DecodeResult<u8> {
@@ -449,7 +496,7 @@ impl FactsNotes {
                 Ok(Presented::Speech { character: value(r)?, id: value(r)?, seq })
             })
             .collect::<DecodeResult<_>>()?;
-        Ok(Self { votes, left, syncing: syncing == 1, presented })
+        Ok(Self { votes, left, syncing: syncing == 1, presented, ended: ended == 1 })
     }
 }
 
@@ -514,6 +561,11 @@ pub enum ClientMessage {
     /// participant, at least two, has a fresh report of the same player at the same tick, the
     /// server takes that player out of the challenge.
     Stalled { user_id: u64, tick: u32 },
+    /// A Spot Battle's state at the turn it has just ended (PC port addition), from a participant
+    /// the server told a player waits to join it (`ServerMessage::ChallengeJoining`): the round,
+    /// the turn order and each player's score, as the game codes them. The server restarts the
+    /// battle of `session` for its players and the ones waiting, with this state for all.
+    Carry { session: u32, data: Vec<u8> },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -572,6 +624,19 @@ pub enum ServerMessage {
     /// ([`request::MAKE_HOST`]) or left it, to every member. To the host alone, after a hand to
     /// a member no longer in the game: the host it still is.
     HostChanged { user_id: u64 },
+    /// A challenge option as the host set it (PC port addition, [`option`]): to every member when
+    /// it changes, and to a member who joins a game with one set, after `GameJoined`.
+    ChallengeOption { option: u8, value: u32 },
+    /// The host ended the challenge in play ([`request::END_CHALLENGE`], PC port addition), to
+    /// every member: the participants' facts carry it to the tick every console ends at
+    /// ([`FactsNotes::ended`]).
+    ChallengeEnded,
+    /// A player waits to join the Spot Battle in play (PC port addition), to its participants:
+    /// the first whose battle ends a turn sends its state (`ClientMessage::Carry`).
+    ChallengeJoining,
+    /// The state the battle about to load starts from (`ClientMessage::Carry`, PC port addition),
+    /// to every member ahead of its `GameReset(LoadChallenge)`.
+    ChallengeCarry(Vec<u8>),
 }
 
 /// A run: its first tick and length, the frames it is coded against as their distance back from
@@ -720,6 +785,11 @@ impl ClientMessage {
                 w.u64(*user_id);
                 w.u32(*tick);
             }
+            Self::Carry { session, data } => {
+                w.u8(25);
+                w.u32(*session);
+                w.bytes(data);
+            }
         }
         w.into_vec()
     }
@@ -808,6 +878,7 @@ impl ClientMessage {
                 Self::Content(challenges)
             }
             24 => Self::Stalled { user_id: r.u64()?, tick: r.u32()? },
+            25 => Self::Carry { session: r.u32()?, data: r.bytes(MAX_CARRY)?.to_vec() },
             _ => return Err(DecodeError("unknown client message")),
         };
         r.finish()?;
@@ -969,6 +1040,17 @@ impl ServerMessage {
                 w.u8(27);
                 w.u64(*user_id);
             }
+            Self::ChallengeOption { option, value } => {
+                w.u8(28);
+                w.u8(*option);
+                w.u32(*value);
+            }
+            Self::ChallengeEnded => w.u8(29),
+            Self::ChallengeJoining => w.u8(30),
+            Self::ChallengeCarry(data) => {
+                w.u8(31);
+                w.bytes(data);
+            }
         }
         w.into_vec()
     }
@@ -1058,6 +1140,10 @@ impl ServerMessage {
                 Self::GameProposal { kind, activity: r.u64()?, user_id: r.u64()?, timeout: r.u32()? }
             }
             27 => Self::HostChanged { user_id: r.u64()? },
+            28 => Self::ChallengeOption { option: r.u8()?, value: r.u32()? },
+            29 => Self::ChallengeEnded,
+            30 => Self::ChallengeJoining,
+            31 => Self::ChallengeCarry(r.bytes(MAX_CARRY)?.to_vec()),
             _ => return Err(DecodeError("unknown server message")),
         };
         r.finish()?;
@@ -1106,7 +1192,7 @@ mod tests {
             ClientMessage::Complete,
             ClientMessage::Results(GameResult { event_time: 12.5, score: -3, finish_reason: 1, ranking: 2, players_choice: true }),
             ClientMessage::Facts { tick: 600, stint: 2, notes: FactsNotes::default(), data: vec![9; 40] },
-            ClientMessage::Facts { tick: 601, stint: 3, notes: FactsNotes { votes: vec![(1, 3), (2, -1)], left: vec![4], syncing: false, presented: vec![Presented::Nis { seq: 7, notification: 1 }, Presented::Speech { character: 40, id: -4004, seq: 2 }] }, data: vec![] },
+            ClientMessage::Facts { tick: 601, stint: 3, notes: FactsNotes { votes: vec![(1, 3), (2, -1)], left: vec![4], syncing: false, presented: vec![Presented::Nis { seq: 7, notification: 1 }, Presented::Speech { character: 40, id: -4004, seq: 2 }], ended: false }, data: vec![] },
             ClientMessage::Frames(EncodedRun { tick: 70, count: 3, frame: Some(66), frame_before: Some(65), sample: None, sample_before: Some(60), payload: vec![5, 6, 7] }),
             ClientMessage::FrameAcks(vec![(1, 500, 0xffff), (3, 2, 0)]),
             ClientMessage::Ping { time: 123_456 },
@@ -1121,6 +1207,10 @@ mod tests {
             ClientMessage::Content(vec![0x433d_b94f_fbfa_c4a9, 7]),
             ClientMessage::Content(Vec::new()),
             ClientMessage::Stalled { user_id: 0x1234_5678_9abc_def0, tick: (3 << 20) + 77 },
+            ClientMessage::Facts { tick: 9, stint: 1, notes: FactsNotes { ended: true, ..FactsNotes::default() }, data: vec![1] },
+            ClientMessage::GameRequest { request: request::SET_CHALLENGE_OPTION, value: u64::from(option::INFINITE_ROUNDS) | 1 << 8 },
+            ClientMessage::GameRequest { request: request::END_CHALLENGE, value: 0 },
+            ClientMessage::Carry { session: 7, data: vec![1, 2, 3] },
         ];
         for message in messages {
             assert_eq!(ClientMessage::decode(&message.encode()).unwrap(), message);
@@ -1150,7 +1240,7 @@ mod tests {
             ServerMessage::ExitPostChallenge,
             ServerMessage::GameChange { challenge_type: challenge::JAM, challenge_key: 5, delay: 5000 },
             ServerMessage::Kicked { reason: leave::KICKED_BY_HOST },
-            ServerMessage::Facts { slot: 2, tick: 10, stint: 1, notes: FactsNotes { votes: vec![(0, 1)], left: vec![], syncing: true, presented: vec![] }, data: vec![1] },
+            ServerMessage::Facts { slot: 2, tick: 10, stint: 1, notes: FactsNotes { votes: vec![(0, 1)], left: vec![], syncing: true, presented: vec![], ended: true }, data: vec![1] },
             ServerMessage::RemoteFrames { slot: 5, run: EncodedRun { tick: 9, count: 1, frame: None, frame_before: None, sample: Some(8), sample_before: Some(6), payload: vec![] } },
             ServerMessage::FrameAck { latest: 44, mask: 3 },
             ServerMessage::Pong { time: 8 },
@@ -1166,6 +1256,10 @@ mod tests {
             ServerMessage::GameProposal { kind: proposal::BROADCAST, activity: 0x34, user_id: 6, timeout: 15_000 },
             ServerMessage::GameProposal { kind: proposal::MISSED, activity: 0x34, user_id: 0, timeout: 0 },
             ServerMessage::HostChanged { user_id: 0xfedc_ba98_7654_3210 },
+            ServerMessage::ChallengeOption { option: option::INFINITE_ROUNDS, value: 1 },
+            ServerMessage::ChallengeEnded,
+            ServerMessage::ChallengeJoining,
+            ServerMessage::ChallengeCarry(vec![9; 40]),
         ];
         for message in messages {
             assert_eq!(ServerMessage::decode(&message.encode()).unwrap(), message);
