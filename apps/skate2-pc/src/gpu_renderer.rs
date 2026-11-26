@@ -1299,6 +1299,11 @@ impl GpuRenderer {
             self.present_pacing.wait(due);
         }
         let present_start = Instant::now();
+        // Notify winit immediately before submitting the swapchain image. On Wayland this
+        // schedules a `wl_surface.frame` callback that requires a following surface commit, so
+        // calling it before early returns (`scene.unchanged`, zero-size, or failed acquire)
+        // permanently stalls `RedrawRequested`.
+        self.window.pre_present_notify();
         self.queue.present(frame);
         self.frame_cap.presented();
         let present = present_start.elapsed();

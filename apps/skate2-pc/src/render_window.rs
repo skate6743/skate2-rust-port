@@ -303,11 +303,13 @@ pub fn run_with_options(
                         focused = now_focused;
                         if focused && background {
                             background = false;
+                            last_redraw = Instant::now();
                             window.request_redraw();
                         }
                     }
                     WindowEvent::CursorMoved { .. } if background => {
                         background = false;
+                        last_redraw = Instant::now();
                         window.request_redraw();
                     }
                     WindowEvent::ModifiersChanged(modifiers) => alt = modifiers.state().alt_key(),
@@ -350,7 +352,6 @@ pub fn run_with_options(
                             return Ok(());
                         }
                         let client_time = redraw_start.elapsed();
-                        window.pre_present_notify();
                         if window.inner_size().width == 0 || window.inner_size().height == 0 {
                             renderer.submit_uploads();
                             return Ok(());
@@ -618,10 +619,21 @@ pub fn run_with_options(
             } else if !(options.hold_at_completion && client.completion_reached()) {
                 // A frame's request for the next that never arrived is made again.
                 if last_redraw.elapsed() >= REDRAW_WATCHDOG {
-                    last_redraw = Instant::now();
-                    window.request_redraw();
+                    if !focused {
+                        // On Wayland a covered or hidden-workspace window stops getting frame
+                        // callbacks after its last present, so RedrawRequested never arrives to
+                        // trip `BACKGROUND_STALL`; switch to the background timer until focus or
+                        // cursor motion returns.
+                        background = true;
+                        target.set_control_flow(ControlFlow::WaitUntil(Instant::now() + MINIMIZED_FRAME));
+                    } else {
+                        last_redraw = Instant::now();
+                        window.request_redraw();
+                        target.set_control_flow(ControlFlow::WaitUntil(last_redraw + REDRAW_WATCHDOG));
+                    }
+                } else {
+                    target.set_control_flow(ControlFlow::WaitUntil(last_redraw + REDRAW_WATCHDOG));
                 }
-                target.set_control_flow(ControlFlow::WaitUntil(last_redraw + REDRAW_WATCHDOG));
             }
         }
     })?;
